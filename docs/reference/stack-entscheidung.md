@@ -56,6 +56,8 @@ Fläche, auf der Sicherheitsfehler wohnen:
 - `CSRFConfig` — die zweite Hälfte von R23.
 - `litestar-htmx` — HTMX-Integration, schon als Abhängigkeit dabei.
 
+  **Korrektur (nachgemessen an litestar 2.24.0):** „Backpressure“ trägt hier nicht so weit, wie dieser Satz nahelegt. Der Deckel je Verbindung verhindert unbegrenztes Wachsen — aber ein Überlauf wird *still* verworfen: `ChannelsPlugin._sub_worker` wirft den Rückgabewert von `Subscriber.put_nowait` weg, und beide Strategien (`backoff`, `dropleft`) melden der betroffenen Verbindung nichts. Für KTD6, das genau das ausschließt, muss der Verlust über Folgenummern erkannt werden (Plan, U12 Punkt 2a–2c). Die Wahl von Litestar bleibt davon unberührt — der Fanout, der Abo-Lebenszyklus und die Lifespan-Bindung tragen weiterhin; nur diese eine Eigenschaft muss das Dashboard selbst beisteuern.
+
 **Berichtigung (2026-09-17, nach Prüfung der Litestar-Quellen):** Die
 Rate-Limit-Middleware deckt R22 **nicht** ab. Sie schlüsselt über
 `identifier_for_request`, das synchron ist und den Request-Body nicht lesen
