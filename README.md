@@ -32,8 +32,16 @@ RabbitMQ `amqp://guest:guest@localhost:5699/`, Valkey `valkey://localhost:6399/0
 (Container `swarmq-test-rabbit`, `swarmq-test-valkey`). Ein Worker mit
 Kontrollkanal zum Ausprobieren steht in `docs/reference/kontrollkanal-schnittstelle.md`.
 
+## Stack (festgelegt 2026-09-17)
+
+Litestar + msgspec, Granian als Server (ein Arbeiter), Jinja2 mit HTMX 2 und
+Idiomorph ohne Build-Schritt, SSE über `litestar.channels` für die
+Live-Aktualisierung, SQLite mit FTS5 als durchsuchbares Task-Verzeichnis,
+Sitzungen im Valkey-Store, argon2id für Passwörter. Begründung, Messwerte und
+verworfene Alternativen: `docs/reference/stack-entscheidung.md`.
+
 ## Offen vor dem ersten Code
 
-Framework und Frontend-Stack, Live-Aktualisierung, Ereignisstrom-Form und
-Speicherbudget, DLQ-Lesen ohne Drain, Fristen für „getrennt“ und „unbestätigt“,
-Versionsspanne zu swarmq — alle im Plan unter „Deferred to Planning“ gelistet.
+Speicherbudget des Stroms, DLQ-Lesen ohne Drain, Anbindung des Anwendungs-Hooks
+bei Scheduler- und Workflow-Einreihungen, Fristen für „getrennt“ und
+„unbestätigt“, Versionsspanne zu swarmq — im Plan unter „Deferred to Planning“.
