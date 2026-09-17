@@ -32,6 +32,21 @@ RabbitMQ `amqp://guest:guest@localhost:5699/`, Valkey `valkey://localhost:6399/0
 (Container `swarmq-test-rabbit`, `swarmq-test-valkey`). Ein Worker mit
 Kontrollkanal zum Ausprobieren steht in `docs/reference/kontrollkanal-schnittstelle.md`.
 
+## Entwickeln
+
+```bash
+uv sync                                  # Abhaengigkeiten, Python 3.14
+uv run ruff check src/ tests/            # Stil
+uv run mypy src/swarmq_dashboard         # Typen
+uv run pytest tests/unit -q              # Einheiten
+uv run pytest tests/integration -q       # braucht die Testdienste unten
+```
+
+Die Integrationsstufe ueberspringt sich selbst, wenn Broker oder Valkey
+fehlen. Der Ereignisstrom liegt auf Valkey-Datenbankindex **1**, nicht 0 —
+die Integrationsvorrichtung von swarmq fuehrt auf Index 0 bei jedem Testlauf
+ein `FLUSHDB` aus.
+
 ## Stack (festgelegt 2026-09-17)
 
 Litestar + msgspec, Granian als Server (ein Arbeiter), Jinja2 mit HTMX 2 und
