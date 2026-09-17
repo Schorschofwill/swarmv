@@ -21,8 +21,8 @@ Flower. Eine Markenfarbe wurde erwogen und verworfen.
 |---|---|---|---|
 | ok | `#2E6F52` | `#6FBF95` | verbunden, fertig, Sollwert aktiv |
 | läuft | `#2A5F8F` | `#7FB2E5` | Task in Arbeit |
-| wartet | `#8A5E12` | `#D9A54A` | unbestätigter Sollwert, Wiederholung, Lücke im Strom, Konsument ohne Hook |
-| Fehler | `#A33A31` | `#E8817A` | gescheitert, Dead Letter, getrennter Worker |
+| wartet | `#8A5E12` | `#D9A54A` | unbestätigter Sollwert, Stornierung angefordert, Wiederholung, Lücke im Strom, Konsument ohne Hook |
+| Fehler | `#A33A31` | `#E8817A` | gescheitert, **abgelehnter Sollwert**, Dead Letter, getrennter Worker |
 | neutral | `#6E7068` | `#9A9C94` | wartend, storniert, keine Aussage |
 
 Jede Zustandsmarke ist Punkt **und** Wort — Farbe allein trägt nie die Aussage.
@@ -91,6 +91,15 @@ erst in eine zweite Runde:
 
 - **Sollwert unbestätigt** (R17) — Zeitpunkt des Sendens und „erneut senden",
   nicht nur ein Ladezeichen.
+- **Sollwert abgelehnt** (R16a, R17) — ein eigener, dauerhafter Zustand mit dem
+  Grund im Wortlaut. Kein „erneut senden": Ablehnung ist endgültig, Unbestätigt
+  ist vorübergehend, und wer beides gleich darstellt, schickt das Teammitglied
+  in eine Wiederholungsschleife.
+- **Sollwert je Supervisor** (R15a) — die Eingabe ist so beschriftet, nennt die
+  Zahl der meldenden Supervisoren und die daraus folgende Gesamtzahl. Wer „4"
+  als Gruppenzahl liest und die Gruppe läuft auf drei Hosts, bekommt zwölf.
+- **Stornierung angefordert** (R12a) — zwischen „läuft" und dem Ausgang; ein
+  rechnender Task bemerkt die Anforderung möglicherweise nie.
 - **Konsument ohne Hook** (R18) — als Hinweisleiste in der Gruppe, mit den
   beiden Zahlen, aus denen die Differenz entsteht.
 - **Worker getrennt** (R19) — Zeile bleibt stehen, gedämpft, mit dem Zeitpunkt
@@ -104,6 +113,10 @@ erst in eine zweite Runde:
   warum.
 - **Leeren** (R30, AE12) — die Bestätigung nennt Queue und Nachrichtenzahl, und
   der Knopf wiederholt die Zahl.
+- **Dead Letter sichten** (R28a) — die Seite sagt vor der Handlung, was sie
+  kostet: Umreihung, zurückgesetzter Zustellzähler, möglicher Verlust bei
+  einem Absturz. Die dauerhafte Liste kommt aus dem Verzeichnis und ist als
+  möglicherweise unvollständig beschriftet; sie kostet nichts.
 
 ## Bewusste Abweichungen
 
