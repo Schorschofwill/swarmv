@@ -636,7 +636,12 @@ async def test_die_herkunft_kommt_nicht_aus_einer_kopfzeile(tmp_path: Path) -> N
     vollstaendig umgehbar, indem der Angreifer je Versuch eine andere Adresse
     behauptet.
     """
-    async with _klient(_mit_konto(tmp_path)) as c:
+    # Eigener, groesserer Massstab: mit dem schnellen Massstab der uebrigen
+    # Tests liegt die erwartete Bremse bei 40 ms, und allein der Aufwand einer
+    # Anfrage ueberschreitet jede Schranke darunter -- die Zusicherung war
+    # damit blind fuer genau den Fehler, den sie sucht.
+    app = create_app(_mit_konto(tmp_path), hasher=_BILLIG, throttle_scale=0.4)
+    async with AsyncTestClient(app=app, base_url=BASIS) as c:
         # Je Versuch ein **anderes Konto** und eine andere behauptete Adresse.
         # Dass der Kontozaehler auch mitbremst, macht diesen Test sonst blind:
         # in einer ersten Fassung stand ueberall "ops", und die Bremse kam vom
@@ -654,7 +659,7 @@ async def test_die_herkunft_kommt_nicht_aus_einer_kopfzeile(tmp_path: Path) -> N
         beginn = time.perf_counter()
         await _anmelden(c, konto="wiederandersA", passwort="falsch")
         gebremst = time.perf_counter() - beginn
-    assert gebremst > 0.004, (
+    assert gebremst > 0.3, (
         f"sechs Fehlversuche von derselben echten Herkunft, aber mit wechselndem "
         f"X-Forwarded-For und wechselndem Konto, bremsen nicht ({gebremst:.3f} s) -- "
         "die frei waehlbare Kopfzeile wird als Herkunft benutzt"
