@@ -113,21 +113,47 @@ def connect(path: str | Path) -> sqlite3.Connection:
     """
     pfad = Path(path)
     pfad.parent.mkdir(parents=True, exist_ok=True)
-    neu = not pfad.exists()
-    if neu:
-        # Rechte vor dem ersten Schreiben setzen, nicht danach -- zwischen
-        # Anlegen und Nachziehen laege sonst ein Fenster, in dem sieben Tage
-        # Klartext-Argumente fuer jeden lesbar waeren (R7a).
-        os.close(os.open(pfad, os.O_CREAT | os.O_WRONLY, 0o600))
+    _sichern(pfad)
 
     con = sqlite3.connect(pfad, isolation_level=None)
-    con.execute("pragma journal_mode=wal")
-    con.execute("pragma synchronous=normal")
-    # Ohne sicheres Loeschen gibt ein DELETE die Seiten nur frei und laesst die
-    # Klartext-Argumente als Rohbytes stehen -- die Zusage "der Ablauf loescht
-    # dort wirklich" waere unwahr (R7a).
-    con.execute("pragma secure_delete=on")
-    con.execute(f"pragma busy_timeout={BUSY_TIMEOUT_MS}")
-    con.execute("pragma foreign_keys=on")
-    con.executescript(_SCHEMA)
+    try:
+        con.execute("pragma journal_mode=wal")
+        con.execute("pragma synchronous=normal")
+        # Ohne sicheres Loeschen gibt ein DELETE die Seiten nur frei und laesst
+        # die Klartext-Argumente als Rohbytes stehen -- die Zusage "der Ablauf
+        # loescht dort wirklich" waere unwahr (R7a). Gemessen ueber alle
+        # sechzehn Kombinationen der Loeschschritte: dieses Pragma traegt die
+        # Zusage allein, das Verdichten unabhaengig davon ebenso.
+        con.execute("pragma secure_delete=on")
+        con.execute(f"pragma busy_timeout={BUSY_TIMEOUT_MS}")
+        con.execute("pragma foreign_keys=on")
+        con.executescript(_SCHEMA)
+    except Exception:
+        # Sonst bleibt bei jedem Fehlversuch ein Dateizeiger offen. Ein Dienst,
+        # der laut Plan auch mit fehlenden Diensten hochfaehrt und es im Takt
+        # erneut versucht, liefe damit in EMFILE -- gemessen: 200 Fehlversuche,
+        # 200 offene Zeiger.
+        con.close()
+        raise
     return con
+
+
+def _sichern(pfad: Path) -> None:
+    """Datei anlegen, falls noetig, und in jedem Fall auf 0600 bringen.
+
+    Die Rechte werden **vor** dem ersten Schreiben gesetzt: zwischen Anlegen
+    und Nachziehen laege sonst ein Fenster, in dem sieben Tage
+    Klartext-Argumente fuer jeden lesbar waeren (R7a).
+
+    Und sie werden auch an einer **vorhandenen** Datei nachgezogen. Frueher
+    geschah das nur beim Anlegen -- eine Datei, die aus einer Ruecksicherung
+    kam, von einem ``ExecStartPre`` angelegt wurde oder aus einer aelteren
+    Fassung stammte, behielt dann ihre 0644, und damit auch ``-wal`` und
+    ``-shm``, die den Modus der Hauptdatei erben.
+    """
+    if not pfad.exists():
+        os.close(os.open(pfad, os.O_CREAT | os.O_WRONLY, 0o600))
+        return
+    modus = pfad.stat().st_mode & 0o777
+    if modus != 0o600:
+        os.chmod(pfad, 0o600)

@@ -40,6 +40,29 @@ _OUTCOMES = {
 }
 #: Ereignisart des Verlust-Ereignisses aus den Hooks (R4a).
 LOST_EVENT = "sqd_events_lost"
+#: Stellen, auf die die beiden Teile einer Stromkennung aufgefuellt werden.
+_ID_WIDTH = 20
+
+
+def _sort_id(stream_id: str | None, ev: Event) -> str:
+    """Stromkennung in eine Form bringen, in der Text- und Zahlenreihenfolge
+    uebereinstimmen.
+
+    Valkey vergibt ``<Millisekunden>-<Folgenummer>``. Die Millisekunden haben
+    feste Stellenzahl, die Folgenummer **nicht**: als Text verglichen sortiert
+    ``…-10`` vor ``…-9``. Ein Puffer, der elf Ereignisse einer Task in
+    derselben Millisekunde leert -- der Normalfall, nicht die Ausnahme --
+    liesse die Task-Ansicht den Abschluss vor dem Start zeigen. Deshalb wird
+    beim Schreiben aufgefuellt, nicht beim Lesen gerechnet: so bleibt die
+    Spalte ein brauchbarer Sortierschluessel und der Index greift.
+
+    Ohne Kennung -- nur in Tests -- tritt der Zeitpunkt an ihre Stelle.
+    """
+    if stream_id:
+        ms, trenner, folge = stream_id.partition("-")
+        if trenner and ms.isdigit() and folge.isdigit():
+            return f"{int(ms):0{_ID_WIDTH}d}-{int(folge):0{_ID_WIDTH}d}"
+    return f"{int(ev.ts * 1000):0{_ID_WIDTH}d}-{ev.type}"
 
 
 class DirectoryWriter:
@@ -48,10 +71,21 @@ class DirectoryWriter:
     def __init__(self, con: sqlite3.Connection) -> None:
         self._con = con
         self._con.row_factory = sqlite3.Row
+        #: Ereignisse, die die Datenbank nicht annahm. Kein stiller Verlust:
+        #: der Zustandsbericht weist die Zahl aus.
+        self.rejected = 0
+        #: Steht Klartext aus einer abgelaufenen Zeile noch im Journal, weil
+        #: der letzte Zusammenfuehrungsversuch auf einen Leser traf? Die
+        #: Loeschzusage aus R7a ist dann noch nicht eingeloest.
+        self.erasure_pending = False
 
     def close(self) -> None:
-        """Verbindung schliessen und das Journal zusammenfuehren."""
-        self._con.execute("pragma wal_checkpoint(truncate)")
+        """Verbindung schliessen und das Journal zusammenfuehren.
+
+        Auch hier wird das Ergebnis vermerkt: der Dienst darf nicht mit einem
+        Journal voller Klartext enden, ohne dass es jemand erfaehrt (R7a).
+        """
+        self.erasure_pending = self._checkpoint_besetzt()
         self._con.close()
 
     # -- Lesen -----------------------------------------------------------
@@ -83,16 +117,38 @@ class DirectoryWriter:
         Zeitpunkt und Art gebildete Kennung sie, was fuer Tests genuegt.
         """
         beruehrt = 0
-        for stream_id, ev in events:
-            if ev.type == LOST_EVENT:
-                self._mark_gap(ev)
-                continue
-            task_id = ev.payload.get("task_id")
-            if not isinstance(task_id, str) or not task_id:
-                continue  # Worker-Stammdaten, Scheduler-Signale: kein Task
-            self._upsert(task_id, ev, stream_id or f"{ev.ts:017.6f}:{ev.type}")
-            beruehrt += 1
-        self._con.commit()
+        # Ein Stapel, eine Transaktion. Die Verbindung laeuft im Autocommit,
+        # also waere sonst jede der drei bis vier Anweisungen je Ereignis eine
+        # eigene Transaktion: gemessen 197 ms statt 68 ms fuer tausend
+        # Ereignisse. Und der Stapel waere nicht atomar, obwohl der Leser
+        # seine Fortschrittsmarke erst danach setzt.
+        self._con.execute("begin")
+        try:
+            for stream_id, ev in events:
+                if ev.type == LOST_EVENT:
+                    self._mark_gap(ev, in_transaktion=True)
+                    continue
+                task_id = ev.payload.get("task_id")
+                if not isinstance(task_id, str) or not task_id:
+                    continue  # Worker-Stammdaten, Scheduler-Signale: kein Task
+                try:
+                    self._upsert(task_id, ev, _sort_id(stream_id, ev))
+                except sqlite3.Error:
+                    # Ein einzelnes missgestaltetes Ereignis darf die
+                    # Einspeisung nicht anhalten. Ohne diesen Schutz blieb die
+                    # Fortschrittsmarke stehen, der Leser las ewig denselben
+                    # Stapel, und *alle* spaeteren Tasks fehlten im
+                    # Verzeichnis -- der "liest sich wie nicht gelaufen"-Irrtum
+                    # in seiner schlimmsten Form. Der Zaehler ist die Spur;
+                    # die Nutzlast wird nicht mitgefuehrt, sie traegt
+                    # Klartext-Argumente (R7a).
+                    self.rejected += 1
+                    continue
+                beruehrt += 1
+            self._con.execute("commit")
+        except BaseException:
+            self._con.execute("rollback")
+            raise
         return beruehrt
 
     def _upsert(self, task_id: str, ev: Event, stream_id: str) -> None:
@@ -119,7 +175,7 @@ class DirectoryWriter:
              json.dumps(ev.payload, ensure_ascii=False, default=repr)),
         )
 
-    def mark_incomplete(self, von: float, bis: float) -> int:
+    def mark_incomplete(self, von: float, bis: float, *, in_transaktion: bool = False) -> int:
         """Zeilen in einer Zeitspanne als unvollstaendig markieren (R4a).
 
         Zwei Quellen benutzen das: das Verlust-Ereignis eines Hooks, und der
@@ -131,35 +187,70 @@ class DirectoryWriter:
             "update task set incomplete=1 where last_seen_at >= ? and first_seen_at <= ?",
             (von, bis),
         )
-        self._con.commit()
+        if not in_transaktion:
+            self._con.commit()
         return int(cur.rowcount)
 
-    def _mark_gap(self, ev: Event) -> None:
+    def _mark_gap(self, ev: Event, *, in_transaktion: bool = False) -> None:
         """Zeitspanne eines Verlust-Ereignisses uebernehmen."""
         von, bis = ev.payload.get("from_ts"), ev.payload.get("to_ts")
-        if von is None or bis is None:
+        if not isinstance(von, int | float) or not isinstance(bis, int | float):
             return
-        self.mark_incomplete(float(von), float(bis))
+        self.mark_incomplete(float(von), float(bis), in_transaktion=in_transaktion)
 
     # -- Aufbewahrung ----------------------------------------------------
 
     def expire(self, *, older_than: float) -> int:
         """Zeilen loeschen, deren letztes Lebenszeichen vor der Frist liegt.
 
-        Danach wird der Volltextindex aufgeraeumt und das Journal
-        zusammengefuehrt -- ohne beides blieben die Klartext-Argumente im Index
-        und im Journal stehen, und die Zusage "der Ablauf loescht dort
-        wirklich" waere unwahr (R7a).
+        Die Zusage aus R7a ist, dass danach nichts mehr da steht. Gemessen
+        ueber alle sechzehn Kombinationen der vier Schritte traegt sie
+        **secure_delete**, und unabhaengig davon auch **vacuum**: mit
+        eingeschaltetem sicherem Loeschen bleiben nie Rohbytes zurueck, ohne
+        es raeumt das Verdichten sie weg. Zwei unabhaengige Wege zu derselben
+        Zusage sind hier Absicht, nicht Zufall -- der Preis dieser Datei sind
+        sieben Tage Kundendaten im Klartext (KD11, KD16).
+
+        Die beiden anderen Schritte tun ausdruecklich **nicht**, was hier
+        frueher stand: das Aufraeumen des Volltextindex und das
+        Zusammenfuehren des Journals haben auf das Verbleiben der Zeichenkette
+        keinen messbaren Einfluss. Sie bleiben aus ihrem eigentlichen Grund --
+        der Index bleibt sonst zersplittert und das Journal waechst -- und
+        nicht als Teil der Loeschzusage.
         """
+        self.erasure_pending = False
         cur = self._con.execute("delete from task where last_seen_at < ?", (older_than,))
         entfernt = cur.rowcount
-        self._con.execute("delete from signal where ts < ?", (older_than,))
+        # Nur die Signale verwaister Tasks. Nach Zeitstempel zu loeschen nahm
+        # einer langlaufenden, noch lebenden Task ihre fruehen Signale weg --
+        # die Ansicht zeigte dann eine Historie, die mit dem Abschluss
+        # beginnt, ohne zu sagen, dass davor etwas stand.
+        self._con.execute(
+            "delete from signal where task_id not in (select task_id from task)"
+        )
         self._con.commit()
-        self._con.execute("insert into task_fts(task_fts) values('optimize')")
-        self._con.commit()
-        self._con.execute("pragma wal_checkpoint(truncate)")
-        self._con.execute("vacuum")
+        if entfernt:
+            # Nur wenn wirklich etwas abgelaufen ist. Gemessen kostete ein
+            # Lauf ohne eine einzige abgelaufene Zeile auf einer 656-MB-Datei
+            # 1,8 s und 1973 MB Schreiblast, weil VACUUM die Datei
+            # bedingungslos neu schreibt -- im Minutentakt waeren das 1,4 TB
+            # am Tag fuer nichts.
+            self._con.execute("insert into task_fts(task_fts) values('optimize')")
+            self._con.commit()
+            self._con.execute("vacuum")
+        # Zusammenfuehren zuletzt, damit auch die Seiten des Verdichtens in
+        # die Hauptdatei wandern. Und das Ergebnis **pruefen**: das Pragma
+        # wirft nicht, es meldet "besetzt" als Zeile. Traf es auf einen
+        # offenen Leser -- schon ein halb ausgelesener Cursor genuegt --,
+        # blieben die alten Seitenabbilder mit Klartext stehen, und expire()
+        # meldete trotzdem Erfolg. Die Zusage aus R7a waere still gebrochen.
+        self.erasure_pending = self._checkpoint_besetzt()
         return int(entfernt)
+
+    def _checkpoint_besetzt(self) -> bool:
+        """Journal zusammenfuehren. ``True``, wenn ein Leser es verhindert hat."""
+        zeile = self._con.execute("pragma wal_checkpoint(truncate)").fetchone()
+        return bool(zeile is not None and zeile[0])
 
 
 # --- Ergaenzungsregeln je Ereignisart -----------------------------------
@@ -173,7 +264,10 @@ def _stammdaten(zeile: sqlite3.Row, ev: Event) -> dict[str, Any]:
     felder: dict[str, Any] = {}
     for spalte in ("task_name", "queue", "workflow_id", "step_path"):
         wert = ev.payload.get(spalte)
-        if wert is not None and zeile[spalte] is None:
+        # Nur Zeichenketten. Die Nutzlasten der Bibliothek weichen an mehreren
+        # Stellen von ihrer Dokumentation ab; ein Objekt oder eine Liste hier
+        # liess die Bindung werfen und hielt die ganze Einspeisung an.
+        if isinstance(wert, str) and zeile[spalte] is None:
             felder[spalte] = wert
     if ev.type in ("task_pickup", "task_enqueue") and zeile["args_text"] is None:
         felder["args_text"] = json.dumps(
@@ -197,25 +291,71 @@ def _enqueued(zeile: sqlite3.Row, ev: Event) -> dict[str, Any]:
     return felder
 
 
+def _veraltet(zeile: sqlite3.Row, ev: Event) -> bool:
+    """Liegt ein verbuchter Ausgang **vor** diesem Ereignis?
+
+    Dann hat nach jenem Ausgang ein neuer Versuch begonnen, und der Ausgang
+    gehoert zum vorigen. Ihn stehen zu lassen ergaebe eine in sich
+    widerspruechliche Zeile -- Status "gescheitert" bei einem Endzeitpunkt
+    vor dem Startzeitpunkt -- und ein Teammitglied griffe womoeglich in einen
+    Versuch ein, der gerade normal laeuft.
+    """
+    bisher = zeile["outcome_ts"]
+    return bisher is not None and ev.ts > float(bisher)
+
+
+def _verworfener_ausgang() -> dict[str, Any]:
+    """Die Felder des ueberholten Ausgangs raeumen."""
+    return {"outcome_ts": None, "ended_at": None, "duration_ms": None, "error": None}
+
+
 def _started(zeile: sqlite3.Row, ev: Event) -> dict[str, Any]:
+    """Start verbuchen -- aber nur nach vorn.
+
+    Der Zeitvergleich ist noetig, weil die Stromreihenfolge die Reihenfolge
+    des Pufferleerens ist. Nach einem Fehlschlag und einer Wiederholung laeuft
+    dieselbe Task auf einem zweiten Worker; leert dessen Puffer zuerst, traefe
+    der **aeltere** Start zuletzt ein und die Ansicht naennte den falschen
+    Worker und eine zu lange Laufzeit. Dasselbe schuetzt vor einem doppelt
+    eingearbeiteten Stapel nach einem Absturz zwischen Einarbeiten und
+    Fortschrittsmarke.
+    """
+    bisher = zeile["started_at"]
+    if bisher is not None and ev.ts < float(bisher):
+        return {}  # ein aelterer Start sagt nichts Neues
     felder: dict[str, Any] = {"started_at": ev.ts, "worker_id": ev.source}
     if zeile["outcome_ts"] is None:
         felder["status"] = "laufend"
+    elif _veraltet(zeile, ev):
+        felder["status"] = "laufend"
+        felder.update(_verworfener_ausgang())
     return felder
 
 
 def _pickup(zeile: sqlite3.Row, ev: Event) -> dict[str, Any]:
-    felder: dict[str, Any] = {"worker_id": ev.source}
+    felder: dict[str, Any] = {}
+    if zeile["started_at"] is None or ev.ts >= float(zeile["started_at"]):
+        felder["worker_id"] = ev.source
     if zeile["status"] is None:
         felder["status"] = "laufend"
     return felder
 
 
 def _retrying(zeile: sqlite3.Row, ev: Event) -> dict[str, Any]:
+    """Wiederholung verbuchen. Der Zaehler wird nur gehoben.
+
+    Eine Wiederholung nach einem verbuchten Fehlschlag holt den Status
+    zurueck: der Task ist wieder unterwegs, nicht gescheitert (R6 kennt
+    "Wiederholung" als eigenen Zustand).
+    """
+    felder: dict[str, Any] = {}
     zaehler = ev.payload.get("retry_count")
     if isinstance(zaehler, int):
-        return {"retry_count": max(int(zeile["retry_count"]), zaehler)}
-    return {}
+        felder["retry_count"] = max(int(zeile["retry_count"]), zaehler)
+    if _veraltet(zeile, ev):
+        felder["status"] = "wiederholung"
+        felder.update(_verworfener_ausgang())
+    return felder
 
 
 def _outcome(zeile: sqlite3.Row, ev: Event) -> dict[str, Any]:
@@ -232,8 +372,9 @@ def _outcome(zeile: sqlite3.Row, ev: Event) -> dict[str, Any]:
     if bisher is not None and ev.ts < float(bisher):
         return {}
     felder: dict[str, Any] = {"status": status, "outcome_ts": ev.ts, "ended_at": ev.ts}
-    if (dauer := ev.payload.get("duration_ms")) is not None:
-        felder["duration_ms"] = dauer
+    dauer = ev.payload.get("duration_ms")
+    if isinstance(dauer, int | float) and not isinstance(dauer, bool):
+        felder["duration_ms"] = float(dauer)
     for schluessel in ("exception", "error"):
         if (fehler := ev.payload.get(schluessel)) is not None:
             felder["error"] = str(fehler)

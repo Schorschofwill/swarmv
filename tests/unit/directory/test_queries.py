@@ -24,6 +24,18 @@ Test-Liste (AGENTS.md):
 10. Die Signalfolge kommt in Stromreihenfolge, auch wenn Host-Zeitstempel
     gegeneinander laufen.
 11. Die Reichweite folgt dem aeltesten Eintrag des Verzeichnisses (R8).
+
+=== ZYKLUS 5: Befunde aus der Pruefung von Stufe B ===
+12. Die Signalfolge stimmt auch jenseits von Folgenummer neun.
+13. Das Blaettern ueberlebt echte Zeitstempel (Fliesskomma-Genauigkeit).
+14. Das Blaettern ueberlebt einen Gleichstand im Zeitpunkt.
+15. Umschliessende Leerzeichen zaehlen nicht zur Laenge des Suchbegriffs.
+
+=== ZYKLUS 6: Was aus einer Adresszeile kommt ===
+16. Steuerzeichen im Suchtext werfen nicht.
+17. Reiner Leerraum ist kein Filter ueber alles.
+18. Unbrauchbare Seitengroessen werden begrenzt.
+19. Unbrauchbare Anschlussmarken heissen "von vorn".
 """
 
 from __future__ import annotations
@@ -182,3 +194,129 @@ def test_reichweite_folgt_dem_aeltesten_eintrag(tmp_path: Path) -> None:
     w, q = _setup(tmp_path)
     w.apply([(None, _enq("a", 1000.0)), (None, _enq("b", 9000.0))])
     assert q.reach() == 1000.0
+
+
+# --- Zyklus 5: Befunde aus der Pruefung von Stufe B ----------------------
+
+
+def test_signalfolge_auch_jenseits_von_folgenummer_neun(tmp_path: Path) -> None:
+    """Die Folgenummer einer Stromkennung hat keine feste Stellenzahl.
+
+    Als Text verglichen sortiert ``…-10`` vor ``…-9``. Ein Puffer, der elf
+    Ereignisse einer Task in derselben Millisekunde leert -- der Normalfall
+    beim Leeren, nicht die Ausnahme -- liesse die Ansicht den Abschluss vor
+    dem Start zeigen.
+    """
+    w, q = _setup(tmp_path)
+    arten = [f"task_schritt_{i:02d}" for i in range(12)]
+    w.apply([(f"1700000000000-{i}", _sig("t", art, 100.0)) for i, art in enumerate(arten)])
+    folge = [s["type"] for s in q.signals("t")]
+    assert folge == arten, f"nach Text statt nach Zahl geordnet: {folge}"
+
+
+def test_blaettern_haelt_echte_zeitstempel_aus(tmp_path: Path) -> None:
+    """Mit ``time.time()``-Werten, nicht mit runden Testzahlen.
+
+    Ein Zeitpunkt um 1,8e9 traegt mehr Nachkommastellen, als sechs Stellen
+    fassen. Eine gerundete Blaettermarke liegt mal ueber, mal unter dem
+    gespeicherten Wert -- die Grenzzeile erscheint dann doppelt oder faellt
+    aus. Gemessen fiel mit Seitengroesse eins jede vierte Zeile aus.
+    """
+    import time
+
+    w, q = _setup(tmp_path)
+    basis = time.time()
+    w.apply([(None, _enq(f"t{i}", basis + i * 1e-7)) for i in range(6)])
+
+    gesehen: list[str] = []
+    cursor: str | None = None
+    for _ in range(12):
+        seite = q.search(Filter(), limit=1, cursor=cursor)
+        if not seite.rows:
+            break
+        gesehen.append(seite.rows[0]["task_id"])
+        cursor = seite.next_cursor
+        if cursor is None:
+            break
+    assert sorted(gesehen) == sorted(f"t{i}" for i in range(6)), (
+        f"beim Blaettern ueber echte Zeitstempel gingen Zeilen verloren: {gesehen}"
+    )
+    assert len(gesehen) == len(set(gesehen)), f"eine Zeile erschien doppelt: {gesehen}"
+
+
+def test_blaettern_bei_gleichem_zeitpunkt(tmp_path: Path) -> None:
+    """Ein Stapel gleichzeitig eingereihter Tasks traegt denselben Zeitpunkt.
+
+    Ohne die Task-Kennung als Entscheid verschwaende ein Gleichstand eine
+    Zeile oder zeigte sie zweimal.
+    """
+    w, q = _setup(tmp_path)
+    w.apply([(None, _enq(f"t{i}", 100.0)) for i in range(5)])
+    gesehen: list[str] = []
+    cursor: str | None = None
+    for _ in range(6):
+        seite = q.search(Filter(), limit=2, cursor=cursor)
+        if not seite.rows:
+            break
+        gesehen.extend(r["task_id"] for r in seite.rows)
+        cursor = seite.next_cursor
+        if cursor is None:
+            break
+    assert sorted(gesehen) == sorted(f"t{i}" for i in range(5)), f"unvollstaendig: {gesehen}"
+    assert len(gesehen) == len(set(gesehen)), f"doppelt: {gesehen}"
+
+
+def test_umschliessende_leerzeichen_zaehlen_nicht(tmp_path: Path) -> None:
+    w, q = _setup(tmp_path)
+    w.apply([(None, _enq("a41f", 100.0))])
+    assert [r["task_id"] for r in q.search(Filter(text="  812  ")).rows] == ["a41f"]
+    assert q.search(Filter(text="  8  ")).note is not None, (
+        "nach dem Beschneiden ist der Begriff zu kurz und muss benannt werden"
+    )
+
+
+# --- Zyklus 6: Was aus einer Adresszeile kommt, ist nicht vertrauenswuerdig
+
+
+def test_steuerzeichen_im_suchtext(tmp_path: Path) -> None:
+    """Ein NUL-Byte ist aus einer Adresszeile als ``%00`` trivial zu setzen
+    und liess SQLite mit "unterminated string" werfen, statt nichts zu finden.
+    """
+    w, q = _setup(tmp_path)
+    w.apply([(None, _enq("a41f", 100.0))])
+    assert [r["task_id"] for r in q.search(Filter(text="812\x00")).rows] == ["a41f"]
+    assert q.search(Filter(text="\x00\x01\x02")).note is not None, (
+        "nach dem Entfernen der Steuerzeichen bleibt nichts uebrig -- das muss "
+        "benannt werden, nicht als 'keine Treffer' durchgehen"
+    )
+
+
+def test_nur_leerraum_ist_kein_filter_ueber_alles(tmp_path: Path) -> None:
+    """Fiel der Leerraum-Text auf "kein Filter" durch, kamen **alle** Tasks
+    zurueck -- die Oberflaeche zeigte dann eine Suche, die nichts einschraenkt.
+    """
+    w, q = _setup(tmp_path)
+    w.apply([(None, _enq("a", 100.0)), (None, _enq("b", 200.0))])
+    seite = q.search(Filter(text="   "))
+    assert seite.rows == [], f"Leerraum lieferte {len(seite.rows)} Zeilen"
+    assert seite.note is not None
+
+
+def test_unbrauchbare_seitengroessen(tmp_path: Path) -> None:
+    w, q = _setup(tmp_path)
+    w.apply([(None, _enq(f"t{i}", 100.0 + i)) for i in range(5)])
+    assert len(q.search(Filter(), limit=0).rows) == 1, "limit=0 griff ins Leere"
+    assert len(q.search(Filter(), limit=-1).rows) == 1, "limit=-1 hiess 'alle Zeilen'"
+    assert len(q.search(Filter(), limit=10_000).rows) == 5
+
+
+def test_unbrauchbare_anschlussmarken(tmp_path: Path) -> None:
+    """``float`` nimmt ``nan`` und ``inf`` an, und beide sind Falschaussagen:
+    mit ``nan`` ist jeder Vergleich unwahr und die leere Seite liest sich als
+    "keine Treffer"; mit ``inf`` ist Seite zwei wieder Seite eins.
+    """
+    w, q = _setup(tmp_path)
+    w.apply([(None, _enq(f"t{i}", 100.0 + i)) for i in range(5)])
+    for marke in ("nan|x", "inf|x", "-inf|x", "keine-zahl|x", ""):
+        seite = q.search(Filter(), limit=10, cursor=marke)
+        assert len(seite.rows) == 5, f"Marke {marke!r} lieferte {len(seite.rows)} statt 5"

@@ -26,6 +26,8 @@ Drei Entscheidungen tragen diese Schicht, und jede hat einen Test:
 
 from __future__ import annotations
 
+import math
+import re
 import sqlite3
 from dataclasses import dataclass, field
 
@@ -33,6 +35,13 @@ from dataclasses import dataclass, field
 MIN_FRAGMENT = 3
 #: Zeilen je Seite, wenn nichts anderes verlangt wird.
 DEFAULT_LIMIT = 50
+#: Obergrenze je Seite. Ohne sie holte ein ``limit`` aus einer Adresszeile
+#: das ganze Verzeichnis in den Speicher.
+MAX_LIMIT = 500
+#: Steuerzeichen, die vor der Suche wegfallen. Ein NUL-Byte -- aus einer
+#: Adresszeile als ``%00`` trivial zu setzen -- liess SQLite mit
+#: "unterminated string" werfen, statt nichts zu finden.
+_STEUERZEICHEN = re.compile(r"[\x00-\x1f\x7f]")
 
 _TOO_SHORT = (
     f"Suchbegriffe brauchen mindestens {MIN_FRAGMENT} Zeichen -- "
@@ -81,17 +90,34 @@ def _quote(text: str) -> str:
 
 
 def _encode(zeile: sqlite3.Row) -> str:
-    """Schluessel einer Zeile als Anschlussmarke."""
-    return f"{float(zeile['first_seen_at']):017.6f}|{zeile['task_id']}"
+    """Schluessel einer Zeile als Anschlussmarke.
+
+    ``repr`` statt fester Nachkommastellen: ein Zeitstempel um 1,8e9 traegt
+    mehr Nachkommastellen, als sechs Stellen fassen. Gerundet liegt die Marke
+    mal ueber, mal unter dem gespeicherten Wert -- und die Grenzzeile
+    erschiene dann entweder doppelt oder gar nicht. Gemessen rundeten von 400
+    echten Zeitstempeln 162 nach oben; beim Durchblaettern mit Seitengroesse
+    eins fiel jede vierte Zeile aus. ``repr`` eines ``float`` laesst sich
+    verlustfrei zurueckuebersetzen.
+    """
+    return f"{float(zeile['first_seen_at'])!r}|{zeile['task_id']}"
 
 
 def _decode(cursor: str) -> tuple[float, str] | None:
-    """Anschlussmarke zurueckuebersetzen. Unbrauchbares heisst "von vorn"."""
+    """Anschlussmarke zurueckuebersetzen. Unbrauchbares heisst "von vorn".
+
+    ``float`` nimmt auch ``nan`` und ``inf`` an, und beide sind hier
+    Falschaussagen: mit ``nan`` ist jeder Vergleich unwahr, die Seite kommt
+    leer zurueck und liest sich als "keine Treffer"; mit ``inf`` steht die
+    Marke ueber allem, Seite zwei ist wieder Seite eins und das Blaettern
+    endet nie.
+    """
     marke, _, task_id = cursor.partition("|")
     try:
-        return (float(marke), task_id)
+        wert = float(marke)
     except ValueError:
         return None
+    return (wert, task_id) if math.isfinite(wert) else None
 
 
 class DirectoryQueries:
@@ -111,9 +137,17 @@ class DirectoryQueries:
         cursor: str | None = None,
     ) -> Page:
         """Gefilterte Task-Liste, neueste zuerst, seitenweise."""
-        text = f.text.strip()
-        if text and len(text) < MIN_FRAGMENT:
+        text = _STEUERZEICHEN.sub("", f.text).strip()
+        # Ein nicht leeres Suchfeld, von dem nichts Brauchbares uebrig bleibt,
+        # ist kein "kein Filter". Fiel es darauf durch, kamen **alle** Tasks
+        # zurueck, und die Oberflaeche zeigte eine Suche, die nichts
+        # einschraenkt.
+        if f.text and len(text) < MIN_FRAGMENT:
             return Page(note=_TOO_SHORT)
+        # Eine Seitengroesse aus einer Adresszeile ist nicht vertrauenswuerdig:
+        # 0 liess die Anschlussmarke ins Leere greifen, -1 hiess fuer SQLite
+        # "alle Zeilen".
+        limit = max(1, min(int(limit), MAX_LIMIT))
 
         quelle = "task"
         bedingungen: list[str] = []

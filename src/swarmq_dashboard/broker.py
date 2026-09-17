@@ -26,6 +26,8 @@ Beide in die Tiefe gerechnet beantworteten die Frage "staut es sich?" falsch.
 
 from __future__ import annotations
 
+import asyncio
+import re
 from dataclasses import dataclass, field
 
 import aio_pika
@@ -37,6 +39,18 @@ PRIORITY_SUFFIXES = ("high", "low")
 DELAY_SUFFIX = "DQ"
 #: Zusatz der Dead-Letter-Queue.
 DEAD_LETTER_SUFFIX = "XQ"
+#: Zeitgrenze fuer den Verbindungsaufbau. Ohne sie haengt der Aufbau gegen
+#: einen Server, der TCP annimmt und dann schweigt -- eine Firewall, die
+#: verwirft statt abzulehnen -- unbegrenzt, und mit ihm der ganze Takt.
+CONNECT_TIMEOUT_S = 10.0
+#: Was AMQP als Queue-Namen zulaesst -- der Zeichenvorrat der Protokollschicht,
+#: Zeichen fuer Zeichen gegen sie abgeglichen, nicht enger gefasst. Eine
+#: strengere eigene Regel waere genau die stille Falschaussage, gegen die
+#: dieses Modul sonst argumentiert: ``ablage/eingang`` und ``queue 1`` sind
+#: zulaessige Namen, und "gibt es nicht" darueber waere schlicht falsch.
+#: Der Zeichenvorrat wird **vor** dem Netz geprueft, darum ist sein Verstoss
+#: kein Broker-Ausfall.
+_NAME = re.compile(r"^[ #+,\-./0-9:@A-Z_a-z]{1,255}$")
 
 
 class BrokerUnavailable(RuntimeError):
@@ -65,6 +79,10 @@ class QueueStats:
     dead_letter: int = 0
     #: Konsumenten: Maximum ueber die Varianten, nicht ihre Summe (R18).
     consumers: int = 0
+    #: Warum diese Queue nicht gemessen werden konnte, oder ``None``. Von
+    #: ``exists=False`` unterschieden: "gibt es nicht" ist eine Antwort,
+    #: "keine Antwort" ist keine.
+    error: str | None = None
     #: Je abgefragter AMQP-Queue die Nachrichtenzahl, ``None`` fuer
     #: "nicht vorhanden". Die Oberflaeche kann damit zwischen "leer" und
     #: "gibt es nicht" unterscheiden, statt beides als 0 zu zeigen.
@@ -90,7 +108,13 @@ class BrokerObserver:
         """Verbindung aufbauen. Idempotent."""
         if self._connection is None or self._connection.is_closed:
             try:
-                self._connection = await aio_pika.connect_robust(self._url)
+                self._connection = await asyncio.wait_for(
+                    aio_pika.connect_robust(self._url), timeout=CONNECT_TIMEOUT_S
+                )
+            except TimeoutError as exc:
+                raise BrokerUnavailable(
+                    f"keine Antwort binnen {CONNECT_TIMEOUT_S:.0f} s"
+                ) from exc
             except Exception as exc:
                 raise BrokerUnavailable(str(exc)) from exc
 
@@ -146,8 +170,19 @@ class BrokerObserver:
         und ein Dashboard mit dreissig Queues brauchte sonst schlagartig
         hundertfuenfzig. Die Abfrage laeuft im Hintergrund, nicht im
         Anfrageweg -- Dauer ist hier billiger als eine Kanalflut.
+
+        Je Queue gekapselt: faellt der Broker mitten im Lauf weg, sind die
+        bereits gemessenen Queues trotzdem etwas wert. Frueher verwarf eine
+        einzige Ausnahme den ganzen Lauf, und die Oberflaeche bekam nichts
+        statt "diese acht sind gemessen, fuer den Rest fehlt die Antwort".
         """
-        return {q: await self.stats(q) for q in queues}
+        ergebnis: dict[str, QueueStats] = {}
+        for q in queues:
+            try:
+                ergebnis[q] = await self.stats(q)
+            except BrokerUnavailable as exc:
+                ergebnis[q] = QueueStats(queue=q, error=str(exc))
+        return ergebnis
 
     # -- Eine einzelne Deklaration ---------------------------------------
 
@@ -159,6 +194,14 @@ class BrokerObserver:
         Deklaration fehlschlaegt, und ein geteilter Kanal waere danach fuer
         alle weiteren Abfragen tot.
         """
+        if not _NAME.match(name):
+            # Die Protokollschicht lehnte den Namen ohnehin lokal ab, und das
+            # ``except Exception`` unten machte daraus einen Broker-Ausfall --
+            # also genau die Aussage, die einem Netzfehler vorbehalten ist.
+            # Ein einziger fauler Name aus einem Stammdaten-Ereignis blendete
+            # so die Tiefen *aller* Queues aus. Schon ein Basisname ab 252
+            # Zeichen genuegte, weil ``.high`` die Grenze von 255 sprengt.
+            return _Probe(messages=None, consumers=0)
         if self._connection is None or self._connection.is_closed:
             raise BrokerUnavailable("der Broker ist nicht verbunden")
 
@@ -178,10 +221,23 @@ class BrokerObserver:
         except Exception as exc:
             raise BrokerUnavailable(f"{name}: {exc}") from exc
         finally:
-            if kanal is not None and not kanal.is_closed:
+            if kanal is not None:
+                # **Unbedingt** schliessen, auch wenn der Kanal sich selbst
+                # schon als geschlossen meldet. Gemessen: nach einer
+                # fehlgeschlagenen Deklaration steht ``is_closed`` auf True,
+                # ein ``RobustChannel`` stellt sich danach aber im Hintergrund
+                # selbst wieder her und hinterlaesst einen frischen, offenen
+                # Kanal, den niemand mehr besitzt. Mit der frueheren Pruefung
+                # blieben nach 50 Fehlproben 50 Kanaele auf dem Broker stehen;
+                # bei dreissig Queues, von denen die Prioritaets- und
+                # Verzoegerungsvarianten meist fehlen, war die ausgehandelte
+                # Obergrenze von 2047 nach siebzehn Takten erreicht. Dann
+                # verwirft RabbitMQ die **ganze** Verbindung, und die robuste
+                # Wiederverbindung stellt die verwaisten Kanaele gleich mit
+                # wieder her -- der Dienst kam ohne Neustart nicht zurueck.
                 try:
                     await kanal.close()
                 except Exception:
-                    # Ein Kanal, der sich nicht schliessen laesst, ist bereits
-                    # fort. Daran darf keine Abfrage scheitern.
+                    # Ein Kanal, der sich nicht schliessen laesst, ist fort.
+                    # Daran darf keine Abfrage scheitern.
                     pass

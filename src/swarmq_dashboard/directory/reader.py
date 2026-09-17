@@ -23,6 +23,8 @@ from swarmq_dashboard.events import TASK_STREAM, decode
 
 #: Schluessel des Lesefortschritts in der Fortschritts-Tabelle.
 POSITION_KEY = "stream_pos"
+#: Schluessel des Merkers "der Neuaufbau hat den Strom eingeholt" (R8).
+CAUGHT_UP_KEY = "rebuild_done"
 #: Wie viele Eintraege ein Durchlauf hoechstens holt.
 DEFAULT_BATCH = 1000
 
@@ -60,6 +62,11 @@ class StreamReader:
         self._batch = batch
         self._behind = False
         self._gap: tuple[str, str] | None = None
+        self._dropped = 0
+        #: Grenze der letzten eigenen Altersbereinigung, in Millisekunden.
+        #: Was davor lag, ist abgelaufen und nicht verloren -- der Unterschied
+        #: entscheidet, ob ein Rueckstand gemeldet wird.
+        self._expired_before_ms = 0
 
     # -- Zustand ---------------------------------------------------------
 
@@ -75,11 +82,17 @@ class StreamReader:
     def rebuilding(self) -> bool:
         """Baut der Dienst das Verzeichnis gerade aus dem Strom neu auf (R8)?
 
-        Kein gemerkter Fortschritt heisst: die Datei ist neu oder war weg. Die
-        Oberflaeche muss das sagen, statt eine halbe Liste als vollstaendig
-        auszugeben.
+        Massgeblich ist, ob der Leser den Strom **eingeholt** hat, nicht ob er
+        schon einmal gelesen hat. Ein Durchlauf holt hoechstens ``batch``
+        Eintraege; bei einem halben Jahrhundert Ereignissen im Strom waeren
+        nach dem ersten Durchlauf tausend Zeilen da und fuenfhundertausend
+        nicht. Die Kopfzeile meldete "kein Neuaufbau" ueber eine zu 99 %
+        leere Liste -- genau die halbe Wahrheit, die R8 ausschliesst.
         """
-        return not self.position
+        zeile = self.writer._con.execute(
+            "select value from progress where key=?", (CAUGHT_UP_KEY,)
+        ).fetchone()
+        return zeile is None
 
     @property
     def behind(self) -> bool:
@@ -93,14 +106,24 @@ class StreamReader:
             "rebuilding": self.rebuilding,
             "behind": self._behind,
             "gap": self._gap,
+            "dropped": self._dropped,
+            # Ereignisse, die die Datenbank nicht annahm, und ein noch nicht
+            # eingeloestes Loeschversprechen (R7a). Beides gehoert in die
+            # Kopfzeile: still bleiben hiesse, eine Luecke als Vollstaendigkeit
+            # auszugeben.
+            "rejected": self.writer.rejected,
+            "erasure_pending": self.writer.erasure_pending,
             "oldest_entry": self.writer.oldest_entry(),
         }
 
     def _set_position(self, stream_id: str) -> None:
+        self._merken(POSITION_KEY, stream_id)
+
+    def _merken(self, schluessel: str, wert: str) -> None:
         self.writer._con.execute(
             "insert into progress(key, value) values (?,?) "
             "on conflict(key) do update set value=excluded.value",
-            (POSITION_KEY, stream_id),
+            (schluessel, wert),
         )
         self.writer._con.commit()
 
@@ -113,34 +136,62 @@ class StreamReader:
 
         eintraege = await self._source.read_after(self._key, vorher, self._batch)
         if not eintraege:
-            if self.rebuilding:
-                # Leerer Strom und leeres Verzeichnis: der Neuaufbau ist fertig,
-                # es gab nur nichts aufzubauen.
+            # Nichts mehr zu holen heisst: eingeholt. Auch wenn es nichts
+            # aufzubauen gab.
+            self._merken(CAUGHT_UP_KEY, "1")
+            if not vorher:
                 self._set_position("0-0")
             return 0
 
         ereignisse: list[tuple[str | None, Any]] = []
+        ausgefallen: list[float] = []
         for sid, roh in eintraege:
             try:
                 ereignisse.append((sid, decode(roh)))
             except Exception:
-                # Ein unlesbarer Eintrag darf den Leser nicht anhalten; er
-                # zaehlt als Luecke, nicht als Absturz.
-                continue
+                # Ein unlesbarer Eintrag darf den Leser nicht anhalten -- aber
+                # er darf auch nicht spurlos verschwinden. Ein Hook einer
+                # neueren Fassung mit einem unbekannten Herkunftswert liesse
+                # sonst *alle* seine Ereignisse lautlos ausfallen, und die
+                # betroffenen Tasks laesen sich als "nie gelaufen". Also wird
+                # die Zeitspanne markiert, wie bei jedem anderen Verlust (R4a).
+                self._dropped += 1
+                ausgefallen.append(_as_tuple(sid)[0] / 1000.0)
         self.writer.apply(ereignisse)
+        # Erst **nach** dem Einarbeiten markieren: die Zeilen dieses Stapels
+        # gibt es vorher noch gar nicht, und gerade sie sind die, die den
+        # Ausfall ueberspannen koennen.
+        for augenblick in ausgefallen:
+            self.writer.mark_incomplete(augenblick, augenblick)
         self._set_position(eintraege[-1][0])
+        if len(eintraege) < self._batch:
+            self._merken(CAUGHT_UP_KEY, "1")
         return len(eintraege)
 
     async def _check_behind(self, position: str) -> None:
         """Gemerkten Stand gegen das aelteste noch vorhandene Ereignis halten."""
         if not position or position == "0-0":
             self._behind = False
+            self._gap = None
             return
         aeltester = await self._source.min_id(self._key)
         if aeltester is None:
             self._behind = False
+            self._gap = None
             return
         if _as_tuple(aeltester) <= _as_tuple(position):
+            # Kein Rueckstand mehr -- und die alte Luecke mit fortnehmen, sonst
+            # meldete der Bericht "kein Rueckstand" und nennte zugleich eine
+            # Zeitspanne, was sich selbst widerspricht.
+            self._behind = False
+            self._gap = None
+            return
+        if _as_tuple(position)[0] < self._expired_before_ms:
+            # Die eigene Altersbereinigung erklaert den Abstand: was vor der
+            # Aufbewahrungsgrenze lag, ist abgelaufen, nicht verloren. Ohne
+            # diese Unterscheidung meldete jeder Pflegelauf einen Rueckstand
+            # und markierte gesunde Zeilen dauerhaft als unvollstaendig --
+            # ein lauter Fehlalarm, der die echte Meldung entwertet.
             self._behind = False
             return
 
@@ -168,5 +219,6 @@ class StreamReader:
         """
         jetzt = time.time() if now is None else now
         grenze = jetzt - retention_s
-        await self._source.trim_by_min_id(self._key, int(grenze * 1000))
+        self._expired_before_ms = int(grenze * 1000)
+        await self._source.trim_by_min_id(self._key, self._expired_before_ms)
         self.writer.expire(older_than=grenze)

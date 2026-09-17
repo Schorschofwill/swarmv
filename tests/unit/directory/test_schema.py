@@ -24,6 +24,7 @@ Test-Liste (AGENTS.md):
 
 from __future__ import annotations
 
+import sqlite3
 import stat
 from pathlib import Path
 
@@ -101,3 +102,45 @@ def test_datei_nur_fuer_den_dienstbenutzer(tmp_path: Path) -> None:
     assert modus & (stat.S_IRGRP | stat.S_IROTH) == 0, (
         f"Rechte {oct(modus)}: sieben Tage Klartext-Argumente sind fuer andere lesbar (R7a)"
     )
+
+
+def test_rechte_werden_auch_an_bestandsdateien_nachgezogen(tmp_path: Path) -> None:
+    """Covers R7a.
+
+    Eine Datei aus einer Ruecksicherung, aus einem ``ExecStartPre`` oder aus
+    einer aelteren Fassung des Pakets bringt ihre eigenen Rechte mit. Wurden
+    sie nur beim Anlegen gesetzt, lagen dort sieben Tage Klartext fuer jeden
+    lesbar -- samt ``-wal`` und ``-shm``, die den Modus der Hauptdatei erben.
+    """
+    pfad = tmp_path / "v.sqlite3"
+    pfad.touch(mode=0o644)
+    assert pfad.stat().st_mode & 0o077, "Vorbedingung: die Datei ist fremdlesbar"
+
+    con = connect(pfad)
+    con.execute("insert into task(task_id, origin, first_seen_at, last_seen_at) "
+                "values ('a','einreihung',1.0,1.0)")
+    con.commit()
+    con.close()
+
+    for begleiter in ("", "-wal", "-shm"):
+        f = pfad.with_name(pfad.name + begleiter)
+        if f.exists():
+            assert not (f.stat().st_mode & 0o077), (
+                f"{f.name} ist fuer andere lesbar: {oct(f.stat().st_mode & 0o777)}"
+            )
+
+
+def test_fehlgeschlagenes_oeffnen_laesst_keinen_zeiger_offen(tmp_path: Path) -> None:
+    """Ein Dienst, der es im Takt erneut versucht, liefe sonst in EMFILE."""
+    import gc
+
+    pfad = tmp_path / "kaputt.sqlite3"
+    pfad.write_bytes(b"SQLite format 3\x00" + b"\xff" * 4000)
+    for _ in range(5):
+        try:
+            connect(pfad)
+        except sqlite3.DatabaseError:
+            pass
+    gc.collect()
+    offen = [o for o in gc.get_objects() if isinstance(o, sqlite3.Connection)]
+    assert not offen, f"{len(offen)} Verbindungen blieben offen"
