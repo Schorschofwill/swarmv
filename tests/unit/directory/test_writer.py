@@ -67,8 +67,8 @@ def _sig(tid: str, typ: str, ts: float, **kw: object) -> Event:
 
 def test_gewoehnlicher_weg(tmp_path: Path) -> None:
     w = _w(tmp_path)
-    w.apply([_enq("a"), _sig("a", "task_started", 101.0),
-             _sig("a", "task_completed", 105.0, duration_ms=4812.0)])
+    w.apply([(None, _enq("a")), (None, _sig("a", "task_started", 101.0)),
+             (None, _sig("a", "task_completed", 105.0, duration_ms=4812.0))])
     z = w.row("a")
     assert z["status"] == "fertig"
     assert z["enqueued_at"] == 100.0
@@ -80,7 +80,7 @@ def test_gewoehnlicher_weg(tmp_path: Path) -> None:
 
 def test_herkunft_einreihung(tmp_path: Path) -> None:
     w = _w(tmp_path)
-    w.apply([_enq("a")])
+    w.apply([(None, _enq("a"))])
     assert w.row("a")["origin"] == "einreihung"
     assert w.row("a")["status"] == "wartend"
 
@@ -90,7 +90,7 @@ def test_herkunft_einreihung(tmp_path: Path) -> None:
 
 def test_aufgreifen_ohne_einreihung(tmp_path: Path) -> None:
     w = _w(tmp_path)
-    w.apply([_pick("a"), _sig("a", "task_started", 101.5)])
+    w.apply([(None, _pick("a")), (None, _sig("a", "task_started", 101.5))])
     z = w.row("a")
     assert z["origin"] == "aufgreifen"
     assert z["enqueued_at"] is None, "ein geratener Einreihungszeitpunkt waere eine Falschaussage"
@@ -99,7 +99,7 @@ def test_aufgreifen_ohne_einreihung(tmp_path: Path) -> None:
 
 def test_verspaetete_einreihung_hebt_die_herkunft(tmp_path: Path) -> None:
     w = _w(tmp_path)
-    w.apply([_pick("a"), _enq("a", ts=99.0)])
+    w.apply([(None, _pick("a")), (None, _enq("a", ts=99.0))])
     z = w.row("a")
     assert z["origin"] == "einreihung"
     assert z["enqueued_at"] == 99.0
@@ -107,7 +107,7 @@ def test_verspaetete_einreihung_hebt_die_herkunft(tmp_path: Path) -> None:
 
 def test_zweite_einreihung_senkt_die_herkunft_nicht(tmp_path: Path) -> None:
     w = _w(tmp_path)
-    w.apply([_enq("a", ts=99.0), _pick("a")])
+    w.apply([(None, _enq("a", ts=99.0)), (None, _pick("a"))])
     assert w.row("a")["origin"] == "einreihung"
     assert w.row("a")["enqueued_at"] == 99.0
 
@@ -116,8 +116,8 @@ def test_zweite_einreihung_senkt_die_herkunft_nicht(tmp_path: Path) -> None:
 
 
 def test_vertauschte_reihenfolge_ergibt_denselben_zustand(tmp_path: Path) -> None:
-    geordnet = [_enq("a"), _sig("a", "task_started", 101.0),
-                _sig("a", "task_completed", 105.0, duration_ms=1.0)]
+    geordnet = [(None, _enq("a")), (None, _sig("a", "task_started", 101.0)),
+                (None, _sig("a", "task_completed", 105.0, duration_ms=1.0))]
     a = _w(tmp_path / "a")
     a.apply(geordnet)
     b = _w(tmp_path / "b")
@@ -130,15 +130,15 @@ def test_zeitlich_spaeterer_ausgang_gewinnt(tmp_path: Path) -> None:
     w = _w(tmp_path)
     # Der Fehlschlag traegt den frueheren Zeitstempel, kommt aber zuletzt an --
     # so sieht es aus, wenn zwei Puffer ungleich schnell leeren.
-    w.apply([_sig("a", "task_completed", 105.0, duration_ms=1.0),
-             _sig("a", "task_failed", 103.0, exception="boom")])
+    w.apply([(None, _sig("a", "task_completed", 105.0, duration_ms=1.0)),
+             (None, _sig("a", "task_failed", 103.0, exception="boom"))])
     assert w.row("a")["status"] == "fertig", "der aeltere Ausgang hat den juengeren verdraengt"
 
 
 def test_wiederholung_ueberschreibt_den_ausgang_nicht(tmp_path: Path) -> None:
     w = _w(tmp_path)
-    w.apply([_sig("a", "task_retrying", 102.0, retry_count=2, delay=1.0),
-             _sig("a", "task_completed", 105.0, duration_ms=1.0)])
+    w.apply([(None, _sig("a", "task_retrying", 102.0, retry_count=2, delay=1.0)),
+             (None, _sig("a", "task_completed", 105.0, duration_ms=1.0))])
     z = w.row("a")
     assert z["retry_count"] == 2
     assert z["status"] == "fertig"
@@ -149,10 +149,10 @@ def test_wiederholung_ueberschreibt_den_ausgang_nicht(tmp_path: Path) -> None:
 
 def test_verlustereignis_markiert_die_zeitspanne(tmp_path: Path) -> None:
     w = _w(tmp_path)
-    w.apply([_enq("a", ts=100.0), _enq("b", ts=200.0)])
+    w.apply([(None, _enq("a", ts=100.0)), (None, _enq("b", ts=200.0))])
     verlust = Event(type="sqd_events_lost", ts=250.0, source="phx-w1:0", origin=Origin.PICKUP,
                     payload={"worker_id": "phx-w1:0", "count": 12, "from_ts": 90.0, "to_ts": 150.0})
-    w.apply([verlust])
+    w.apply([(None, verlust)])
     assert w.row("a")["incomplete"] == 1, "die Zeile in der Luecke ist nicht markiert"
     assert w.row("b")["incomplete"] == 0, "eine Zeile ausserhalb der Luecke wurde markiert"
 
@@ -162,7 +162,7 @@ def test_verlustereignis_markiert_die_zeitspanne(tmp_path: Path) -> None:
 
 def test_ablauf_loescht_alte_und_laesst_junge(tmp_path: Path) -> None:
     w = _w(tmp_path)
-    w.apply([_enq("alt", ts=1000.0), _enq("neu", ts=9000.0)])
+    w.apply([(None, _enq("alt", ts=1000.0)), (None, _enq("neu", ts=9000.0))])
     entfernt = w.expire(older_than=5000.0)
     assert entfernt == 1
     assert w.row("alt") is None
@@ -180,7 +180,7 @@ def test_nach_dem_ablauf_keine_rohbytes(tmp_path: Path) -> None:
     pfad = tmp_path / "v.sqlite3"
     w = DirectoryWriter(connect(pfad))
     geheim = "Maria-Musterfrau-AT611904300234573201"
-    w.apply([_enq("alt", ts=1000.0, kwargs={"kunde": geheim})])
+    w.apply([(None, _enq("alt", ts=1000.0, kwargs={"kunde": geheim}))])
 
     begleiter = [pfad.with_name(pfad.name + s) for s in ("", "-wal", "-shm")]
     assert any(geheim.encode() in f.read_bytes() for f in begleiter if f.exists()), (
@@ -197,7 +197,7 @@ def test_nach_dem_ablauf_keine_rohbytes(tmp_path: Path) -> None:
 
 def test_reichweite_folgt_dem_aeltesten_eintrag(tmp_path: Path) -> None:
     w = _w(tmp_path)
-    w.apply([_enq("a", ts=1000.0), _enq("b", ts=9000.0)])
+    w.apply([(None, _enq("a", ts=1000.0)), (None, _enq("b", ts=9000.0))])
     assert w.oldest_entry() == 1000.0
     w.expire(older_than=5000.0)
     assert w.oldest_entry() == 9000.0

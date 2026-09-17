@@ -12,6 +12,9 @@ Test-Liste (AGENTS.md):
 
 === ZYKLUS 3: Aufbewahrung (R5, R9) ===
 5. Die Pflege trimmt den echten Strom nach Alter.
+
+=== ZYKLUS 4: Signalfolge (R11) ===
+6. Die echten Valkey-Kennungen ordnen die Signalfolge, auch gegen Uhrversatz.
 """
 
 from __future__ import annotations
@@ -23,6 +26,7 @@ from pathlib import Path
 
 import pytest
 
+from swarmq_dashboard.directory.queries import DirectoryQueries
 from swarmq_dashboard.directory.reader import StreamReader
 from swarmq_dashboard.directory.schema import connect
 from swarmq_dashboard.directory.writer import DirectoryWriter
@@ -123,4 +127,38 @@ async def test_pflege_trimmt_den_echten_strom(
     assert await client.length(key) == 1, "der alte Stromeintrag blieb stehen"
     assert r.writer.row("alt") is None, "die alte Zeile blieb im Verzeichnis"
     assert r.writer.row("neu") is not None
+    r.writer.close()
+
+
+async def test_signalfolge_folgt_den_echten_stromkennungen(
+    tmp_path: Path, strom: tuple[ValkeyStreamClient, str]
+) -> None:
+    """Der Uhrversatz ist hier keine Erfindung: der Anwendungs-Hook laeuft auf
+    einem anderen Host als der Worker-Hook, und schon Sekunden Versatz lassen
+    das Aufgreifen vor der Einreihung erscheinen. Der Strom hat nur eine Uhr.
+    """
+    client, key = strom
+    jetzt = time.time()
+    folge_ein = [
+        Event(type="task_enqueue", ts=jetzt, source="app", origin=Origin.ENQUEUE,
+              payload={"task_id": "s1", "task_name": "render_pdf", "queue": "reports",
+                       "args": [], "kwargs": {}}),
+        # Zeitstempel rueckwaerts -- so sieht Versatz zwischen zwei Hosts aus.
+        Event(type="task_started", ts=jetzt - 5.0, source="phx-w1:0", origin=Origin.PICKUP,
+              payload={"task_id": "s1", "task_name": "render_pdf", "queue": "reports"}),
+        Event(type="task_completed", ts=jetzt - 3.0, source="phx-w1:0", origin=Origin.PICKUP,
+              payload={"task_id": "s1", "task_name": "render_pdf", "duration_ms": 12.0}),
+    ]
+    # Einzeln angehaengt, damit Valkey drei aufsteigende Kennungen vergibt.
+    for ev in folge_ein:
+        await client.xadd_batch(key, [encode(ev)], 10_000)
+
+    con = connect(tmp_path / "v.sqlite3")
+    r = StreamReader(client, DirectoryWriter(con), stream_key=key)
+    assert await r.poll_once() == 3
+
+    folge = [s["type"] for s in DirectoryQueries(con).signals("s1")]
+    assert folge == ["task_enqueue", "task_started", "task_completed"], (
+        f"nach Host-Zeit geordnet statt nach Strom: {folge}"
+    )
     r.writer.close()

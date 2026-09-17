@@ -73,22 +73,29 @@ class DirectoryWriter:
 
     # -- Schreiben -------------------------------------------------------
 
-    def apply(self, events: list[Event]) -> int:
-        """Einen Stapel Ereignisse einarbeiten. Gibt die Zahl der Zeilen zurueck."""
+    def apply(self, events: list[tuple[str | None, Event]]) -> int:
+        """Einen Stapel ``(Stromkennung, Ereignis)`` einarbeiten.
+
+        Die Stromkennung wird mitgefuehrt, weil die Signalfolge einer
+        Task-Ansicht danach geordnet wird und nicht nach den Zeitstempeln der
+        Hosts (R11): Anwendungs- und Worker-Host haben getrennte Uhren, der
+        Strom hat nur eine. ``None`` ist erlaubt -- dann ersetzt eine aus
+        Zeitpunkt und Art gebildete Kennung sie, was fuer Tests genuegt.
+        """
         beruehrt = 0
-        for ev in events:
+        for stream_id, ev in events:
             if ev.type == LOST_EVENT:
                 self._mark_gap(ev)
                 continue
             task_id = ev.payload.get("task_id")
             if not isinstance(task_id, str) or not task_id:
                 continue  # Worker-Stammdaten, Scheduler-Signale: kein Task
-            self._upsert(task_id, ev)
+            self._upsert(task_id, ev, stream_id or f"{ev.ts:017.6f}:{ev.type}")
             beruehrt += 1
         self._con.commit()
         return beruehrt
 
-    def _upsert(self, task_id: str, ev: Event) -> None:
+    def _upsert(self, task_id: str, ev: Event, stream_id: str) -> None:
         """Eine Zeile um das ergaenzen, was dieses Ereignis sicher weiss."""
         vorhanden = self.row(task_id)
         if vorhanden is None:
@@ -108,7 +115,7 @@ class DirectoryWriter:
         self._con.execute(f"update task set {satz} where task_id=?", (*felder.values(), task_id))
         self._con.execute(
             "insert or ignore into signal(task_id, type, ts, stream_id, payload) values (?,?,?,?,?)",
-            (task_id, ev.type, ev.ts, f"{ev.ts}:{ev.type}",
+            (task_id, ev.type, ev.ts, stream_id,
              json.dumps(ev.payload, ensure_ascii=False, default=repr)),
         )
 

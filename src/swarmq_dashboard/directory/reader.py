@@ -119,10 +119,10 @@ class StreamReader:
                 self._set_position("0-0")
             return 0
 
-        ereignisse = []
-        for _, roh in eintraege:
+        ereignisse: list[tuple[str | None, Any]] = []
+        for sid, roh in eintraege:
             try:
-                ereignisse.append(decode(roh))
+                ereignisse.append((sid, decode(roh)))
             except Exception:
                 # Ein unlesbarer Eintrag darf den Leser nicht anhalten; er
                 # zaehlt als Luecke, nicht als Absturz.
