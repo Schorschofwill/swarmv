@@ -18,6 +18,10 @@ dependencies = [
     # sonst erst beim Start mit einem ImportError treffen (R1, KTD14).
     "msgspec>=0.18",
     "valkey>=6",
+    # Die Zahl der Konsumenten je Queue gibt die Bibliothek nicht heraus; das
+    # Dashboard deklariert dafuer selbst passiv (KTD11, broker.py). Der eine
+    # begruendete Ausbruch aus R1a -- und damit eine eigene Abhaengigkeit.
+    "aio-pika>=9.4,<11",
     "litestar>=2.24,<3",
     "granian>=2.8,<3",
     "jinja2>=3.1",

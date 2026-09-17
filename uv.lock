@@ -1099,6 +1099,7 @@ name = "swarmq-dashboard"
 version = "0.1.0.dev0"
 source = { editable = "." }
 dependencies = [
+    { name = "aio-pika" },
     { name = "argon2-cffi" },
     { name = "granian" },
     { name = "jinja2" },
@@ -1120,6 +1121,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aio-pika", specifier = ">=9.4,<11" },
     { name = "argon2-cffi", specifier = ">=25.1" },
     { name = "granian", specifier = ">=2.8,<3" },
     { name = "jinja2", specifier = ">=3.1" },
