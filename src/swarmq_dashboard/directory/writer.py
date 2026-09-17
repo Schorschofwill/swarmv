@@ -105,6 +105,16 @@ class DirectoryWriter:
         wert = self._con.execute("select min(first_seen_at) from task").fetchone()[0]
         return float(wert) if wert is not None else None
 
+    def newest_entry(self) -> float | None:
+        """Zeitpunkt des juengsten Lebenszeichens -- die Aktualitaet aus R26.
+
+        Gemessen am Verzeichnis, nicht am Strom: die Kopfzeile sagt, wie
+        aktuell das ist, was das Teammitglied **sieht**, nicht was irgendwo
+        ankam.
+        """
+        wert = self._con.execute("select max(last_seen_at) from task").fetchone()[0]
+        return float(wert) if wert is not None else None
+
     # -- Schreiben -------------------------------------------------------
 
     def apply(self, events: list[tuple[str | None, Event]]) -> int:

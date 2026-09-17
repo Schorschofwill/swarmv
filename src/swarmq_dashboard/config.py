@@ -35,6 +35,10 @@ DEFAULT_DISCONNECTED_AFTER_S = 40.0
 DEFAULT_SESSION_IDLE_S = 1800.0
 #: Rueckstau je Live-Verbindung (R13a), gerechnet fuer 100.000 Tasks am Tag.
 DEFAULT_BACKLOG_CAP = 300
+#: Ab wann der Ereignisstrom als verzoegert gilt (R26). Grosszuegiger als die
+#: Leerlauf-Takte der Hooks: ein ruhiges System schickt minutenlang nichts,
+#: und "verzoegert" soll eine Stoerung heissen, nicht Ruhe.
+DEFAULT_STREAM_STALE_AFTER_S = 120.0
 #: Valkey-Datenbankindex des Ereignisstroms (KTD9). Nicht 0 -- die
 #: Integrationsvorrichtung der Bibliothek leert Index 0 bei jedem Testlauf.
 DEFAULT_STREAM_DB = 1
@@ -139,6 +143,20 @@ class DashboardConfig:
     disconnected_after_s: float
     session_idle_s: float
     backlog_cap: int
+    stream_stale_after_s: float = DEFAULT_STREAM_STALE_AFTER_S
+    #: Ort der beiden lokalen Dateien (R7a, KTD8). Dokumentiert in
+    #: docs/reference/betrieb.md.
+    data_dir: Path = Path(DEFAULT_DATA_DIR)
+
+    @property
+    def directory_file(self) -> Path:
+        """Pfad der Verzeichnisdatei."""
+        return directory_path(self.data_dir)
+
+    @property
+    def accounts_file(self) -> Path:
+        """Pfad der Kontendatei."""
+        return accounts_path(self.data_dir)
 
     @property
     def shares_backend_db(self) -> bool:
@@ -166,6 +184,10 @@ class DashboardConfig:
             disconnected_after_s=_number(source, "SQD_DISCONNECTED_AFTER_S", DEFAULT_DISCONNECTED_AFTER_S, float),
             session_idle_s=_number(source, "SQD_SESSION_IDLE_S", DEFAULT_SESSION_IDLE_S, float),
             backlog_cap=_number(source, "SQD_BACKLOG_CAP", DEFAULT_BACKLOG_CAP, int),
+            stream_stale_after_s=_number(
+                source, "SQD_STREAM_STALE_AFTER_S", DEFAULT_STREAM_STALE_AFTER_S, float
+            ),
+            data_dir=Path(source.get("SQD_DATA_DIR", "").strip() or DEFAULT_DATA_DIR),
         )
 
 
