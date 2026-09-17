@@ -92,7 +92,7 @@ Dieser Plan besitzt das Dashboard-Paket. Die Aufteilung darunter ist der heutige
 - R6. Das Verzeichnis kennt je Task Kennung, Name, Queue, Status, Zeitpunkte von Einreihung, Start und Ende, Laufzeit, Worker, Wiederholungszähler, Fehlertext und Ergebnisverweis, soweit die Signale sie tragen. Statuswerte sind: wartend, laufend, fertig, gescheitert, storniert, Stornierung angefordert, Wiederholung, Dead Letter, abgelaufen, abgewiesen.
 - R7. Das Verzeichnis hält die Argumente jedes Tasks im Klartext, wie sie beim Einreihen übergeben wurden.
 - R7a. Die Argumente liegen im Verzeichnis des Dienstes und damit als Datei auf dem Dashboard-Host. Die Datei gehört dem Dienstbenutzer und ist nur für ihn lesbar; ihr Ort ist konfigurierbar und dokumentiert; der Ablauf aus R5 löscht die Zeilen dort tatsächlich.
-- R8. Die Oberfläche zeigt, wie weit die Suche gerade zurückreicht, gemessen am ältesten Eintrag des Verzeichnisses, und weist einen laufenden Neuaufbau des Verzeichnisses als solchen aus.
+- R8. Die Oberfläche zeigt, wie weit die Suche gerade zurückreicht, gemessen am ältesten Eintrag des Verzeichnisses, und weist einen laufenden Neuaufbau des Verzeichnisses als solchen aus. *(Aus der Prüfung von Stufe B: der Ablauf löscht nach `last_seen_at`, der älteste Eintrag misst `first_seen_at`. Eine einzige langlebige Zeile zieht die gemeldete Reichweite darum beliebig weit zurück, obwohl der Zeitraum dazwischen längst gelöscht ist. Die Beschriftung muss „ältester Eintrag“ sagen, nicht „so weit reicht die Suche“ — oder die Zahl an der Aufbewahrungsgrenze abschneiden. Entscheidung gehört zu U9.)*
 - R9. Der Speicherbedarf des Stroms ist begrenzt und für den Betreiber sichtbar: der Dienst trimmt den Strom nach Alter und deckelt ihn zusätzlich nach Länge, und zeigt Füllstand und wirksame Grenze an. Das Budget des Task-Stroms begrenzt den Audit-Strom aus R27 nicht.
 
 **Tasks**
@@ -475,6 +475,7 @@ Fünf Stufen. A bis D bilden die erste Auslieferung gegen die veröffentlichte B
 | U10 | Audit-Strom | `src/swarmq_dashboard/audit.py` | U2, U17 |
 | U11 | Seitengerüst, Stylesheet, statische Dateien | `src/swarmq_dashboard/web/templates/`, `static/` | U17 |
 | U12 | Live-Schicht | `src/swarmq_dashboard/web/stream.py` | U17, U11 |
+| U12a | Lücken dauerhaft halten und in der Suche benennen | `src/swarmq_dashboard/directory/` | U5, U6 |
 | U13 | Tasks-Liste, Detail, Stornieren | `src/swarmq_dashboard/web/routes/tasks.py` | U6, U10, U11, U12 |
 | U14 | Worker-Übersicht mit eingeschränkten Zuständen | `src/swarmq_dashboard/web/routes/worker.py` | U7, U10, U11, U12 |
 | U15 | Dead-Letter-Seite | `src/swarmq_dashboard/dlq.py`, `web/routes/dlq.py` | U6, U7, U10, U11 |
@@ -703,6 +704,9 @@ Fünf Stufen. A bis D bilden die erste Auslieferung gegen die veröffentlichte B
   2. Jeder Lebenszyklus-Schritt darf einzeln fehlschlagen, ohne den Start zu verhindern; der Fehlgrund wird festgehalten und von der Kopfzeile ausgewiesen.
   3. Zustandsanzeige für Broker, Backend und Strom nach R26; fehlt eines beim Start, fährt der Dienst hoch und benennt die Ursache (R33).
   4. Dieselbe Kopfzeile nennt Füllstand und wirksame Grenze des Stroms (R9) und weist einen Rückstand des Lesers hinter dem Längendeckel aus (U5) — ohne das kann der Deckel Ereignisse abschneiden, bevor sie jemand gesehen hat.
+  5. **Bindend aus der Prüfung von Stufe B:** `poll_once()` und `expire()` sind `async`, arbeiten aber synchron auf SQLite. Gemessen blockiert ein Neuaufbau den Ereignis-Loop zu 100 % (50.000 Ereignisse in 10,3 s, Einzelblockade bis 1430 ms; hochgerechnet auf sieben Tage à 100 k Tasks rund **sieben Minuten**), und ein Pflegelauf auf einem vollen Verzeichnis (971 MB) blockiert **6,4 s**. Granian fährt einen Arbeiter — in dieser Zeit beantwortet das Dashboard keine einzige Anfrage, ausgerechnet während es „ich baue gerade neu auf“ sagen soll. Beide gehören in `asyncio.to_thread`; `schema.connect()` braucht dafür `check_same_thread=False` oder eine Verbindung je Thread.
+  6. **Bindend aus der Prüfung von Stufe B:** `ValkeyStreamClient.connect()` baut keine Verbindung auf — `Valkey.from_url` erzeugt nur ein Objekt, und ein Aufruf gegen einen toten Port kehrt in 0,1 ms ohne Fehler zurück. Für „fährt hoch und benennt, was fehlt“ gibt es an dieser Stelle also nichts zu prüfen. Der Aufbau braucht ein abschließendes `ping()` und einen eigenen Ausnahmetyp (`StreamUnavailable`) als Gegenstück zu `BrokerUnavailable`, dazu `socket_connect_timeout`.
+  7. **Bindend aus der Prüfung von Stufe B:** Die Kopfzeile weist auch `rejected` (Ereignisse, die die Datenbank nicht annahm), `dropped` (unlesbare Stromeinträge) und `erasure_pending` (ein Löschversprechen aus R7a, das noch aussteht, weil ein offener Leser das Zusammenführen des Journals verhindert hat) aus. Alle drei liefert `StreamReader.status()` bereits.
 - **Test scenarios:**
   - Der Dienst fährt hoch, wenn das Backend nicht erreichbar ist, und die Kopfzeile nennt das.
   - Der Dienst fährt hoch, wenn der Broker nicht erreichbar ist, und die Kopfzeile nennt das.
@@ -711,6 +715,9 @@ Fünf Stufen. A bis D bilden die erste Auslieferung gegen die veröffentlichte B
   - Die Kopfzeile nennt Füllstand und wirksame Grenze des Stroms.
   - Liegt der Lesefortschritt vor dem ältesten Stromeintrag, weist die Kopfzeile den Rückstand aus.
   - Integration: ein vollständiger Start mit allen Diensten meldet dreimal erreichbar.
+  - Ein Pflegelauf auf einem großen Verzeichnis hält den Ereignis-Loop nicht länger als eine benannte Grenze an (gemessen, nicht geschätzt).
+  - Ein Aufbau gegen ein totes Valkey scheitert erkennbar, statt lautlos durchzukommen.
+  - Die Kopfzeile nennt ein ausstehendes Löschversprechen.
 - **Verification:** Der Dienst ist mit abgeschaltetem Valkey und abgeschaltetem Broker erreichbar und sagt an einer Stelle, was fehlt.
 
 ### U17. Sitzung, CSRF, Anmeldebremse
@@ -811,6 +818,23 @@ Fünf Stufen. A bis D bilden die erste Auslieferung gegen die veröffentlichte B
   - Integration: zwei Ansichten desselben Kontos bekommen dasselbe Ereignis; das Abmelden der einen beendet die andere nicht.
 - **Verification:** Eine über Nacht offene Ansicht wächst nicht im Speicher und zeigt nach Sitzungsablauf den Anmelde-Zustand.
 
+### U12a. Lücken dauerhaft halten und in der Suche benennen
+
+- **Goal:** Eine Zeitspanne, aus der Ereignisse fehlen, bleibt über einen Neustart hinweg bekannt und wird in jeder Suche benannt, die sie schneidet.
+- **Requirements:** R4a, R8
+- **Dependencies:** U5, U6
+- **Files:** `src/swarmq_dashboard/directory/schema.py`, `queries.py`, `reader.py`
+- **Warum, aus der Prüfung von Stufe B:** Heute sind Lücken auf zwei Wegen bekannt, und beide reichen nicht. `incomplete=1` markiert nur **überlebende** Zeilen — die verlorenen Tasks haben definitionsgemäß gar keine Zeile, und `mark_incomplete` meldet dann schlicht `0`. Und `behind`/`gap` leben nur im Arbeitsspeicher; ein Neustart vergisst sie. Reproduziert: der Leser steht bei t=100, der Längendeckel wirft die 500 Tasks zwischen t=200 und t=700 ungelesen weg, ein Durchlauf später steht `behind=False`. Ein Teammitglied filtert auf 300…600 und bekommt „keine Treffer“ über einen Zeitraum, der nie gelesen wurde. Das ist genau die stille Falschaussage, gegen die das vierte Erfolgskriterium steht.
+- **Approach:**
+  1. Eine Tabelle `gap(von, bis, quelle, erkannt_am)`; der Strom-Leser und das Verlust-Ereignis der Hooks schreiben beide dorthin.
+  2. `Page.note` trägt den Hinweis, wenn der Filterzeitraum eine Lücke schneidet — dieselbe Sprache wie beim zu kurzen Suchbegriff.
+  3. Lücken laufen mit derselben Frist ab wie die Tasks; ein Neustart findet sie wieder.
+- **Test scenarios:**
+  - Eine Suche über eine Lückenspanne liefert eine benannte Rückmeldung statt „keine Treffer“.
+  - Die Lücke überlebt einen Neustart des Lesers.
+  - Eine Suche außerhalb der Spanne bekommt keinen Hinweis.
+- **Verification:** Nach einem künstlich erzeugten Rückstand meldet die Task-Liste für die betroffene Spanne, dass dort etwas fehlen kann.
+
 ### U13. Tasks-Liste, Detail, Stornieren
 
 - **Goal:** Die Frage aus dem Hauptfluss im Browser beantworten und den Task bei Bedarf stornieren.
@@ -846,7 +870,7 @@ Fünf Stufen. A bis D bilden die erste Auslieferung gegen die veröffentlichte B
 - **Approach:**
   1. Worker aus dem Strom nach Gruppe gebündelt; der Gruppenschlüssel kommt aus der Rückmeldung, sonst aus der sortierten Queue-Menge des Workers.
   2. Verbundenheit nach der Quellenreihenfolge aus KTD10; die Seite nennt die verwendete Quelle und markiert sich als eingeschränkt, wenn nur die schwächste greift (R14a). Die Frist für „getrennt“ hängt an der Quelle und ist aus deren Takt abgeleitet: 40 s bei der Supervisor-Rückmeldung, 35 s beim Lebenszeichen, ein langer konfigurierbarer Wert beim letzten Signal überhaupt.
-  3. Konsumenten-Differenz je Queue aus U7, einschließlich des Falls „kein Worker bekannt“ (R18).
+  3. Konsumenten-Differenz je Queue aus U7, einschließlich des Falls „kein Worker bekannt“ (R18). `stats_many()` liefert seit der Prüfung von Stufe B je Queue entweder Zahlen oder einen Fehlergrund — die Ansicht zeigt beides nebeneinander, nie einen leeren Bereich für eine Queue, die nur nicht erreichbar war. Gemessen kostet ein Lauf über dreißig Queues bei 4 ms Netzlaufzeit 3,2 s, weil jede Queue fünf Proben nacheinander fährt; die fünf Proben **einer** Queue gleichzeitig zu fahren kürzt das um den Faktor fünf und öffnet trotzdem nur fünf Kanäle gleichzeitig.
   4. Getrennte Worker bleiben mit dem Zeitpunkt des letzten Lebenszeichens stehen; Entfernen ist eine Aktion mit Audit-Eintrag (R19).
   5. Ohne Kontrollkanal entfallen Spielraum, die vom Supervisor gemeldete Slot-Kapazität und der Sollwert; an ihrer Stelle steht eine benannte Ursache, kein leerer Bereich (R33). Die Zahl wartender Nachrichten **bleibt** — sie kommt aus U7 und hängt nicht am Kontrollkanal. Sie ist in der ersten Auslieferung die einzige Antwort auf „staut es sich?“.
 - **Test scenarios:**
