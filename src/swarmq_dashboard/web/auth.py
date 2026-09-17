@@ -242,6 +242,11 @@ class LoginThrottle:
     def __init__(self, path: str | Path, *, clock: Clock = time.time) -> None:
         self._con = _connect(Path(path))
         self._clock = clock
+        # Wie im Sitzungs- und im Kontenspeicher. Ohne ihn brachen unter
+        # sechzehn Faden fuenfzehn mit "bad parameter or other API misuse" ab,
+        # und der Zaehlerstand war danach falsch -- eine Bremse, die still
+        # nicht zaehlt. Die Behebung der Loop-Blockade loest genau das aus.
+        self._riegel = threading.Lock()
 
     def close(self) -> None:
         self._con.close()
@@ -256,9 +261,10 @@ class LoginThrottle:
         )
 
     def _delay(self, scope: str, key: str) -> float:
-        zeile = self._con.execute(
-            "select count, last_at from login_attempt where scope=? and key=?", (scope, key)
-        ).fetchone()
+        with self._riegel:
+            zeile = self._con.execute(
+                "select count, last_at from login_attempt where scope=? and key=?", (scope, key)
+            ).fetchone()
         if zeile is None:
             return 0.0
         if (self._clock() - float(zeile["last_at"])) > ATTEMPT_TTL_S:
@@ -287,32 +293,35 @@ class LoginThrottle:
         Aufzaehlung, die die Pruefung in ``accounts`` verhindert (AE9a).
         """
         jetzt = self._clock()
-        for scope, key in (("account", account), ("origin", origin)):
-            self._con.execute(
-                "insert into login_attempt(scope, key, count, last_at) values (?,?,1,?) "
-                "on conflict(scope, key) do update set "
-                # Ein verfallener Zaehler beginnt von vorn statt weiterzulaufen.
-                "count = case when ? - login_attempt.last_at > ? then 1 "
-                "else login_attempt.count + 1 end, last_at = ?",
-                (scope, key, jetzt, jetzt, ATTEMPT_TTL_S, jetzt),
-            )
-        self._con.commit()
+        with self._riegel:
+            for scope, key in (("account", account), ("origin", origin)):
+                self._con.execute(
+                    "insert into login_attempt(scope, key, count, last_at) values (?,?,1,?) "
+                    "on conflict(scope, key) do update set "
+                    # Ein verfallener Zaehler beginnt von vorn, statt weiterzulaufen.
+                    "count = case when ? - login_attempt.last_at > ? then 1 "
+                    "else login_attempt.count + 1 end, last_at = ?",
+                    (scope, key, jetzt, jetzt, ATTEMPT_TTL_S, jetzt),
+                )
+            self._con.commit()
 
     def record_success(self, account: str, origin: str) -> None:
         """Nach gelungener Anmeldung beide Zaehler loeschen."""
-        self._con.execute(
-            "delete from login_attempt where (scope='account' and key=?) "
-            "or (scope='origin' and key=?)",
-            (account, origin),
-        )
-        self._con.commit()
+        with self._riegel:
+            self._con.execute(
+                "delete from login_attempt where (scope='account' and key=?) "
+                "or (scope='origin' and key=?)",
+                (account, origin),
+            )
+            self._con.commit()
 
     def purge(self) -> int:
         """Verfallene Zaehler entfernen."""
-        cur = self._con.execute(
-            "delete from login_attempt where ? - last_at > ?", (self._clock(), ATTEMPT_TTL_S)
-        )
-        self._con.commit()
+        with self._riegel:
+            cur = self._con.execute(
+                "delete from login_attempt where ? - last_at > ?", (self._clock(), ATTEMPT_TTL_S)
+            )
+            self._con.commit()
         return int(cur.rowcount)
 
 

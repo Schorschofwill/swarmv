@@ -329,3 +329,62 @@ def test_eine_leere_sitzung_ist_keine_zeile_wert(pfad: Path) -> None:
         assert uebrig == 0, "eine leere Sitzung hat eine Zeile erzeugt"
 
     asyncio.run(lauf())
+
+
+def test_die_bremse_ist_aus_mehreren_faden_benutzbar(pfad: Path) -> None:
+    """Die Anmeldung gehoert in einen Arbeitsfaden -- und dort ist jede
+    Anfrage moeglicherweise ein anderer.
+
+    Gemessen brachen ohne Riegel unter sechzehn Faden fuenfzehn mit
+    "bad parameter or other API misuse" ab, und der Zaehlerstand war danach
+    falsch: eine Bremse, die still nicht zaehlt. Die Behebung der
+    Loop-Blockade loest genau diesen Schaden aus -- der Riegel muss zuerst da
+    sein.
+    """
+    import threading as _th
+
+    b = LoginThrottle(pfad)
+    fehler: list[str] = []
+
+    def arbeiten() -> None:
+        try:
+            for _ in range(25):
+                b.record_failure("ops", "10.0.0.1")
+                b.delay_for("ops", "10.0.0.1")
+        except Exception as exc:
+            fehler.append(f"{type(exc).__name__}: {exc}")
+
+    faeden = [_th.Thread(target=arbeiten) for _ in range(8)]
+    for f in faeden:
+        f.start()
+    for f in faeden:
+        f.join()
+    assert not fehler, f"{len(fehler)} von 8 Faden brachen ab: {fehler[0]}"
+    stand = b._con.execute(
+        "select count from login_attempt where scope='account' and key='ops'"
+    ).fetchone()[0]
+    assert stand == 200, f"gezaehlt wurden {stand} von 200 Versuchen"
+
+
+def test_der_sitzungsspeicher_ist_aus_mehreren_faden_benutzbar(pfad: Path) -> None:
+    import asyncio
+    import threading as _th
+
+    s = SqliteStore(pfad)
+    fehler: list[str] = []
+
+    def arbeiten(n: int) -> None:
+        try:
+            for i in range(25):
+                asyncio.run(s.set(_kennung(n * 100 + i), b'{"account":"ops"}', expires_in=600))
+        except Exception as exc:
+            fehler.append(f"{type(exc).__name__}: {exc}")
+
+    faeden = [_th.Thread(target=arbeiten, args=(n,)) for n in range(8)]
+    for f in faeden:
+        f.start()
+    for f in faeden:
+        f.join()
+    assert not fehler, f"{len(fehler)} von 8 Faden brachen ab: {fehler[0]}"
+    zahl = s._con.execute("select count(*) from session_store").fetchone()[0]
+    assert zahl == 200, f"{zahl} von 200 Zeilen geschrieben"

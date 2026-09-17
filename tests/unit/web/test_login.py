@@ -42,6 +42,7 @@ Test-Liste (AGENTS.md):
 19. Die Anmeldung von einer Fremdseite wird abgewiesen.
 20. Abmelden nimmt das Merkmal mit.
 21. Ohne Kontenspeicher wird abgewiesen, nicht durchgelassen.
+22. Die Anmeldung rechnet nicht im Faden des Ereignis-Loops.
 """
 
 from __future__ import annotations
@@ -505,3 +506,46 @@ async def test_ohne_kontenspeicher_wird_abgewiesen(tmp_path: Path) -> None:
         assert antwort.status_code in (302, 303, 401), (
             "ohne Kontenspeicher wurde die Anfrage durchgelassen"
         )
+
+
+async def test_die_anmeldung_blockiert_den_ereignis_loop_nicht(tmp_path: Path) -> None:
+    """Granian faehrt **einen** Arbeiter.
+
+    Gemessen liefen argon2 (42-52 ms) und die SQLite-Schreibvorgaenge der
+    Bremse vollstaendig im Loop-Faden: bei zwanzig gleichzeitigen Anmeldungen
+    stand er 805 ms still, bei fuenfzig 2003 ms -- und damit auch
+    ``/api/status``, die Seite, die im Vorfall zuerst gerufen wird. Dieselbe
+    Bauart hat der Plan fuer U9 nach der Pruefung von Stufe B bereits als
+    bindend verworfen; der Anmelde-Handler zog nicht nach.
+
+    Geprueft wird der **Ort**, nicht die Dauer: eine Zeitschranke haengt an
+    der Auslastung der Maschine und wird auf einem vollen Bauserver launisch.
+    """
+    import asyncio as _aio
+
+    config = _mit_konto(tmp_path)
+    app = create_app(config, hasher=_BILLIG)
+    gesehen: list[bool] = []
+
+    async with AsyncTestClient(app=app, base_url=BASIS) as c:
+        speicher = app.state.services.accounts
+        echt = speicher.verify
+
+        def beobachtet(name: str, passwort: str) -> bool:
+            # In einem Arbeitsfaden laeuft **kein** Ereignis-Loop. Das ist der
+            # verlaessliche Unterschied: die Faden-Kennung taugt hier nicht,
+            # weil der Testklient die Anwendung ohnehin in einem anderen Faden
+            # faehrt als die Testfunktion -- diese Zusicherung war in einer
+            # ersten Fassung deshalb schon vor der Korrektur gruen.
+            try:
+                _aio.get_running_loop()
+                gesehen.append(True)      # im Loop -- er steht so lange still
+            except RuntimeError:
+                gesehen.append(False)     # im Arbeitsfaden
+            return bool(echt(name, passwort))
+
+        speicher.verify = beobachtet
+        await _anmelden(c, passwort="falsch")
+
+    assert gesehen, "die Passwortpruefung lief gar nicht"
+    assert not any(gesehen), "die Passwortpruefung lief im Ereignis-Loop"

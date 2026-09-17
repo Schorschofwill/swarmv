@@ -132,16 +132,21 @@ async def login(
     # alle gleichzeitig laufenden Versuche lasen denselben Stand: zehn
     # gleichzeitige Versuche kosteten 1,02 s statt 10 s. Die Verzoegerung wirkte
     # je Anfrage statt je Angreifer. Ein Erfolg loescht die Zaehler ohnehin.
-    services.throttle.record_failure(konto, herkunft)
-    verzoegerung = services.throttle.delay_for(konto, herkunft)
+    # Alles Rechnende in einen Arbeitsfaden. argon2 kostet mit den Vorgaben
+    # rund fuenfzig Millisekunden, und die Bremse schreibt dabei zweimal mit
+    # echtem fsync; im Ereignis-Loop stand bei fuenfzig gleichzeitigen
+    # Versuchen der ganze Dienst zwei Sekunden still -- auch ``/api/status``,
+    # die Seite des Vorfalls. Granian faehrt einen Arbeiter.
+    await asyncio.to_thread(services.throttle.record_failure, konto, herkunft)
+    verzoegerung = await asyncio.to_thread(services.throttle.delay_for, konto, herkunft)
     if verzoegerung:
         await asyncio.sleep(verzoegerung)
 
     # Kein ``konto and``: die Abkuerzung war messbar billiger (4,8 ms gegen
     # 48 ms) und damit genau die fruehe Rueckkehr, die ``verify`` sonst
     # ueberall vermeidet.
-    if services.accounts.verify(konto, passwort):
-        services.throttle.record_success(konto, herkunft)
+    if await asyncio.to_thread(services.accounts.verify, konto, passwort):
+        await asyncio.to_thread(services.throttle.record_success, konto, herkunft)
         # Neue Sitzungskennung nach der Anmeldung: sonst behaelt eine vor dem
         # Anmelden untergeschobene Kennung ihre Gueltigkeit (Sitzungsuebernahme).
         await rotate_session_id(request)

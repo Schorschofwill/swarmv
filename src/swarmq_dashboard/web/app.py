@@ -14,9 +14,10 @@ das ``refresh()`` im Takt nachfuehrt.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +45,10 @@ from swarmq_dashboard.web.routes.login import login, login_form, logout
 
 #: Name, unter dem der Sitzungsspeicher registriert wird.
 SESSION_STORE_NAME = "sessions"
+#: Takt der Pflege: Erreichbarkeit nachfuehren, Abgelaufenes wegraeumen.
+#: Grosszuegig -- die Rueckkehr eines Dienstes darf ein paar Sekunden spaeter
+#: sichtbar werden, aber nicht erst nach einem Neustart.
+DEFAULT_MAINTENANCE_S = 10.0
 
 
 class UnknownStore(LookupError):
@@ -57,7 +62,47 @@ class UnknownStore(LookupError):
     """
 
 
-def build_store_registry(accounts_file: Path) -> StoreRegistry:
+class _SitzungsWeiche(Store):
+    """Reicht an den Sitzungsspeicher des Dienstes durch.
+
+    Die Registratur wird **einmal** beim Bauen der Anwendung angelegt, der
+    Speicher gehoert aber dem Lebenszyklus: er wird beim Hochfahren geoeffnet
+    und beim Herunterfahren geschlossen. Ohne diese Weiche haelt die
+    Registratur eine Verbindung fest, die nach dem ersten Herunterfahren tot
+    ist -- ein zweiter Lebenszyklus derselben Anwendung faende sie geschlossen
+    vor. Genau daran sind zwei Tests haengengeblieben.
+    """
+
+    def __init__(self, services: Services) -> None:
+        self._services = services
+
+    @property
+    def _echt(self) -> SqliteStore:
+        speicher = self._services._sitzungsspeicher
+        if speicher is None:
+            raise RuntimeError("der Sitzungsspeicher ist nicht geoeffnet")
+        return speicher
+
+    async def set(self, key: str, value: str | bytes, expires_in: object = None) -> None:
+        await self._echt.set(key, value, expires_in)  # type: ignore[arg-type]
+
+    async def get(self, key: str, renew_for: object = None) -> bytes | None:
+        return await self._echt.get(key, renew_for)  # type: ignore[arg-type]
+
+    async def delete(self, key: str) -> None:
+        await self._echt.delete(key)
+
+    async def delete_all(self) -> None:
+        await self._echt.delete_all()
+
+    async def exists(self, key: str) -> bool:
+        return await self._echt.exists(key)
+
+    async def expires_in(self, key: str) -> int | None:
+        return await self._echt.expires_in(key)
+
+
+def build_store_registry(accounts_file: Path, store: Store | None = None) -> StoreRegistry:
     """Die Registratur mit genau einem angemeldeten Speicher.
 
     Legt die Kontendatei zuvor an: ``auth._connect`` oeffnet nur, es stellt
@@ -73,7 +118,7 @@ def build_store_registry(accounts_file: Path) -> StoreRegistry:
             "Rueckfall auf den Arbeitsspeicher wuerde die Sitzungen verlieren"
         )
 
-    return StoreRegistry({SESSION_STORE_NAME: SqliteStore(accounts_file)},
+    return StoreRegistry({SESSION_STORE_NAME: store or SqliteStore(accounts_file)},
                          default_factory=kein_ersatz)
 
 
@@ -94,6 +139,9 @@ class Services:
         self._hasher = hasher
         self.accounts: AccountStore | None = None
         self.throttle: LoginThrottle | None = None
+        #: Der Speicher aus der Registratur -- eine vierte Verbindung auf die
+        #: Kontendatei, die niemand schloss.
+        self._sitzungsspeicher: SqliteStore | None = None
         self._stream_url = config.stream_url
         self._backend_url = config.backend_url
         self._broker_url = config.broker_url
@@ -106,6 +154,7 @@ class Services:
 
         self._gruende: dict[str, str | None] = {
             "directory": "noch nicht geoeffnet",
+            "accounts": "noch nicht geoeffnet",
             "stream": "noch nicht verbunden",
             "backend": "noch nicht verbunden",
             "broker": "noch nicht verbunden",
@@ -128,11 +177,22 @@ class Services:
         """Konten und Bremse. Beide in derselben eigenen Datei (KTD8) -- sie
         haengen an keinem Netzdienst und muessen darum auch dann stehen, wenn
         sonst nichts erreichbar ist.
+
+        Gekapselt wie jeder andere Startschritt: das war der einzige, der es
+        nicht war, und eine unlesbare Kontendatei -- aus einer Ruecksicherung,
+        von einem ``ExecStartPre`` -- liess ``startup()`` werfen. Der Dienst
+        kam dann gar nicht hoch und konnte auch nicht sagen, woran es liegt.
+        Ohne Konten meldet sich niemand an; die Kopfzeile sagt aber, warum.
         """
         if self.accounts is not None:
             return
-        self.accounts = AccountStore(self._config.accounts_file, hasher=self._hasher)
-        self.throttle = LoginThrottle(self._config.accounts_file)
+        try:
+            self.accounts = AccountStore(self._config.accounts_file, hasher=self._hasher)
+            self.throttle = LoginThrottle(self._config.accounts_file)
+            self._sitzungsspeicher = SqliteStore(self._config.accounts_file)
+            self._gruende["accounts"] = None
+        except Exception as exc:
+            self._gruende["accounts"] = str(exc)
 
     def _verzeichnis_oeffnen(self) -> None:
         if self.services_directory_writer is not None:
@@ -197,6 +257,58 @@ class Services:
                 pass
             self.services_directory_writer = None
             self.reader = None
+        # Auch die drei Verbindungen auf die Kontendatei. Gemessen blieben
+        # ohne das sechs Dateizeiger offen, und ueber fuenf Lebenszyklen
+        # wuchsen sie linear auf dreissig -- und das Herunterfahren ist
+        # ohnehin nicht abgeschlossen, solange die letzten Schreibvorgaenge
+        # nicht zusammengefuehrt sind.
+        for lokal in (self.accounts, self.throttle, self._sitzungsspeicher):
+            if lokal is not None:
+                try:
+                    lokal.close()
+                except Exception:
+                    pass
+        self.accounts = None
+        self.throttle = None
+        self._sitzungsspeicher = None
+
+    def start_maintenance(self, *, every_s: float = DEFAULT_MAINTENANCE_S) -> asyncio.Task[None]:
+        """Die Taktaufgabe starten: Erreichbarkeit nachfuehren und aufraeumen.
+
+        Zwei Dinge in einem Takt, weil beide dieselbe Begruendung haben --
+        etwas, das der Dienst von sich aus tun muss, weil es sonst niemand tut:
+
+        * ``refresh()`` rief ausser ``startup()`` **niemand**. Der Modulkopf
+          verspricht das Gegenteil, und ohne den Takt bleibt die Anzeige nach
+          der Rueckkehr eines Dienstes dauerhaft auf "nicht erreichbar" --
+          worauf der Betreiber das Dashboard neu startet, also genau das tut,
+          was der Absatz verhindern wollte.
+        * ``purge()`` hatte ueberhaupt keinen Aufrufer. Hochgerechnet 673 MiB
+          in einer Woche, in der Datei, die laut KTD8 nicht geloescht werden
+          darf.
+        """
+
+        async def takt() -> None:
+            while True:
+                await asyncio.sleep(every_s)
+                try:
+                    await self.refresh()
+                    await self._aufraeumen()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    # Ein Fehler im Takt darf den Takt nicht beenden -- sonst
+                    # steht die Anzeige nach der ersten Stoerung fuer immer.
+                    continue
+
+        return asyncio.ensure_future(takt())
+
+    async def _aufraeumen(self) -> None:
+        """Abgelaufene Sitzungen und verfallene Bremszaehler entfernen."""
+        if self.throttle is not None:
+            await asyncio.to_thread(self.throttle.purge)
+        if self._sitzungsspeicher is not None:
+            await self._sitzungsspeicher.purge()
 
     # -- Zustand ---------------------------------------------------------
 
@@ -224,6 +336,7 @@ class Services:
                 "retention_days": self._config.retention_days,
             },
             "directory": self._verzeichnis_bericht(),
+            "accounts": _teil(self._gruende["accounts"] is None, self._gruende["accounts"]),
         }
 
     def _verzeichnis_bericht(self) -> dict[str, Any]:
@@ -265,17 +378,36 @@ async def _leise_schliessen(teil: object) -> None:
         pass
 
 
-def create_app(config: DashboardConfig, *, hasher: PasswordHasher | None = None) -> Litestar:
-    """Die Anwendung bauen. Der Lebenszyklus haelt die Aussenverbindungen."""
+def create_app(
+    config: DashboardConfig,
+    *,
+    hasher: PasswordHasher | None = None,
+    maintenance_every_s: float = DEFAULT_MAINTENANCE_S,
+) -> Litestar:
+    """Die Anwendung bauen. Der Lebenszyklus haelt die Aussenverbindungen.
+
+    ``maintenance_every_s`` ist die Naht fuer die Testreihe: ohne sie prueft
+    kein Test, dass der Lebenszyklus den Takt ueberhaupt **startet** -- und
+    genau das war der Fehler bei ``refresh()``, das nur von Hand gerufen wurde.
+    """
     services = Services(config, hasher=hasher)
+    # Die Registratur zeigt auf den Speicher des Dienstes, statt einen
+    # eigenen zu halten: sonst bliebe eine vierte Verbindung auf die
+    # Kontendatei offen, die niemand schliesst und deren abgelaufene Zeilen
+    # niemand wegraeumt.
+    weiche = _SitzungsWeiche(services)
 
     @asynccontextmanager
     async def lebenszyklus(app: Litestar) -> AsyncGenerator[None]:
         await services.startup()
         app.state.services = services
+        takt = services.start_maintenance(every_s=maintenance_every_s)
         try:
             yield
         finally:
+            takt.cancel()
+            with suppress(asyncio.CancelledError):
+                await takt
             await services.shutdown()
 
     @get("/api/status", sync_to_thread=False)
@@ -311,7 +443,7 @@ def create_app(config: DashboardConfig, *, hasher: PasswordHasher | None = None)
     return Litestar(
         route_handlers=[zustand, login_form, login, logout],
         lifespan=[lebenszyklus],
-        stores=build_store_registry(config.accounts_file),
+        stores=build_store_registry(config.accounts_file, weiche),
         middleware=[sitzung.middleware],
         guards=[session_guard, csrf_guard],
     )

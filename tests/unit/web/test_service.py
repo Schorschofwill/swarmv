@@ -26,10 +26,18 @@ Test-Liste (AGENTS.md):
 10. Kehrt ein Dienst zurueck, wechselt die Anzeige ohne Neustart.
 11. Das Herunterfahren schliesst auch das, was nie hochkam.
 12. Die Zustandsseite antwortet, auch wenn alles fehlt.
+
+=== ZYKLUS 4: Befunde aus der Pruefung von Stufe C ===
+13. Auch eine unbrauchbare Kontendatei laesst den Start nicht scheitern.
+14. Das Herunterfahren schliesst alle Verbindungen.
+15. Ein Takt fuehrt die Erreichbarkeit nach -- im Dienst, nicht nur als Methode.
+16. Derselbe Takt raeumt abgelaufene Zeilen weg.
+17. Der Lebenszyklus startet den Takt -- nicht die Testreihe.
 """
 
 from __future__ import annotations
 
+import asyncio
 import re
 import socket
 from pathlib import Path
@@ -247,3 +255,129 @@ def _ereignis(ts: float) -> object:
     return Event(type="task_enqueue", ts=ts, source="app", origin=Origin.ENQUEUE,
                  payload={"task_id": "a", "task_name": "x", "queue": "q",
                           "args": [], "kwargs": {}})
+
+
+# --- Zyklus 4: Befunde aus der Pruefung von Stufe C ----------------------
+
+
+async def test_hochfahren_wirft_auch_bei_unbrauchbarer_kontendatei_nicht(tmp_path: Path) -> None:
+    """R33 und der eigene Modulkopf: "kein Teil des Hochfahrens darf den Start
+    verhindern".
+
+    Als einziger Startschritt war das Oeffnen der Konten nicht gekapselt.
+    Gemessen: eine unlesbare Kontendatei liess ``startup()`` werfen -- kein
+    Zustandsbericht, keine Kopfzeile, die es benennt, der Dienst kam gar nicht
+    hoch. Genau der Fall aus einer Ruecksicherung oder einem ``ExecStartPre``.
+    """
+    config = _config(tmp_path)
+    config.data_dir.mkdir(parents=True, exist_ok=True)
+    (config.data_dir / "accounts.sqlite3").write_bytes(b"SQLite format 3\x00" + b"\xff" * 4000)
+
+    s = Services(config)
+    await s.startup()                      # darf nicht werfen
+    try:
+        zustand = s.status()
+        assert zustand["accounts"]["ok"] is False
+        assert zustand["accounts"]["reason"], "der Grund fehlt"
+    finally:
+        await s.shutdown()
+
+
+async def test_herunterfahren_schliesst_alle_verbindungen(tmp_path: Path) -> None:
+    """Gemessen blieben nach dem Lebenszyklus sechs Dateizeiger offen, und ueber
+    fuenf Zyklen wuchsen sie linear auf dreissig. Im Dauerbetrieb eines
+    Prozesses faellt das nicht auf, bei jedem eingebetteten Neustart schon --
+    und das Herunterfahren ist ohnehin nicht abgeschlossen, solange die
+    letzten Schreibvorgaenge nicht zusammengefuehrt sind.
+    """
+    s = Services(_config(tmp_path))
+    await s.startup()
+    konten, bremse = s.accounts, s.throttle
+    assert konten is not None and bremse is not None
+    await s.shutdown()
+
+    assert s.accounts is None and s.throttle is None
+    for name, teil in (("Kontenspeicher", konten), ("Bremse", bremse)):
+        with pytest.raises(Exception):
+            teil._con.execute("select 1")
+        assert True, name
+
+
+async def test_der_takt_fuehrt_die_erreichbarkeit_nach(tmp_path: Path) -> None:
+    """Der Modulkopf verspricht, dass ``refresh()`` im Takt nachfuehrt -- im
+    Dienst rief es aber niemand ausser ``startup()``. Meine beiden
+    Rueckkehr-Tests riefen die Methode von Hand und bewiesen damit eine
+    Methode, kein Verhalten: der Betreiber saehe dauerhaft "weg" und startete
+    das Dashboard neu.
+    """
+    s = Services(_config(tmp_path))
+    await s.startup()
+    laeufe: list[int] = []
+    echt = s.refresh
+
+    async def gezaehlt() -> None:
+        laeufe.append(1)
+        await echt()
+
+    s.refresh = gezaehlt  # type: ignore[method-assign]
+    aufgabe = s.start_maintenance(every_s=0.05)
+    try:
+        await asyncio.sleep(0.25)
+        assert len(laeufe) >= 2, f"der Takt lief {len(laeufe)}-mal"
+    finally:
+        aufgabe.cancel()
+        await s.shutdown()
+
+
+async def test_der_takt_raeumt_abgelaufene_zeilen_weg(tmp_path: Path) -> None:
+    """``purge()`` hatte in ``src/`` keinen einzigen Aufrufer. Hochgerechnet
+    673 MiB in einer Woche -- in der Datei, die laut KTD8 nicht geloescht
+    werden darf.
+    """
+    s = Services(_config(tmp_path))
+    await s.startup()
+    try:
+        assert s.throttle is not None
+        s.throttle._con.execute(
+            "insert into login_attempt(scope,key,count,last_at) values ('account','alt',9,0.0)"
+        )
+        s.throttle._con.commit()
+
+        aufgabe = s.start_maintenance(every_s=0.05)
+        await asyncio.sleep(0.2)
+        aufgabe.cancel()
+
+        uebrig = s.throttle._con.execute("select count(*) from login_attempt").fetchone()[0]
+        assert uebrig == 0, f"{uebrig} verfallene Zeilen blieben stehen"
+    finally:
+        await s.shutdown()
+
+
+async def test_der_lebenszyklus_startet_den_takt(tmp_path: Path) -> None:
+    """Der Takt muss vom Dienst kommen, nicht von der Testreihe.
+
+    Die beiden Tests darueber rufen ``start_maintenance()`` selbst -- und
+    beweisen damit eine Methode, kein Verhalten. Genau dieser Fehler liess
+    ``refresh()`` monatelang ungerufen: der Modulkopf versprach einen Takt,
+    den es im Dienst nicht gab.
+    """
+    from litestar.testing import AsyncTestClient
+
+    config = _config(tmp_path)
+    app = create_app(config, maintenance_every_s=0.05)
+    async with AsyncTestClient(app=app) as client:
+        dienste = app.state.services
+        assert dienste.throttle is not None
+        dienste.throttle._con.execute(
+            "insert into login_attempt(scope,key,count,last_at) values ('account','alt',9,0.0)"
+        )
+        dienste.throttle._con.commit()
+
+        await asyncio.sleep(0.25)
+        uebrig = dienste.throttle._con.execute(
+            "select count(*) from login_attempt"
+        ).fetchone()[0]
+        assert uebrig == 0, (
+            f"{uebrig} verfallene Zeilen -- der Lebenszyklus startet den Takt nicht"
+        )
+        assert client is not None
