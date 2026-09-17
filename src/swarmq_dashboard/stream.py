@@ -14,26 +14,89 @@ Anbindung ist ehrlicher als ein fremder Verbindungspool.
 
 from __future__ import annotations
 
-from typing import Any
+import asyncio
+from collections.abc import Awaitable, Callable
+from typing import Any, TypeVar
 
 from valkey.asyncio import Valkey
+from valkey.exceptions import ValkeyError
 
 #: Feldname der Nutzlast im Stromeintrag. Ein Feld genuegt -- die Huelle ist
 #: bereits kodiert, und Valkey-Streams sind Feld-Wert-Paare.
 FIELD = "e"
+#: Zeitgrenze fuer den Verbindungsaufbau. Ohne sie haengt der Aufbau gegen ein
+#: Gegenueber, das TCP annimmt und dann schweigt -- eine Firewall, die
+#: verwirft statt abzulehnen --, und mit ihm der ganze Takt.
+DEFAULT_CONNECT_TIMEOUT_S = 5.0
+#: Zeitgrenze einzelner Befehle. valkey-py hat hier eine Vorgabe von 5 s; sie
+#: wird hier ausdruecklich gesetzt, damit sie nicht still wandern kann.
+DEFAULT_SOCKET_TIMEOUT_S = 5.0
+
+T = TypeVar("T")
+
+
+class StreamUnavailable(RuntimeError):
+    """Der Ereignisstrom war nicht erreichbar.
+
+    Das Gegenstueck zu ``BrokerUnavailable``. Es gibt ihn, weil eine
+    Taktschleife sonst Valkey-Ausnahmetypen importieren muesste, um
+    Erreichbarkeit von einem echten Fehler zu unterscheiden -- und dabei
+    unvermeidlich zu weit oder zu eng fasst.
+    """
 
 
 class ValkeyStreamClient:
     """Duenne Schreib- und Leseschicht ueber einem Valkey-Strom."""
 
-    def __init__(self, url: str) -> None:
+    def __init__(
+        self,
+        url: str,
+        *,
+        connect_timeout_s: float = DEFAULT_CONNECT_TIMEOUT_S,
+        socket_timeout_s: float = DEFAULT_SOCKET_TIMEOUT_S,
+    ) -> None:
         self._url = url
+        self._connect_timeout_s = connect_timeout_s
+        self._socket_timeout_s = socket_timeout_s
         self._client: Valkey | None = None
 
     async def connect(self) -> None:
-        """Verbindung aufbauen. Idempotent."""
-        if self._client is None:
-            self._client = Valkey.from_url(self._url)
+        """Verbindung aufbauen **und pruefen**. Idempotent.
+
+        Das ``ping`` ist der Kern dieser Methode, nicht Zierrat:
+        ``Valkey.from_url`` erzeugt nur ein Objekt und spricht mit niemandem.
+        Gemessen kam ein Aufbau gegen einen toten Port so in 0,1 ms ohne
+        Fehler zurueck -- und der Dienst haette beim Hochfahren gemeldet, der
+        Strom sei erreichbar (R26, R33). Der Fehler erschien erst beim ersten
+        echten Aufruf, an einer Stelle, an der ihn niemand mehr erwartete.
+        """
+        if self._client is not None:
+            return
+        try:
+            client = self._bauen()
+        except Exception as exc:
+            raise StreamUnavailable(f"unbrauchbare Adresse: {exc}") from exc
+        try:
+            await asyncio.wait_for(client.ping(), timeout=self._connect_timeout_s)
+        except TimeoutError as exc:
+            await client.aclose()
+            raise StreamUnavailable(
+                f"keine Antwort binnen {self._connect_timeout_s:.0f} s"
+            ) from exc
+        except Exception as exc:
+            await client.aclose()
+            raise StreamUnavailable(str(exc)) from exc
+        self._client = client
+
+    def _bauen(self) -> Valkey:
+        """Den Client erzeugen. Eigene Methode, damit die Testreihe eine
+        Haengestelle einsetzen kann, die keine Socket-Grenze abfaengt."""
+        client: Valkey = Valkey.from_url(
+            self._url,
+            socket_connect_timeout=self._connect_timeout_s,
+            socket_timeout=self._socket_timeout_s,
+        )
+        return client
 
     async def close(self) -> None:
         """Verbindung schliessen. Idempotent."""
@@ -45,8 +108,17 @@ class ValkeyStreamClient:
     def client(self) -> Valkey:
         """Roher Client. Wirft, solange nicht verbunden."""
         if self._client is None:
-            raise RuntimeError("ValkeyStreamClient ist nicht verbunden")
+            raise StreamUnavailable("der Ereignisstrom ist nicht verbunden")
         return self._client
+
+    async def _call(self, fn: Callable[[], Awaitable[T]]) -> T:
+        """Einen Valkey-Aufruf fahren und seine Fehler benennen."""
+        try:
+            return await fn()
+        except StreamUnavailable:
+            raise
+        except (ValkeyError, OSError, TimeoutError) as exc:
+            raise StreamUnavailable(str(exc)) from exc
 
     # -- Schreiben -------------------------------------------------------
 
@@ -60,18 +132,20 @@ class ValkeyStreamClient:
         pipe = self.client.pipeline(transaction=False)
         for raw in events:
             pipe.xadd(key, {FIELD: raw}, maxlen=maxlen, approximate=True)
-        await pipe.execute()
+        await self._call(pipe.execute)
 
     # -- Lesen -----------------------------------------------------------
 
     async def read_all(self, key: str) -> list[bytes]:
         """Alle Eintraege in Stromreihenfolge. Fuer Tests und den Neuaufbau."""
-        eintraege: list[tuple[bytes, dict[bytes, bytes]]] = await self.client.xrange(key)
+        eintraege: list[tuple[bytes, dict[bytes, bytes]]] = await self._call(
+            lambda: self.client.xrange(key)
+        )
         return [felder[FIELD.encode()] for _, felder in eintraege]
 
     async def length(self, key: str) -> int:
         """Zahl der Eintraege."""
-        result: int = await self.client.xlen(key)
+        result: int = await self._call(lambda: self.client.xlen(key))
         return result
 
     async def read_after(self, key: str, last_id: str, count: int) -> list[tuple[str, bytes]]:
@@ -82,14 +156,16 @@ class ValkeyStreamClient:
         nachholen, nicht auf Neues warten.
         """
         von = f"({last_id}" if last_id else "-"
-        eintraege: list[tuple[bytes, dict[bytes, bytes]]] = await self.client.xrange(
-            key, min=von, count=count
+        eintraege: list[tuple[bytes, dict[bytes, bytes]]] = await self._call(
+            lambda: self.client.xrange(key, min=von, count=count)
         )
         return [(sid.decode(), felder[FIELD.encode()]) for sid, felder in eintraege]
 
     async def min_id(self, key: str) -> str | None:
         """Kennung des aeltesten noch vorhandenen Eintrags, oder ``None``."""
-        eintraege: list[tuple[bytes, dict[bytes, bytes]]] = await self.client.xrange(key, count=1)
+        eintraege: list[tuple[bytes, dict[bytes, bytes]]] = await self._call(
+            lambda: self.client.xrange(key, count=1)
+        )
         return eintraege[0][0].decode() if eintraege else None
 
     async def trim_by_min_id(self, key: str, min_ms: int) -> int:
@@ -99,14 +175,16 @@ class ValkeyStreamClient:
         Betreiber (KD7), und ein ungefaehrer Schnitt liesse je nach Knotenlage
         mal mehr, mal weniger stehen.
         """
-        entfernt: int = await self.client.xtrim(key, minid=f"{min_ms}-0", approximate=False)
+        entfernt: int = await self._call(
+            lambda: self.client.xtrim(key, minid=f"{min_ms}-0", approximate=False)
+        )
         return entfernt
 
     async def memory_usage(self, key: str) -> int | None:
         """Speicherbedarf des Stroms in Bytes -- der Fuellstand aus R9."""
-        result: Any = await self.client.memory_usage(key)
+        result: Any = await self._call(lambda: self.client.memory_usage(key))
         return int(result) if result is not None else None
 
     async def delete(self, key: str) -> None:
         """Strom entfernen. Nur fuer Tests und das Aufraeumen."""
-        await self.client.delete(key)
+        await self._call(lambda: self.client.delete(key))
