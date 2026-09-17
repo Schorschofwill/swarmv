@@ -25,6 +25,12 @@ Test-Liste (AGENTS.md):
 10. Ein zweites Anlegen desselben Namens ebenso.
 11. Ohne Terminal -- systemd, CI, eine Pipe am Ende -- bricht der Befehl
     sauber ab, statt mit einem Traceback auszusehen wie kaputt.
+
+=== ZYKLUS 4: Befunde aus der Pruefung von Stufe C ===
+12. Dateisystemfehler werden benannt, nicht als Traceback geworfen.
+13. Ein leeres --data-dir wird abgewiesen, statt im Arbeitsverzeichnis zu landen.
+14. Ein langer Bestandsname sprengt die Liste nicht.
+15. Ein unbrauchbarer Kontoname wird benannt.
 """
 
 from __future__ import annotations
@@ -195,4 +201,55 @@ def test_ohne_terminal_bricht_er_sauber_ab(daten: Path) -> None:
                 prompt=kein_terminal, out=ausgabe, hasher=_BILLIG)
     assert code != 0
     assert "abgebrochen" in ausgabe.getvalue().lower(), ausgabe.getvalue()
+    assert _store(daten).accounts() == []
+
+
+# --- Zyklus 4: Befunde aus der Pruefung von Stufe C ---------------------
+
+
+def test_dateisystemfehler_werden_benannt(tmp_path: Path) -> None:
+    """Der eigene Anspruch aus Zyklus 1 gilt auch hier: ein Traceback saehe
+    fuer den Betreiber aus, als waere das Werkzeug kaputt. ``--data-dir`` auf
+    eine Datei, auf einen toten Symlink oder in ein Verzeichnis ohne
+    Schreibrecht ist ein Bedienfehler, kein Absturz.
+    """
+    keine_datei = tmp_path / "ist-eine-datei"
+    keine_datei.write_text("kein Verzeichnis")
+    code, text = _lauf(keine_datei, "account", "list")
+    assert code != 0
+    assert "traceback" not in text.lower()
+    assert str(keine_datei) in text or "verzeichnis" in text.lower(), text
+
+
+def test_leeres_datenverzeichnis_wird_abgewiesen(tmp_path: Path) -> None:
+    """``--data-dir ""`` ergab einen relativen Pfad und legte die Kontendatei
+    stillschweigend im Arbeitsverzeichnis an -- an einem Ort, den der
+    Betreiber weder sichert noch schuetzt.
+    """
+    with pytest.raises(SystemExit) as e:
+        main(["--data-dir", "", "account", "list"], prompt=lambda _: "", out=io.StringIO(),
+             hasher=_BILLIG)
+    assert e.value.code == 2
+
+
+def test_ein_langer_name_sprengt_die_liste_nicht(daten: Path) -> None:
+    """Die Ausrichtung polsterte jede Zeile auf die Laenge des laengsten
+    Namens. Die Namenspruefung deckelt das jetzt; die Ausgabe muss es
+    ueberdies aushalten, wenn ein Bestandsname doch lang ist.
+    """
+    s = _store(daten)
+    s.create("o" * 64, "ein-langes-passwort")
+    s.create("ops", "ein-langes-passwort")
+    s.close()
+    code, text = _lauf(daten, "account", "list")
+    assert code == 0
+    for zeile in text.splitlines():
+        assert len(zeile) <= 120, f"Zeile mit {len(zeile)} Zeichen: {zeile[:60]!r}…"
+
+
+def test_unbrauchbarer_kontoname_wird_benannt(daten: Path) -> None:
+    code, text = _lauf(daten, "account", "create", "opfer\rboeser",
+                       eingaben=("ein-langes-passwort", "ein-langes-passwort"))
+    assert code != 0
+    assert "traceback" not in text.lower()
     assert _store(daten).accounts() == []

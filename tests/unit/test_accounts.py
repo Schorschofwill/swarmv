@@ -37,18 +37,37 @@ Test-Liste (AGENTS.md):
     Verzeichnisses laesst die Konten unberuehrt.
 14. Ein Wert aus schwaecheren Verfahrensparametern wird beim naechsten
     erfolgreichen Anmelden erneuert.
+
+=== ZYKLUS 6: Befunde aus der Pruefung von Stufe C ===
+15. Die Ununterscheidbarkeit haelt auch, wenn der Bestand noch andere
+    Verfahrensparameter traegt als das eingestellte Verfahren.
+16. Jeder Fehlversuch kostet gleich viele Datenbankbefehle und schreibt nie.
+17. Das Erneuern dreht einen gleichzeitigen Passwortwechsel nicht zurueck.
+18. Der Speicher ist aus einem zweiten Faden benutzbar.
+20. Kontonamen werden geprueft; gleich aussehende Namen sind dasselbe Konto.
+21. Gleich aussehende Passwoerter gelten beide; uebermaessig lange nicht.
+22. Rechte werden nachgezogen, aber nie gelockert -- auch am Verzeichnis.
+23. Die Verbindung traegt ihre vier Einstellungen.
 """
 
 from __future__ import annotations
 
 import statistics
+import threading
 import time
 from pathlib import Path
 
 import pytest
 from argon2 import PasswordHasher
 
-from swarmq_dashboard.accounts import AccountExists, AccountStore, UnknownAccount
+from swarmq_dashboard.accounts import (
+    BUSY_TIMEOUT_MS,
+    AccountExists,
+    AccountStore,
+    InvalidAccountName,
+    InvalidPassword,
+    UnknownAccount,
+)
 
 #: Billige Parameter fuer die Testreihe. Sie aendern nichts am geprueften
 #: Verhalten -- nur die Dauer je Pruefung, sonst laege die Reihe bei Minuten.
@@ -233,3 +252,245 @@ def test_schwacher_wert_wird_beim_anmelden_erneuert(tmp_path: Path) -> None:
     neu = stark.accounts()[0].password_hash
     assert neu != alt, "der Wert blieb auf den schwaecheren Parametern stehen"
     assert stark.verify("ops", "ein-passwort") is True, "nach dem Erneuern gilt das Passwort nicht mehr"
+
+
+# --- ZYKLUS 6: Befunde aus der Pruefung von Stufe C ---------------------
+
+
+def _mediane(store: AccountStore, faelle: dict[str, tuple[str, str]], runden: int = 9) -> dict[str, float]:
+    """Je Fall die mittlere Dauer in Millisekunden, verschraenkt gemessen.
+
+    Verschraenkt, nicht blockweise: sonst faengt ein Lastwechsel der Maschine
+    einen ganzen Fall ein und verschiebt den Vergleich.
+    """
+    proben: dict[str, list[float]] = {k: [] for k in faelle}
+    for _ in range(runden):
+        for schluessel, (konto, passwort) in faelle.items():
+            t = time.perf_counter()
+            store.verify(konto, passwort)
+            proben[schluessel].append((time.perf_counter() - t) * 1000)
+    return {k: statistics.median(v) for k, v in proben.items()}
+
+
+def test_ununterscheidbar_auch_bei_altem_bestand(tmp_path: Path) -> None:
+    """Covers AE9a fuer den Fall, der die Zusage wirklich bedroht.
+
+    Die Attrappe, gegen die ein unbekanntes Konto geprueft wird, muss die
+    Parameter des **Bestands** tragen, nicht die des gerade eingestellten
+    Verfahrens. Wurde sie mit den neuen gebildet, waehrend die gespeicherten
+    Werte noch die alten tragen, war ein unbekanntes Konto gemessen 2,7-mal
+    langsamer als ein bekanntes -- aus der Ferne trivial ablesbar. Ausgerechnet
+    der Zustand, den das Erneuern der Werte erzeugt, hebelte die Zusage aus.
+    """
+    pfad = tmp_path / "konten.sqlite3"
+    alt = AccountStore(pfad, hasher=PasswordHasher(time_cost=1, memory_cost=1024, parallelism=1))
+    alt.create("bekannt", "ein-langes-passwort")
+    alt.create("gesperrt", "ein-langes-passwort")
+    alt.lock("gesperrt")
+    alt.close()
+
+    # Deutlich teurere Parameter -- so sieht eine Anhebung aus.
+    neu = AccountStore(pfad, hasher=PasswordHasher(time_cost=6, memory_cost=8192, parallelism=1))
+    m = _mediane(neu, {
+        "unbekannt": ("gibtesnicht", "falsches-passwort"),
+        "bekannt": ("bekannt", "falsches-passwort"),
+        "gesperrt": ("gesperrt", "ein-langes-passwort"),
+    })
+    verhaeltnis = m["unbekannt"] / m["bekannt"]
+    assert 0.6 < verhaeltnis < 1.6, (
+        f"unbekannt {m['unbekannt']:.2f} ms gegen bekannt {m['bekannt']:.2f} ms "
+        f"(Verhaeltnis {verhaeltnis:.2f}) -- die Antwortzeit verraet, welche Konten es gibt"
+    )
+    verhaeltnis_sperre = m["gesperrt"] / m["bekannt"]
+    assert 0.6 < verhaeltnis_sperre < 1.6, (
+        f"gesperrt {m['gesperrt']:.2f} ms gegen bekannt {m['bekannt']:.2f} ms "
+        f"(Verhaeltnis {verhaeltnis_sperre:.2f}) -- die Antwortzeit verraet den Sperrzustand"
+    )
+    neu.close()
+
+
+def test_jeder_fehlversuch_kostet_gleich_viele_abfragen(tmp_path: Path) -> None:
+    """Nicht nur die Rechenzeit: auch die Zahl der Datenbankbefehle muss
+    gleich sein, sonst verraet sie dasselbe ueber einen anderen Kanal.
+    """
+    s = AccountStore(tmp_path / "konten.sqlite3", hasher=_BILLIG)
+    s.create("bekannt", "ein-langes-passwort")
+    s.create("gesperrt", "ein-langes-passwort")
+    s.lock("gesperrt")
+
+    def zaehlen(konto: str, passwort: str) -> list[str]:
+        befehle: list[str] = []
+        s._con.set_trace_callback(befehle.append)
+        try:
+            s.verify(konto, passwort)
+        finally:
+            s._con.set_trace_callback(None)
+        return befehle
+
+    a = zaehlen("gibtesnicht", "falsch")
+    b = zaehlen("bekannt", "falsch")
+    c = zaehlen("gesperrt", "ein-langes-passwort")
+    assert len(a) == len(b) == len(c), (
+        f"unbekannt {len(a)}, bekannt {len(b)}, gesperrt {len(c)} Befehle: "
+        "die Zahl der Abfragen verraet den Fall"
+    )
+    assert not any("update" in x.lower() or "insert" in x.lower() for x in a + b + c), (
+        "ein Fehlversuch schreibt -- das ist an Dateizeit und Journal ablesbar"
+    )
+
+
+def test_erneuern_dreht_einen_gleichzeitigen_wechsel_nicht_zurueck(tmp_path: Path) -> None:
+    """R20. Zwischen dem Lesen des Werts und dem Erneuern liegen rund fuenfzig
+    Millisekunden argon2. Faellt ein Passwortwechsel in dieses Fenster, machte
+    das Erneuern ihn zunichte -- die Kommandozeile meldete Erfolg, und das
+    alte Passwort galt weiter. Ein Wechsel nach einem Vorfall verpuffte still.
+    """
+    pfad = tmp_path / "konten.sqlite3"
+    schwach = PasswordHasher(time_cost=1, memory_cost=1024, parallelism=1)
+    vorbereiten = AccountStore(pfad, hasher=schwach)
+    vorbereiten.create("ops", "altes-passwort")
+    vorbereiten.close()
+
+    wechsler = AccountStore(pfad, hasher=_BILLIG)
+
+    class WechseltWaehrendGeprueftWird:
+        """Ein Hasher, der den Passwortwechsel genau in das Fenster legt.
+
+        Zwischen dem Lesen des Werts und dem Erneuern liegen im Betrieb rund
+        fuenfzig Millisekunden argon2. Diese Huelle trifft das Fenster
+        zuverlaessig, statt auf eine Verschraenkung zu hoffen.
+        """
+
+        def __init__(self) -> None:
+            self._echt = _BILLIG
+            self._schon = False
+
+        def hash(self, passwort: str) -> str:
+            return str(self._echt.hash(passwort))
+
+        def check_needs_rehash(self, wert: str) -> bool:
+            return bool(self._echt.check_needs_rehash(wert))
+
+        def verify(self, wert: str, passwort: str) -> bool:
+            if not self._schon:
+                self._schon = True
+                wechsler.set_password("ops", "neues-passwort")
+            return bool(self._echt.verify(wert, passwort))
+
+    anmelder = AccountStore(pfad, hasher=WechseltWaehrendGeprueftWird())  # type: ignore[arg-type]
+    anmelder.verify("ops", "altes-passwort")
+
+    pruefer = AccountStore(pfad, hasher=_BILLIG)
+    assert pruefer.verify("ops", "neues-passwort") is True, (
+        "der Passwortwechsel wurde vom Erneuern zurueckgedreht"
+    )
+    assert pruefer.verify("ops", "altes-passwort") is False, "das alte Passwort gilt noch"
+    for x in (anmelder, wechsler, pruefer):
+        x.close()
+
+
+def test_aus_einem_zweiten_faden_benutzbar(tmp_path: Path) -> None:
+    """Die Anmeldung ist ein rund fuenfzig Millisekunden teurer Rechenblock.
+    Er gehoert in einen Arbeitsfaden -- und dort ist jede Anfrage
+    moeglicherweise ein anderer. Ohne Fadensicherheit wirft SQLite dort.
+    """
+    s = AccountStore(tmp_path / "konten.sqlite3", hasher=_BILLIG)
+    s.create("ops", "ein-langes-passwort")
+    fehler: list[str] = []
+    ergebnis: list[bool] = []
+
+    def im_faden() -> None:
+        try:
+            ergebnis.append(s.verify("ops", "ein-langes-passwort"))
+        except Exception as exc:
+            fehler.append(f"{type(exc).__name__}: {exc}")
+
+    t = threading.Thread(target=im_faden)
+    t.start()
+    t.join()
+    assert not fehler, fehler[0]
+    assert ergebnis == [True]
+
+
+def test_kontonamen_werden_geprueft(tmp_path: Path) -> None:
+    """Ein Name mit Wagenruecklauf faelscht die Ausgabe von ``account list``:
+    er ueberschreibt die Zeile darueber und kann ein gesperrtes Konto als
+    offen erscheinen lassen. Ein Name mit einer Million Zeichen sprengt die
+    Ausrichtung der ganzen Liste.
+    """
+    s = AccountStore(tmp_path / "konten.sqlite3", hasher=_BILLIG)
+    for name in ("", "   ", "opfer\rboeser", "a\nb", "\x1b[2K", "a" * 200, "a\x00b"):
+        with pytest.raises(InvalidAccountName):
+            s.create(name, "ein-langes-passwort")
+    assert s.accounts() == []
+    s.create("ops.team-1", "ein-langes-passwort")   # zulaessig bleibt zulaessig
+    assert [k.name for k in s.accounts()] == ["ops.team-1"]
+
+
+def test_gleich_aussehende_namen_sind_dasselbe_konto(tmp_path: Path) -> None:
+    """``mueller`` in zwei Unicode-Schreibweisen sieht gleich aus. Standen
+    beide nebeneinander, sperrte der Betreiber eines und liess das andere
+    offen -- ohne den Unterschied sehen zu koennen.
+    """
+    s = AccountStore(tmp_path / "konten.sqlite3", hasher=_BILLIG)
+    zusammengesetzt = "müller"        # NFC
+    zerlegt = "müller"               # NFD, sieht identisch aus
+    s.create(zusammengesetzt, "ein-langes-passwort")
+    with pytest.raises(AccountExists):
+        s.create(zerlegt, "anderes-passwort")
+    assert len(s.accounts()) == 1
+
+
+def test_gleich_aussehende_passwoerter_gelten_beide(tmp_path: Path) -> None:
+    """Sonst haengt die Anmeldung davon ab, welche Tastatur das Passwort
+    erzeugt hat -- und das Teammitglied sieht keinen Unterschied.
+    """
+    s = AccountStore(tmp_path / "konten.sqlite3", hasher=_BILLIG)
+    s.create("ops", "Bärenstark-2026")          # NFC
+    assert s.verify("ops", "Bärenstark-2026") is True   # NFD
+
+
+def test_uebermaessig_langes_passwort_wird_abgewiesen(tmp_path: Path) -> None:
+    """Sonst dreht der Anmeldeversuch selbst an der Rechenkosten-Schraube."""
+    s = AccountStore(tmp_path / "konten.sqlite3", hasher=_BILLIG)
+    with pytest.raises(InvalidPassword):
+        s.create("ops", "x" * 10_000)
+    assert s.accounts() == []
+
+
+def test_rechte_werden_nicht_gelockert(tmp_path: Path) -> None:
+    """Eine absichtlich auf 0400 gesetzte Datei ist schreibgeschuetzt. Sie auf
+    0600 zu heben machte den Schutz wirkungslos -- nachgezogen wird nur, was
+    **zu weit** offen steht.
+    """
+    pfad = tmp_path / "konten.sqlite3"
+    AccountStore(pfad, hasher=_BILLIG).close()
+    pfad.chmod(0o400)
+    try:
+        AccountStore(pfad, hasher=_BILLIG).close()
+    except Exception:
+        pass
+    assert pfad.stat().st_mode & 0o777 == 0o400, (
+        f"der Schreibschutz wurde aufgehoben: {oct(pfad.stat().st_mode & 0o777)}"
+    )
+
+
+def test_rechte_eines_vorhandenen_verzeichnisses(tmp_path: Path) -> None:
+    ordner = tmp_path / "daten"
+    ordner.mkdir(mode=0o755)
+    AccountStore(ordner / "konten.sqlite3", hasher=_BILLIG).close()
+    assert not (ordner.stat().st_mode & 0o077), (
+        f"das Datenverzeichnis blieb begehbar: {oct(ordner.stat().st_mode & 0o777)}"
+    )
+
+
+def test_die_verbindung_traegt_ihre_einstellungen(tmp_path: Path) -> None:
+    """Wartefrist, sicheres Loeschen und die Haltbarkeit der Schreibvorgaenge
+    sind je eine Zusage, keine Feinabstimmung -- und ohne Zusicherung liesse
+    sich jede still herausnehmen.
+    """
+    s = AccountStore(tmp_path / "konten.sqlite3", hasher=_BILLIG)
+    assert s._con.execute("pragma busy_timeout").fetchone()[0] == BUSY_TIMEOUT_MS
+    assert s._con.execute("pragma secure_delete").fetchone()[0] == 1
+    assert s._con.execute("pragma synchronous").fetchone()[0] == 2, "nicht 'full'"
+    assert s._con.execute("pragma journal_mode").fetchone()[0] == "wal"

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import sqlite3
 import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -25,6 +26,11 @@ from argon2 import PasswordHasher
 
 from swarmq_dashboard.accounts import AccountError, AccountStore
 from swarmq_dashboard.config import DEFAULT_DATA_DIR, accounts_path
+
+#: Breiteste Spalte in ``account list``. Die Namenspruefung deckelt Namen
+#: bereits; ein Bestandsname aus einer aelteren Fassung koennte laenger sein,
+#: und dann polsterte die Ausrichtung **jede** Zeile auf seine Laenge.
+MAX_SPALTE = 64
 
 #: Kuerzestes zulaessiges Passwort. Keine Zeichenklassen-Regeln: sie treiben
 #: nachweislich zu vorhersagbaren Mustern, waehrend die Laenge wirklich traegt.
@@ -63,6 +69,19 @@ def _passwort_erfragen(prompt: Prompt, out: TextIO, *, wofuer: str) -> str | Non
     return erste
 
 
+def _datenverzeichnis(wert: str) -> Path:
+    """``--data-dir`` pruefen und umwandeln.
+
+    Die Pruefung muss **vor** der Umwandlung greifen: ``Path("")`` ergibt
+    ``Path(".")``, und die Kontendatei landete damit stillschweigend im
+    Arbeitsverzeichnis -- an einem Ort, den der Betreiber weder sichert noch
+    schuetzt.
+    """
+    if not wert.strip():
+        raise argparse.ArgumentTypeError("--data-dir darf nicht leer sein")
+    return Path(wert)
+
+
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="swarmq-dashboard",
@@ -70,7 +89,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--data-dir",
-        type=Path,
+        type=_datenverzeichnis,
         default=Path(DEFAULT_DATA_DIR),
         help=f"Verzeichnis fuer Verzeichnis- und Kontendatei (Vorgabe: {DEFAULT_DATA_DIR})",
     )
@@ -109,17 +128,26 @@ def main(
     """
     ziel = sys.stdout if out is None else out
     args = _build_parser().parse_args(argv)
-
-    store = AccountStore(accounts_path(args.data_dir), hasher=hasher)
+    store = None
     try:
+        # Die Konstruktion gehoert **in** den try: sie legt Verzeichnis und
+        # Datei an, und jeder Fehler dabei -- ein Pfad, der auf eine Datei
+        # zeigt, ein toter Symlink, ein Verzeichnis ohne Schreibrecht, eine
+        # volle Platte -- kam sonst als Traceback heraus und sah aus, als
+        # waere das Werkzeug kaputt.
+        store = AccountStore(accounts_path(args.data_dir), hasher=hasher)
         return _konto(args, store, prompt, ziel)
     except AccountError as exc:
         # Benannt und mit Rueckgabewert ungleich null: ein Fehlschlag mit 0
         # faellt in einem Skript nicht auf.
         print(str(exc), file=ziel)
         return 1
+    except (OSError, sqlite3.Error) as exc:
+        print(f"Die Kontendatei unter {args.data_dir} ist nicht benutzbar: {exc}", file=ziel)
+        return 1
     finally:
-        store.close()
+        if store is not None:
+            store.close()
 
 
 def _konto(args: argparse.Namespace, store: AccountStore, prompt: Prompt, out: TextIO) -> int:
@@ -128,7 +156,7 @@ def _konto(args: argparse.Namespace, store: AccountStore, prompt: Prompt, out: T
         if not konten:
             print("Noch kein Konto angelegt.", file=out)
             return 0
-        breite = max(len(k.name) for k in konten)
+        breite = min(max(len(k.name) for k in konten), MAX_SPALTE)
         for k in konten:
             # Nie der gespeicherte Wert: eine Kontenliste landet im Ticket,
             # im Chat und im Bildschirmfoto.
