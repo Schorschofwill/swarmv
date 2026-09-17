@@ -48,6 +48,13 @@ Test-Liste (AGENTS.md):
 21. Gleich aussehende Passwoerter gelten beide; uebermaessig lange nicht.
 22. Rechte werden nachgezogen, aber nie gelockert -- auch am Verzeichnis.
 23. Die Verbindung traegt ihre vier Einstellungen.
+
+=== ZYKLUS 7: Zusicherungen, die bisher fehlten ===
+24. Ein unbekanntes Konto wird abgewiesen -- der Rueckgabewert, nicht nur die
+    Dauer.
+25. Ein leerer Bestand weist ab, statt zu werfen.
+26. Alle Wege sehen dieselbe Unicode-Schreibweise, nicht nur das Anlegen.
+27. Die Zeitschranke faengt beide Richtungen.
 """
 
 from __future__ import annotations
@@ -494,3 +501,83 @@ def test_die_verbindung_traegt_ihre_einstellungen(tmp_path: Path) -> None:
     assert s._con.execute("pragma secure_delete").fetchone()[0] == 1
     assert s._con.execute("pragma synchronous").fetchone()[0] == 2, "nicht 'full'"
     assert s._con.execute("pragma journal_mode").fetchone()[0] == "wal"
+
+
+# --- ZYKLUS 7: Zusicherungen, die bisher fehlten ------------------------
+
+
+def test_ein_unbekanntes_konto_wird_abgewiesen(tmp_path: Path) -> None:
+    """Die wichtigste fehlende Zusicherung der ganzen Einheit.
+
+    ``verify`` prueft ein unbekanntes Konto gegen eine **echte** Zeile aus dem
+    Bestand -- nur so tragen Attrappe und Bestand dieselben Parameter (R22).
+    Das heisst aber auch: faellt die eine Bedingung ``zeile is None`` weg,
+    kommt jeder mit **irgendeinem** gueltigen Passwort unter **jedem** Namen
+    herein. Die vorhandenen Tests riefen ``verify`` fuer unbekannte Konten nur
+    zum Zeitmessen auf und warfen das Ergebnis weg.
+    """
+    s = AccountStore(tmp_path / "konten.sqlite3", hasher=_BILLIG)
+    s.create("ops", "ein-langes-passwort")
+    s.create("dev", "anderes-langes-passwort")
+
+    assert s.verify("gibtesnicht", "ein-langes-passwort") is False, (
+        "ein unbekanntes Konto wurde mit dem Passwort eines anderen angenommen"
+    )
+    for name in ("gibtesnicht", "", "   ", "OPS", "ops2", "op"):
+        assert s.verify(name, "ein-langes-passwort") is False, f"{name!r} kam durch"
+        assert s.verify(name, "anderes-langes-passwort") is False, f"{name!r} kam durch"
+
+
+def test_ein_leerer_bestand_weist_ab(tmp_path: Path) -> None:
+    """Der allererste Anmeldeversuch nach einer Neuinstallation.
+
+    Ohne ein einziges Konto gibt es keine Ersatzzeile; der Zweig war von
+    keinem Test betreten. Im Betrieb waere das ein 500 statt eines
+    "Konto oder Passwort stimmt nicht".
+    """
+    s = AccountStore(tmp_path / "konten.sqlite3", hasher=_BILLIG)
+    assert s.accounts() == []
+    assert s.verify("wer", "auch-immer") is False
+    assert s.verify("", "") is False
+
+
+def test_alle_wege_sehen_dieselbe_schreibweise(tmp_path: Path) -> None:
+    """Die Normalisierung war nur beim Anlegen geprueft.
+
+    Ohne sie in ``verify`` kaeme das Teammitglied mit der anderen Schreibweise
+    nicht herein; ohne sie in ``lock`` meldete ``account lock mueller``
+    "das Konto gibt es nicht", waehrend das Konto offen bliebe -- genau der
+    Schaden, den der Docstring beschreibt.
+    """
+    zusammengesetzt = "müller"        # NFC
+    zerlegt = "müller"               # NFD, sieht identisch aus
+    s = AccountStore(tmp_path / "konten.sqlite3", hasher=_BILLIG)
+    s.create(zusammengesetzt, "ein-langes-passwort")
+
+    assert s.verify(zerlegt, "ein-langes-passwort") is True, "verify normalisiert nicht"
+    assert s.state_of(zerlegt) is not None, "state_of normalisiert nicht"
+    s.lock(zerlegt)
+    assert s.state_of(zusammengesetzt).locked is True, "lock normalisiert nicht"  # type: ignore[union-attr]
+    s.unlock(zerlegt)
+    s.set_password(zerlegt, "neues-langes-passwort")
+    assert s.verify(zusammengesetzt, "neues-langes-passwort") is True, (
+        "set_password normalisiert nicht"
+    )
+
+
+def test_die_zeitschranke_faengt_beide_richtungen(tmp_path: Path) -> None:
+    """Die alte Schranke ``unbekannt > bekannt * 0.5`` fing nur "zu schnell"
+    und liess Faktor zwei zu -- genau die Richtung, in die der gefundene
+    Fehler ging (unbekannt war 2,7-mal **langsamer**).
+    """
+    s = AccountStore(tmp_path / "konten.sqlite3", hasher=_BILLIG)
+    s.create("bekannt", "ein-langes-passwort")
+    m = _mediane(s, {
+        "unbekannt": ("gibtesnicht", "falsches-passwort"),
+        "bekannt": ("bekannt", "falsches-passwort"),
+    }, runden=15)
+    verhaeltnis = m["unbekannt"] / m["bekannt"]
+    assert 0.6 < verhaeltnis < 1.6, (
+        f"unbekannt {m['unbekannt']:.3f} ms, bekannt {m['bekannt']:.3f} ms, "
+        f"Verhaeltnis {verhaeltnis:.2f}"
+    )

@@ -16,6 +16,7 @@ Test funktioniert, faellt sonst erst dem Betreiber auf.
 
 from __future__ import annotations
 
+import pathlib
 import subprocess
 import sys
 import time
@@ -96,3 +97,37 @@ def test_gleichzeitiges_oeffnen_einer_frischen_datei(tmp_path: Path) -> None:
         f"{len(gescheitert)} von 16 gleichzeitigen Oeffnungen scheiterten:\n"
         f"{gescheitert[0][-400:]}"
     )
+
+
+def test_das_passwort_steht_in_keinem_argument(tmp_path: Path) -> None:
+    """Punkt 2 der Test-Liste -- er stand da, aber es gab ihn nicht.
+
+    Geprueft am laufenden Prozess ueber ``/proc``: ein Passwort in der
+    Kommandozeile stuende dort fuer jeden auf dem Rechner lesbar, und ebenso
+    in der Prozessliste, im Shell-Verlauf und in jedem Protokoll, das
+    Kommandozeilen mitschreibt.
+    """
+    daten = tmp_path / "sqd-data"
+    geheim = "Sonnenblume-2026-geheim"
+    p = subprocess.Popen(
+        [sys.executable, "-m", "swarmq_dashboard.cli", "--data-dir", str(daten),
+         "account", "create", "ops"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    try:
+        # Kurz warten, bis der Prozess wirklich ausgetauscht ist -- direkt nach
+        # dem Start ist /proc noch leer, und der Test praefte dann nichts.
+        argumente = b""
+        for _ in range(100):
+            argumente = pathlib.Path(f"/proc/{p.pid}/cmdline").read_bytes()
+            if b"account" in argumente:
+                break
+            time.sleep(0.02)
+        umgebung = pathlib.Path(f"/proc/{p.pid}/environ").read_bytes()
+    finally:
+        p.communicate(input=f"{geheim}\n{geheim}\n", timeout=60)
+
+    assert p.returncode == 0
+    assert geheim.encode() not in argumente, "das Passwort steht in der Kommandozeile"
+    assert geheim.encode() not in umgebung, "das Passwort steht in der Umgebung"
+    assert b"account" in argumente, "Vorbedingung: die Argumente wurden wirklich gelesen"

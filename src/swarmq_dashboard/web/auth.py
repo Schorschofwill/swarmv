@@ -239,9 +239,22 @@ class LoginThrottle:
     von der naechsten Adresse. Die groessere der beiden Verzoegerungen gilt.
     """
 
-    def __init__(self, path: str | Path, *, clock: Clock = time.time) -> None:
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        clock: Clock = time.time,
+        base_delay_s: float = DELAY_BASE_S,
+        max_delay_s: float = MAX_DELAY_S,
+    ) -> None:
         self._con = _connect(Path(path))
         self._clock = clock
+        # Die beiden Werte sind die Naht fuer die Testreihe: sie prueft die
+        # Bremse ueber echte Anfragen und bezahlt die Wartezeit sonst in
+        # Sekunden Laufzeit. Am geprueften Verhalten aendern sie nichts --
+        # nur den Massstab.
+        self._base_delay_s = base_delay_s
+        self._max_delay_s = max_delay_s
         # Wie im Sitzungs- und im Kontenspeicher. Ohne ihn brachen unter
         # sechzehn Faden fuenfzehn mit "bad parameter or other API misuse" ab,
         # und der Zaehlerstand war danach falsch -- eine Bremse, die still
@@ -281,7 +294,7 @@ class LoginThrottle:
         # Fehlversuchen war die Anmeldung damit ein HTTP 500 -- auch mit dem
         # richtigen Passwort, und fuer die ganze Herkunft. Ausgerechnet die
         # Zeile, die "nie eine Sperre" sichern soll, war die Sperre.
-        return float(min(DELAY_BASE_S * (2 ** min(ueber - 1, 40)), MAX_DELAY_S))
+        return float(min(self._base_delay_s * (2 ** min(ueber - 1, 40)), self._max_delay_s))
 
     # -- Schreiben -------------------------------------------------------
 

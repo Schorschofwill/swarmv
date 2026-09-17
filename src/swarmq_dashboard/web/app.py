@@ -36,6 +36,8 @@ from swarmq_dashboard.directory.writer import DirectoryWriter
 from swarmq_dashboard.events import TASK_STREAM
 from swarmq_dashboard.stream import StreamUnavailable, ValkeyStreamClient
 from swarmq_dashboard.web.auth import (
+    DELAY_BASE_S,
+    MAX_DELAY_S,
     LoginThrottle,
     SqliteStore,
     csrf_guard,
@@ -134,9 +136,19 @@ class Services:
     Sache, und diese Klasse laesst sich ohne Anwendung pruefen.
     """
 
-    def __init__(self, config: DashboardConfig, *, hasher: PasswordHasher | None = None) -> None:
+    def __init__(
+        self,
+        config: DashboardConfig,
+        *,
+        hasher: PasswordHasher | None = None,
+        throttle_scale: float = 1.0,
+    ) -> None:
         self._config = config
         self._hasher = hasher
+        #: Massstab der Anmeldebremse. Nur fuer die Testreihe kleiner als 1 --
+        #: sie prueft die Bremse ueber echte Anfragen und bezahlt die
+        #: Wartezeit sonst in Sekunden Laufzeit.
+        self._throttle_scale = throttle_scale
         self.accounts: AccountStore | None = None
         self.throttle: LoginThrottle | None = None
         #: Der Speicher aus der Registratur -- eine vierte Verbindung auf die
@@ -188,7 +200,11 @@ class Services:
             return
         try:
             self.accounts = AccountStore(self._config.accounts_file, hasher=self._hasher)
-            self.throttle = LoginThrottle(self._config.accounts_file)
+            self.throttle = LoginThrottle(
+                self._config.accounts_file,
+                base_delay_s=DELAY_BASE_S * self._throttle_scale,
+                max_delay_s=MAX_DELAY_S * self._throttle_scale,
+            )
             self._sitzungsspeicher = SqliteStore(self._config.accounts_file)
             self._gruende["accounts"] = None
         except Exception as exc:
@@ -383,6 +399,7 @@ def create_app(
     *,
     hasher: PasswordHasher | None = None,
     maintenance_every_s: float = DEFAULT_MAINTENANCE_S,
+    throttle_scale: float = 1.0,
 ) -> Litestar:
     """Die Anwendung bauen. Der Lebenszyklus haelt die Aussenverbindungen.
 
@@ -390,7 +407,7 @@ def create_app(
     kein Test, dass der Lebenszyklus den Takt ueberhaupt **startet** -- und
     genau das war der Fehler bei ``refresh()``, das nur von Hand gerufen wurde.
     """
-    services = Services(config, hasher=hasher)
+    services = Services(config, hasher=hasher, throttle_scale=throttle_scale)
     # Die Registratur zeigt auf den Speicher des Dienstes, statt einen
     # eigenen zu halten: sonst bliebe eine vierte Verbindung auf die
     # Kontendatei offen, die niemand schliesst und deren abgelaufene Zeilen

@@ -43,6 +43,13 @@ Test-Liste (AGENTS.md):
 20. Abmelden nimmt das Merkmal mit.
 21. Ohne Kontenspeicher wird abgewiesen, nicht durchgelassen.
 22. Die Anmeldung rechnet nicht im Faden des Ereignis-Loops.
+
+=== ZYKLUS 9: Zusicherungen, die bisher fehlten ===
+23. Ein Fehlschlag hinterlaesst keine Sitzung.
+24. Die Bremse wird ueber HTTP nie zur Sperre.
+25. Der Fehlschlag sagt nicht, woran es lag.
+26. Die Herkunft kommt nicht aus einer frei waehlbaren Kopfzeile.
+27. Die Bremse greift vor der Passwortpruefung.
 """
 
 from __future__ import annotations
@@ -90,8 +97,15 @@ def _config(tmp_path: Path) -> DashboardConfig:
 BASIS = "https://testserver.local"
 
 
+#: Massstab der Bremse in der Testreihe: dasselbe Verhalten, ein Fuenfzigstel
+#: der Wartezeit. Ohne ihn bezahlt jeder Test die Bremse in echten Sekunden.
+_BREMSE = 0.02
+
+
 def _klient(config: DashboardConfig) -> AsyncTestClient:
-    return AsyncTestClient(app=create_app(config, hasher=_BILLIG), base_url=BASIS)
+    return AsyncTestClient(
+        app=create_app(config, hasher=_BILLIG, throttle_scale=_BREMSE), base_url=BASIS
+    )
 
 
 def _mit_konto(tmp_path: Path) -> DashboardConfig:
@@ -166,7 +180,7 @@ async def test_fremdes_merkmal_gilt_nicht(tmp_path: Path) -> None:
     und benutzt es gegen eine fremde.
     """
     config = _mit_konto(tmp_path)
-    app = create_app(config, hasher=_BILLIG)
+    app = create_app(config, hasher=_BILLIG, throttle_scale=_BREMSE)
     async with (
         AsyncTestClient(app=app, base_url=BASIS) as eine,
         AsyncTestClient(app=app, base_url=BASIS) as andere,
@@ -261,7 +275,7 @@ async def test_fehlversuche_verzoegern_und_sperren_nicht(tmp_path: Path) -> None
         beginn = time.perf_counter()
         await _anmelden(c, passwort="auch-falsch")
         gebremst = time.perf_counter() - beginn
-        assert gebremst > 0.2, f"nach fuenf Fehlversuchen keine spuerbare Bremse ({gebremst:.3f} s)"
+        assert gebremst > 0.004, f"nach fuenf Fehlversuchen keine spuerbare Bremse ({gebremst:.3f} s)"
 
         # Und das Konto lebt: die Bremse ist keine Sperre.
         s = AccountStore(config.accounts_file, hasher=_BILLIG)
@@ -285,7 +299,7 @@ async def test_bremse_wirkt_auch_ohne_valkey(tmp_path: Path) -> None:
             await _anmelden(c, passwort="falsch")
         beginn = time.perf_counter()
         await _anmelden(c, passwort="falsch")
-        assert time.perf_counter() - beginn > 0.2, "ohne Valkey bremst die Anmeldung nicht"
+        assert time.perf_counter() - beginn > 0.004, "ohne Valkey bremst die Anmeldung nicht"
 
 
 # --- Zyklus 6 -----------------------------------------------------------
@@ -338,7 +352,7 @@ async def test_die_alte_sitzung_ist_danach_wertlos(tmp_path: Path) -> None:
     alte Sitzung im Speicher stehen bliebe.
     """
     config = _mit_konto(tmp_path)
-    app = create_app(config, hasher=_BILLIG)
+    app = create_app(config, hasher=_BILLIG, throttle_scale=_BREMSE)
     async with AsyncTestClient(app=app, base_url=BASIS) as c:
         await c.get("/login")
         await _anmelden(c)
@@ -449,7 +463,7 @@ async def test_ein_merkmal_aus_fremder_sitzung_gilt_nicht(tmp_path: Path) -> Non
     einfachen ``GET /login`` abholt, in einer fremden angemeldeten Sitzung
     angenommen.
     """
-    app = create_app(_mit_konto(tmp_path), hasher=_BILLIG)
+    app = create_app(_mit_konto(tmp_path), hasher=_BILLIG, throttle_scale=_BREMSE)
     async with AsyncTestClient(app=app, base_url=BASIS) as fremd:
         await fremd.get("/login")
         fremdes = str(fremd.cookies.get("csrftoken"))
@@ -496,7 +510,7 @@ async def test_ohne_kontenspeicher_wird_abgewiesen(tmp_path: Path) -> None:
     weg, und ein gesperrtes Konto kam durch. Die Verzweigung muss im Zweifel
     **zu**fallen, nicht auf.
     """
-    app = create_app(_mit_konto(tmp_path), hasher=_BILLIG)
+    app = create_app(_mit_konto(tmp_path), hasher=_BILLIG, throttle_scale=_BREMSE)
     async with AsyncTestClient(app=app, base_url=BASIS) as c:
         await _anmelden(c)
         assert (await c.get("/api/status")).status_code == 200
@@ -524,7 +538,7 @@ async def test_die_anmeldung_blockiert_den_ereignis_loop_nicht(tmp_path: Path) -
     import asyncio as _aio
 
     config = _mit_konto(tmp_path)
-    app = create_app(config, hasher=_BILLIG)
+    app = create_app(config, hasher=_BILLIG, throttle_scale=_BREMSE)
     gesehen: list[bool] = []
 
     async with AsyncTestClient(app=app, base_url=BASIS) as c:
@@ -549,3 +563,138 @@ async def test_die_anmeldung_blockiert_den_ereignis_loop_nicht(tmp_path: Path) -
 
     assert gesehen, "die Passwortpruefung lief gar nicht"
     assert not any(gesehen), "die Passwortpruefung lief im Ereignis-Loop"
+
+
+# --- Zyklus 9: Zusicherungen, die bisher fehlten -------------------------
+
+
+async def test_ein_fehlschlag_hinterlaesst_keine_sitzung(tmp_path: Path) -> None:
+    """Eine vollstaendige Umgehung der Anmeldung waere unbemerkt geblieben.
+
+    Kein Test folgte einem fehlgeschlagenen Anmeldeversuch mit einem Aufruf
+    auf eine geschuetzte Route -- die Zusicherung endete beim Statuscode der
+    Anmeldung selbst.
+    """
+    async with _klient(_mit_konto(tmp_path)) as c:
+        for passwort in ("falsch", "", "x" * 200):
+            antwort = await _anmelden(c, passwort=passwort)
+            assert antwort.status_code != 303, f"{passwort!r} wurde angenommen"
+            weiter = await c.get("/api/status", follow_redirects=False)
+            assert weiter.status_code in (302, 303, 401), (
+                f"nach dem Fehlschlag mit {passwort!r} war die Seite erreichbar"
+            )
+        for konto in ("gibtesnicht", "", "OPS"):
+            await _anmelden(c, konto=konto)
+            weiter = await c.get("/api/status", follow_redirects=False)
+            assert weiter.status_code in (302, 303, 401), f"{konto!r} kam durch"
+
+
+async def test_die_bremse_wird_ueber_http_nie_zur_sperre(tmp_path: Path) -> None:
+    """R22 auf dem Weg, auf dem sie verletzt wuerde.
+
+    Geprueft wurde bisher nur am Speicher, dass das Konto noch existiert --
+    aber nicht, dass man sich damit auch **anmelden** kann. Eine Bremse, die
+    zur Sperre wird, haette das nicht gezeigt.
+    """
+    async with _klient(_mit_konto(tmp_path)) as c:
+        for _ in range(6):
+            await _anmelden(c, passwort="falsch")
+
+        antwort = await _anmelden(c)                   # das richtige Passwort
+        assert antwort.status_code == 303, (
+            f"nach sechs Fehlversuchen kommt das richtige Passwort nicht mehr durch: "
+            f"{antwort.status_code}"
+        )
+        assert (await c.get("/api/status")).status_code == 200
+
+
+async def test_der_fehlschlag_sagt_nicht_woran_es_lag(tmp_path: Path) -> None:
+    """Ein Satz fuer alle drei Faelle. Jede Unterscheidung waere dieselbe
+    Aufzaehlung, die die gleichen Antwortzeiten verhindern (R22).
+    """
+    config = _mit_konto(tmp_path)
+    s = AccountStore(config.accounts_file, hasher=_BILLIG)
+    s.create("gesperrt", _PASSWORT)
+    s.lock("gesperrt")
+    s.close()
+
+    async with _klient(config) as c:
+        antworten = []
+        for konto, passwort in (("gibtesnicht", _PASSWORT), ("ops", "falsch"),
+                                ("gesperrt", _PASSWORT)):
+            a = await _anmelden(c, konto=konto, passwort=passwort)
+            antworten.append((a.status_code, a.text))
+    codes = {c for c, _ in antworten}
+    texte = {t for _, t in antworten}
+    assert codes == {401}, f"verschiedene Statuscodes: {codes}"
+    assert len(texte) == 1, f"verschiedene Antworttexte: {texte}"
+    assert "gibt" not in texte.pop().lower().replace("stimmt", ""), "der Text nennt den Grund"
+
+
+async def test_die_herkunft_kommt_nicht_aus_einer_kopfzeile(tmp_path: Path) -> None:
+    """``X-Forwarded-For`` ist frei waehlbar -- die Herkunftsbremse waere damit
+    vollstaendig umgehbar, indem der Angreifer je Versuch eine andere Adresse
+    behauptet.
+    """
+    async with _klient(_mit_konto(tmp_path)) as c:
+        # Je Versuch ein **anderes Konto** und eine andere behauptete Adresse.
+        # Dass der Kontozaehler auch mitbremst, macht diesen Test sonst blind:
+        # in einer ersten Fassung stand ueberall "ops", und die Bremse kam vom
+        # Konto, nicht von der Herkunft -- die Zusicherung war wirkungslos.
+        for i in range(6):
+            seite = await c.get("/login")
+            await c.post(
+                "/login",
+                data={"account": f"konto{i}", "password": "falsch",
+                      "_csrf_token": _merkmal_aus(seite.text)},
+                headers={"x-forwarded-for": f"10.0.0.{i}"},
+                follow_redirects=False,
+            )
+
+        beginn = time.perf_counter()
+        await _anmelden(c, konto="wiederandersA", passwort="falsch")
+        gebremst = time.perf_counter() - beginn
+    assert gebremst > 0.004, (
+        f"sechs Fehlversuche von derselben echten Herkunft, aber mit wechselndem "
+        f"X-Forwarded-For und wechselndem Konto, bremsen nicht ({gebremst:.3f} s) -- "
+        "die frei waehlbare Kopfzeile wird als Herkunft benutzt"
+    )
+
+
+async def test_die_bremse_greift_vor_der_passwortpruefung(tmp_path: Path) -> None:
+    """Sonst traefe die Verzoegerung nur den Fall, den die Pruefung ohnehin
+    ablehnt -- und ein Angreifer koennte sie durch Abbrechen der Verbindung
+    umgehen, waehrend der Server noch wartet.
+    """
+    import asyncio as _aio
+
+    config = _mit_konto(tmp_path)
+    app = create_app(config, hasher=_BILLIG, throttle_scale=_BREMSE)
+    reihenfolge: list[str] = []
+
+    async with AsyncTestClient(app=app, base_url=BASIS) as c:
+        for _ in range(4):
+            await _anmelden(c, passwort="falsch")
+
+        speicher = app.state.services.accounts
+        echt_verify = speicher.verify
+        echt_sleep = _aio.sleep
+
+        def beobachtet(name: str, passwort: str) -> bool:
+            reihenfolge.append("pruefung")
+            return bool(echt_verify(name, passwort))
+
+        async def beobachtet_sleep(dauer: float, *a: object, **k: object) -> None:
+            if dauer > 0:
+                reihenfolge.append("warten")
+            await echt_sleep(0)
+
+        speicher.verify = beobachtet
+        import swarmq_dashboard.web.routes.login as modul
+        modul.asyncio.sleep = beobachtet_sleep  # type: ignore[assignment]
+        try:
+            await _anmelden(c, passwort="falsch")
+        finally:
+            modul.asyncio.sleep = echt_sleep  # type: ignore[assignment]
+
+    assert reihenfolge[:2] == ["warten", "pruefung"], f"Reihenfolge: {reihenfolge}"

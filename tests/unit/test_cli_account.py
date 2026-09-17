@@ -31,6 +31,10 @@ Test-Liste (AGENTS.md):
 13. Ein leeres --data-dir wird abgewiesen, statt im Arbeitsverzeichnis zu landen.
 14. Ein langer Bestandsname sprengt die Liste nicht.
 15. Ein unbrauchbarer Kontoname wird benannt.
+
+=== ZYKLUS 5: Zusicherungen, die bisher fehlten ===
+16. Die Passworteingabe ist wirklich verdeckt -- an der Vorgabe geprueft.
+17. Ein langer Bestandsname sprengt die Ausrichtung der Liste nicht.
 """
 
 from __future__ import annotations
@@ -253,3 +257,49 @@ def test_unbrauchbarer_kontoname_wird_benannt(daten: Path) -> None:
     assert code != 0
     assert "traceback" not in text.lower()
     assert _store(daten).accounts() == []
+
+
+# --- Zyklus 5: Zusicherungen, die bisher fehlten -------------------------
+
+
+def test_die_eingabe_ist_verdeckt() -> None:
+    """Das zentrale Versprechen des Moduls -- und von keinem Test gedeckt.
+
+    Die Unit-Tests reichen ihre eigene Attrappe hinein, die Vorgabe lief dort
+    nie; der Prozess-Test schiebt das Passwort ueber eine Pipe, und ``input()``
+    liest die genauso klaglos. Ein Wechsel auf ``input`` haette die Eingabe
+    sichtbar gemacht, ohne dass ein Test angeschlagen haette.
+    """
+    import getpass
+    import inspect
+
+    vorgabe = inspect.signature(main).parameters["prompt"].default
+    assert vorgabe is getpass.getpass, (
+        f"die Vorgabe der Passworteingabe ist {vorgabe!r}, nicht getpass.getpass"
+    )
+
+
+def test_ein_langer_bestandsname_sprengt_die_liste_nicht(daten: Path) -> None:
+    """Die Namenspruefung deckelt auf 64 Zeichen -- ueber ``create`` laesst
+    sich der Fall also gar nicht herstellen. Ein Name aus einer aelteren
+    Fassung kann laenger sein, und dann polsterte die Ausrichtung **jede**
+    Zeile auf seine Laenge: gemessen wuchs die Zeile von "ops" auf 507 Zeichen.
+    """
+    import sqlite3
+
+    s = _store(daten)
+    s.create("ops", "ein-langes-passwort")
+    s.close()
+    con = sqlite3.connect(daten / "accounts.sqlite3")
+    con.execute(
+        "insert into account(name, password_hash, locked, created_at, updated_at) "
+        "values (?, '$argon2id$x', 0, 1.0, 1.0)", ("a" * 500,)
+    )
+    con.commit()
+    con.close()
+
+    code, text = _lauf(daten, "account", "list")
+    assert code == 0
+    fuer_ops = [z for z in text.splitlines() if z.startswith("ops")]
+    assert fuer_ops, text
+    assert len(fuer_ops[0]) <= 80, f"die Zeile von ops ist {len(fuer_ops[0])} Zeichen lang"
