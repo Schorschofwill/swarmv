@@ -112,15 +112,27 @@ class DirectoryWriter:
              json.dumps(ev.payload, ensure_ascii=False, default=repr)),
         )
 
+    def mark_incomplete(self, von: float, bis: float) -> int:
+        """Zeilen in einer Zeitspanne als unvollstaendig markieren (R4a).
+
+        Zwei Quellen benutzen das: das Verlust-Ereignis eines Hooks, und der
+        Rueckstand des Strom-Lesers hinter dem Laengendeckel. Beide bedeuten
+        dasselbe fuer das Teammitglied -- in dieser Zeitspanne fehlt
+        moeglicherweise etwas -- und sollen deshalb gleich aussehen.
+        """
+        cur = self._con.execute(
+            "update task set incomplete=1 where last_seen_at >= ? and first_seen_at <= ?",
+            (von, bis),
+        )
+        self._con.commit()
+        return int(cur.rowcount)
+
     def _mark_gap(self, ev: Event) -> None:
-        """Zeilen in der Zeitspanne eines Verlust-Ereignisses markieren (R4a)."""
+        """Zeitspanne eines Verlust-Ereignisses uebernehmen."""
         von, bis = ev.payload.get("from_ts"), ev.payload.get("to_ts")
         if von is None or bis is None:
             return
-        self._con.execute(
-            "update task set incomplete=1 where last_seen_at >= ? and first_seen_at <= ?",
-            (float(von), float(bis)),
-        )
+        self.mark_incomplete(float(von), float(bis))
 
     # -- Aufbewahrung ----------------------------------------------------
 

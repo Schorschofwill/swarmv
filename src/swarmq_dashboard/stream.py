@@ -74,6 +74,34 @@ class ValkeyStreamClient:
         result: int = await self.client.xlen(key)
         return result
 
+    async def read_after(self, key: str, last_id: str, count: int) -> list[tuple[str, bytes]]:
+        """Eintraege nach ``last_id`` in Stromreihenfolge.
+
+        Ein leeres ``last_id`` heisst "von vorn" -- der Fall des Neuaufbaus.
+        ``XRANGE`` mit exklusiver Untergrenze, nicht ``XREAD``: der Leser will
+        nachholen, nicht auf Neues warten.
+        """
+        von = f"({last_id}" if last_id else "-"
+        eintraege: list[tuple[bytes, dict[bytes, bytes]]] = await self.client.xrange(
+            key, min=von, count=count
+        )
+        return [(sid.decode(), felder[FIELD.encode()]) for sid, felder in eintraege]
+
+    async def min_id(self, key: str) -> str | None:
+        """Kennung des aeltesten noch vorhandenen Eintrags, oder ``None``."""
+        eintraege: list[tuple[bytes, dict[bytes, bytes]]] = await self.client.xrange(key, count=1)
+        return eintraege[0][0].decode() if eintraege else None
+
+    async def trim_by_min_id(self, key: str, min_ms: int) -> int:
+        """Alles vor ``min_ms`` entfernen -- die Trimmung nach Alter aus R9.
+
+        Genau, nicht ungefaehr: die Aufbewahrungsdauer ist eine Zusage an den
+        Betreiber (KD7), und ein ungefaehrer Schnitt liesse je nach Knotenlage
+        mal mehr, mal weniger stehen.
+        """
+        entfernt: int = await self.client.xtrim(key, minid=f"{min_ms}-0", approximate=False)
+        return entfernt
+
     async def memory_usage(self, key: str) -> int | None:
         """Speicherbedarf des Stroms in Bytes -- der Fuellstand aus R9."""
         result: Any = await self.client.memory_usage(key)
