@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Worker — dunkle Fassung · swarmq-dashboard</title>
+
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;display=swap">
+  <style>
+    body { margin: 0; -webkit-font-smoothing: antialiased; }
+    a { color: #6FBF95; text-decoration: none; } a:hover { color: #93D4B1; }
+    table { border-collapse: collapse; width: 100%; }
+    th { text-align: left; font-weight: 500; font-size: 10.5px; letter-spacing: .07em; text-transform: uppercase; color: #9A9C94; padding: 0 14px 7px; }
+    td { padding: 8px 14px; border-top: 1px solid #232529; font-size: 13px; color: #E9E9E4; }
+    .mono { font-family: 'IBM Plex Mono', ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+    .num { font-family: 'IBM Plex Mono', ui-monospace, monospace; font-variant-numeric: tabular-nums; text-align: right; }
+    .muted { color: #9A9C94; }
+    .chip { display: inline-flex; align-items: center; gap: 6px; height: 21px; padding: 0 9px; border-radius: 3px; font-size: 11.5px; font-weight: 500; }
+    .dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+    .card { background: #1A1B1F; border: 1px solid #2A2C31; border-radius: 6px; }
+    .btn { font: inherit; font-size: 13px; font-weight: 500; height: 32px; padding: 0 13px; border-radius: 4px; cursor: pointer; border: 1px solid #383A40; background: #212328; color: #E9E9E4; }
+    .btn:hover { background: #2A2C31; }
+    .navlink { display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 4px; font-size: 13.5px; color: #B9BBB2; text-decoration: none; }
+    .navlink:hover { background: #232529; color: #E9E9E4; }
+  </style>
+  <style>
+    html { background: #0B0C0E; }
+    body { margin: 0; padding: 28px; display: flex; justify-content: center;
+           font-family: 'IBM Plex Sans', system-ui, sans-serif; }
+    body > div { box-shadow: 0 2px 10px rgba(0,0,0,.45), 0 0 0 1px rgba(233,233,228,.10); border-radius: 8px; overflow: hidden; }
+    .mockup-bar { position: fixed; top: 0; left: 0; right: 0; height: 0; }
+  </style>
+  
+</head>
+<body>
+
+<div style="width: 1360px; height: 960px; box-sizing: border-box; display: flex; background: #131417; font-family: 'IBM Plex Sans', system-ui, sans-serif; color: #E9E9E4;">
+
+  <nav style="width: 216px; flex-shrink: 0; background: #1A1B1F; border-right: 1px solid #2A2C31; display: flex; flex-direction: column; padding: 18px 12px;">
+    <div style="display: flex; align-items: center; gap: 9px; padding: 0 8px 20px;">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+        <rect x="1.5" y="1.5" width="7" height="7" rx="1.5" fill="#E9E9E4"></rect>
+        <rect x="11.5" y="1.5" width="7" height="7" rx="1.5" fill="#E9E9E4" opacity="0.45"></rect>
+        <rect x="1.5" y="11.5" width="7" height="7" rx="1.5" fill="#E9E9E4" opacity="0.45"></rect>
+        <rect x="11.5" y="11.5" width="7" height="7" rx="1.5" fill="#E9E9E4" opacity="0.18"></rect>
+      </svg>
+      <div>
+        <div class="mono" style="font-size: 14px; font-weight: 600; letter-spacing: -.01em; line-height: 1.1;">swarmq</div>
+        <div style="font-size: 10.5px; letter-spacing: .09em; text-transform: uppercase; color: #74766E; line-height: 1.4;">Dashboard</div>
+      </div>
+    </div>
+    <a class="navlink" href="WorkerDark.html" style="background: #E9E9E4; color: #17181A; font-weight: 600;" aria-current="page">
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="2" y="2" width="5" height="5" rx="1"></rect><rect x="9" y="2" width="5" height="5" rx="1"></rect><rect x="2" y="9" width="5" height="5" rx="1"></rect><rect x="9" y="9" width="5" height="5" rx="1"></rect></svg>
+      Worker
+    </a>
+    <a class="navlink" href="Tasks.html">
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><path d="M2 4h12M2 8h12M2 12h8"></path></svg>
+      Tasks
+    </a>
+    <a class="navlink" href="DeadLetter.html">
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 9.5V13a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V9.5M2 9.5 3.8 3.4A1 1 0 0 1 4.76 2.7h6.48a1 1 0 0 1 .96.7L14 9.5M2 9.5h3.2l.9 1.8h3.8l.9-1.8H14"></path></svg>
+      Dead Letter
+      <span class="mono" style="margin-left: auto; font-size: 11.5px; color: #E8817A;">37</span>
+    </a>
+    <a class="navlink" href="#">
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6"></circle><path d="M8 4.6V8l2.4 1.6"></path></svg>
+      Audit
+    </a>
+    <div style="flex-grow: 1;"></div>
+    <div style="border-top: 1px solid #232529; padding: 12px 8px 2px; display: flex; align-items: center; gap: 9px;">
+      <div class="mono" style="width: 26px; height: 26px; border-radius: 4px; background: #26282C; color: #B9BBB2; font-size: 11.5px; font-weight: 600; display: flex; align-items: center; justify-content: center;">GS</div>
+      <div style="flex-grow: 1; min-width: 0;">
+        <div style="font-size: 12.5px; font-weight: 500;">georg</div>
+        <a href="#" style="font-size: 11.5px; color: #74766E;">Abmelden</a>
+      </div>
+    </div>
+  </nav>
+
+  <main style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column;">
+
+    <header style="height: 56px; flex-shrink: 0; box-sizing: border-box; border-bottom: 1px solid #2A2C31; background: #1A1B1F; display: flex; align-items: center; gap: 14px; padding: 0 24px;">
+      <h1 style="margin: 0; font-size: 16px; font-weight: 600; letter-spacing: -.01em;">Worker</h1>
+      <span class="muted" style="font-size: 12.5px;">3 Gruppen · 11 Prozesse · 2 Supervisoren</span>
+      <div style="flex-grow: 1;"></div>
+      <div style="display: flex; align-items: center; gap: 7px;">
+        <span class="chip" style="background: #1C3529; color: #6FBF95;"><span class="dot" style="background: #6FBF95;"></span>Broker</span>
+        <span class="chip" style="background: #1C3529; color: #6FBF95;"><span class="dot" style="background: #6FBF95;"></span>Backend</span>
+        <span class="chip" style="background: #1C3529; color: #6FBF95;"><span class="dot" style="background: #6FBF95;"></span>Strom · vor 2 s</span>
+      </div>
+    </header>
+
+    <div style="flex-grow: 1; overflow: hidden; padding: 20px 24px; display: flex; flex-direction: column; gap: 16px;">
+
+      <section class="card">
+        <div style="display: flex; align-items: center; gap: 12px; padding: 13px 16px;">
+          <span class="mono" style="font-size: 14.5px; font-weight: 600;">orders-eu</span>
+          <span class="chip" style="background: #26282C; color: #B9BBB2;">Autoskalierung an</span>
+          <div style="flex-grow: 1;"></div>
+          <div style="text-align: right; line-height: 1.25;">
+            <div class="mono" style="font-size: 13.5px; font-weight: 600;">2 – 8</div>
+            <div style="font-size: 11px; color: #9A9C94;">Sollwert</div>
+          </div>
+          <span class="chip" style="background: #1C3529; color: #6FBF95;"><span class="dot" style="background: #6FBF95;"></span>aktiv</span>
+          <button type="button" class="btn">Sollwert ändern</button>
+        </div>
+        <div style="display: flex; gap: 22px; padding: 0 16px 12px; font-size: 12px; color: #9A9C94; border-bottom: 1px solid #232529;">
+          <span>Spielraum <span class="mono" style="color: #E9E9E4;">16</span></span>
+          <span>wirksam <span class="mono" style="color: #E9E9E4;">2–8</span> aus Sollwert</span>
+          <span>Slots <span class="mono" style="color: #E9E9E4;">4/16</span> belegt</span>
+          <span>wartende Nachrichten <span class="mono" style="color: #E9E9E4;">1.284</span></span>
+          <span>zuletzt gemeldet <span class="mono" style="color: #E9E9E4;">vor 3 s</span></span>
+        </div>
+        <div style="padding: 10px 2px 4px;">
+          <table>
+            <colgroup><col style="width: 62px"><col><col style="width: 126px"><col style="width: 86px"><col style="width: 96px"><col style="width: 104px"><col style="width: 132px"></colgroup>
+            <thead><tr><th>Slot</th><th>worker_id</th><th>Verbundenheit</th><th style="text-align:right">Belegt</th><th style="text-align:right">Tasks</th><th style="text-align:right">Uptime</th><th>Lebenszeichen</th></tr></thead>
+            <tbody>
+              <tr><td class="mono">0</td><td class="mono">phx-w1:0</td><td><span class="chip" style="background:#1C3529;color:#6FBF95;"><span class="dot" style="background:#6FBF95;"></span>verbunden</span></td><td class="num">4/4</td><td class="num">12.847</td><td class="num">6 d 4 h</td><td class="mono muted">vor 3 s</td></tr>
+              <tr><td class="mono">1</td><td class="mono">phx-w1:1</td><td><span class="chip" style="background:#1C3529;color:#6FBF95;"><span class="dot" style="background:#6FBF95;"></span>verbunden</span></td><td class="num">3/4</td><td class="num">12.512</td><td class="num">6 d 4 h</td><td class="mono muted">vor 2 s</td></tr>
+              <tr><td class="mono">2</td><td class="mono">phx-w2:0</td><td><span class="chip" style="background:#1C3529;color:#6FBF95;"><span class="dot" style="background:#6FBF95;"></span>verbunden</span></td><td class="num">4/4</td><td class="num">9.331</td><td class="num">2 d 11 h</td><td class="mono muted">vor 1 s</td></tr>
+              <tr><td class="mono">3</td><td class="mono">phx-w2:1</td><td><span class="chip" style="background:#1C3529;color:#6FBF95;"><span class="dot" style="background:#6FBF95;"></span>verbunden</span></td><td class="num">2/4</td><td class="num">9.104</td><td class="num">2 d 11 h</td><td class="mono muted">vor 4 s</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card">
+        <div style="display: flex; align-items: center; gap: 12px; padding: 13px 16px;">
+          <span class="mono" style="font-size: 14.5px; font-weight: 600;">billing</span>
+          <span class="chip" style="background: #26282C; color: #B9BBB2;">feste Form · Autoskalierung aus</span>
+          <div style="flex-grow: 1;"></div>
+          <div style="text-align: right; line-height: 1.25;">
+            <div class="mono" style="font-size: 13.5px; font-weight: 600;">4 – 4</div>
+            <div style="font-size: 11px; color: #9A9C94;">gesendet 14:31:08</div>
+          </div>
+          <span class="chip" style="background: #352B14; color: #D9A54A;"><span class="dot" style="background: #D9A54A;"></span>unbestätigt seit 14 s</span>
+          <button type="button" class="btn">Erneut senden</button>
+        </div>
+        <div style="display: flex; gap: 22px; padding: 0 16px 12px; font-size: 12px; color: #9A9C94; border-bottom: 1px solid #232529;">
+          <span>Spielraum <span class="mono" style="color: #E9E9E4;">8</span></span>
+          <span>wirksam <span class="mono" style="color: #E9E9E4;">2–2</span> aus Startargumenten</span>
+          <span>Slots <span class="mono" style="color: #E9E9E4;">2/8</span> belegt</span>
+          <span>wartende Nachrichten <span class="mono" style="color: #E9E9E4;">96</span></span>
+          <span>zuletzt gemeldet <span class="mono" style="color: #E9E9E4;">vor 14 s</span></span>
+        </div>
+        <div style="padding: 10px 2px 4px;">
+          <table>
+            <colgroup><col style="width: 62px"><col><col style="width: 126px"><col style="width: 86px"><col style="width: 96px"><col style="width: 104px"><col style="width: 132px"></colgroup>
+            <thead><tr><th>Slot</th><th>worker_id</th><th>Verbundenheit</th><th style="text-align:right">Belegt</th><th style="text-align:right">Tasks</th><th style="text-align:right">Uptime</th><th>Lebenszeichen</th></tr></thead>
+            <tbody>
+              <tr><td class="mono">0</td><td class="mono">phx-b1:0</td><td><span class="chip" style="background:#1C3529;color:#6FBF95;"><span class="dot" style="background:#6FBF95;"></span>verbunden</span></td><td class="num">1/2</td><td class="num">4.019</td><td class="num">18 h 42 m</td><td class="mono muted">vor 5 s</td></tr>
+              <tr><td class="mono">1</td><td class="mono">phx-b1:1</td><td><span class="chip" style="background:#1C3529;color:#6FBF95;"><span class="dot" style="background:#6FBF95;"></span>verbunden</span></td><td class="num">0/2</td><td class="num">3.884</td><td class="num">18 h 42 m</td><td class="mono muted">vor 5 s</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card">
+        <div style="display: flex; align-items: center; gap: 12px; padding: 13px 16px;">
+          <span class="mono" style="font-size: 14.5px; font-weight: 600;">reports</span>
+          <span class="chip" style="background: #26282C; color: #B9BBB2;">Autoskalierung an</span>
+          <div style="flex-grow: 1;"></div>
+          <div style="text-align: right; line-height: 1.25;">
+            <div class="mono" style="font-size: 13.5px; font-weight: 600; color: #9A9C94;">—</div>
+            <div style="font-size: 11px; color: #9A9C94;">kein Sollwert</div>
+          </div>
+          <span class="chip" style="background: #26282C; color: #B9BBB2;">aus Startargumenten</span>
+          <button type="button" class="btn">Sollwert setzen</button>
+        </div>
+        <div style="display: flex; gap: 22px; padding: 0 16px 12px; font-size: 12px; color: #9A9C94; border-bottom: 1px solid #232529;">
+          <span>Spielraum <span class="mono" style="color: #E9E9E4;">12</span></span>
+          <span>wirksam <span class="mono" style="color: #E9E9E4;">3–6</span> aus Startargumenten</span>
+          <span>Slots <span class="mono" style="color: #E9E9E4;">3/12</span> belegt</span>
+          <span>wartende Nachrichten <span class="mono" style="color: #E9E9E4;">8</span></span>
+          <span>zuletzt gemeldet <span class="mono" style="color: #E9E9E4;">vor 2 s</span></span>
+        </div>
+        <div style="margin: 0 16px; padding: 9px 12px; background: #352B14; border-radius: 4px; display: flex; align-items: center; gap: 9px; font-size: 12.5px; color: #E2B968;">
+          <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="#D9A54A" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><path d="M8 1.8 15 14H1L8 1.8Z"></path><path d="M8 6.4v3.2M8 11.8v.2"></path></svg>
+          <span><strong style="font-weight: 600;">1 Konsument ohne Hook</strong> auf <span class="mono">reports</span> — der Broker meldet 4 Konsumenten, der Strom kennt 3 Worker. Tasks dieses Prozesses fehlen im Verzeichnis.</span>
+        </div>
+        <div style="padding: 10px 2px 4px;">
+          <table>
+            <colgroup><col style="width: 62px"><col><col style="width: 126px"><col style="width: 86px"><col style="width: 96px"><col style="width: 104px"><col style="width: 132px"></colgroup>
+            <thead><tr><th>Slot</th><th>worker_id</th><th>Verbundenheit</th><th style="text-align:right">Belegt</th><th style="text-align:right">Tasks</th><th style="text-align:right">Uptime</th><th>Lebenszeichen</th></tr></thead>
+            <tbody>
+              <tr><td class="mono">0</td><td class="mono">phx-w3:0</td><td><span class="chip" style="background:#1C3529;color:#6FBF95;"><span class="dot" style="background:#6FBF95;"></span>verbunden</span></td><td class="num">1/4</td><td class="num">2.240</td><td class="num">4 d 1 h</td><td class="mono muted">vor 2 s</td></tr>
+              <tr><td class="mono">1</td><td class="mono">phx-w3:1</td><td><span class="chip" style="background:#1C3529;color:#6FBF95;"><span class="dot" style="background:#6FBF95;"></span>verbunden</span></td><td class="num">2/4</td><td class="num">2.187</td><td class="num">4 d 1 h</td><td class="mono muted">vor 3 s</td></tr>
+              <tr style="background: #201A1A;"><td class="mono" style="color:#74766E;">2</td><td class="mono" style="color:#74766E;">phx-w3:2</td><td><span class="chip" style="background:#3A2320;color:#E8817A;"><span class="dot" style="background:#E8817A;"></span>getrennt</span></td><td class="num" style="color:#74766E;">—</td><td class="num" style="color:#74766E;">1.996</td><td class="num" style="color:#74766E;">—</td><td class="mono" style="color:#E8817A;">vor 4 m 12 s</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+    </div>
+  </main>
+</div>
+
+</body>
+</html>

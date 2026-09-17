@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;display=swap">
+  <style>
+    body { margin: 0; -webkit-font-smoothing: antialiased; }
+    a { color: #2E6F52; text-decoration: none; } a:hover { color: #1F4F3A; }
+    .mono { font-family: 'IBM Plex Mono', ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+    .muted { color: #6E7068; }
+    .chip { display: inline-flex; align-items: center; gap: 6px; height: 21px; padding: 0 9px; border-radius: 3px; font-size: 11.5px; font-weight: 500; }
+    .dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+    .card { background: #FFFFFF; border: 1px solid #E3E3DC; border-radius: 6px; }
+    .btn { font: inherit; font-size: 13px; font-weight: 500; height: 32px; padding: 0 13px; border-radius: 4px; cursor: pointer; border: 1px solid #D6D6CD; background: #FFFFFF; color: #17181A; }
+    .btn:hover { background: #F3F3EE; }
+    .navlink { display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 4px; font-size: 13.5px; color: #3C3E39; text-decoration: none; }
+    .navlink:hover { background: #F0F0EA; color: #17181A; }
+    .lbl { font-size: 10.5px; letter-spacing: .07em; text-transform: uppercase; color: #8A8C83; margin-bottom: 3px; }
+    .val { font-size: 13px; color: #17181A; }
+    .sec { font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: #6E7068; padding: 12px 16px; border-bottom: 1px solid #EFEFE9; }
+  </style>
+</helmet>
+
+<div style="width: 1360px; height: 960px; box-sizing: border-box; display: flex; background: #F5F5F1; font-family: 'IBM Plex Sans', system-ui, sans-serif; color: #17181A;">
+
+  <nav style="width: 216px; flex-shrink: 0; background: #FFFFFF; border-right: 1px solid #E3E3DC; display: flex; flex-direction: column; padding: 18px 12px;">
+    <div style="display: flex; align-items: center; gap: 9px; padding: 0 8px 20px;">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+        <rect x="1.5" y="1.5" width="7" height="7" rx="1.5" fill="{{accent}}"></rect>
+        <rect x="11.5" y="1.5" width="7" height="7" rx="1.5" fill="{{accent}}" opacity="0.45"></rect>
+        <rect x="1.5" y="11.5" width="7" height="7" rx="1.5" fill="{{accent}}" opacity="0.45"></rect>
+        <rect x="11.5" y="11.5" width="7" height="7" rx="1.5" fill="{{accent}}" opacity="0.18"></rect>
+      </svg>
+      <div>
+        <div class="mono" style="font-size: 14px; font-weight: 600; letter-spacing: -.01em; line-height: 1.1;">swarmq</div>
+        <div style="font-size: 10.5px; letter-spacing: .09em; text-transform: uppercase; color: #8A8C83; line-height: 1.4;">Dashboard</div>
+      </div>
+    </div>
+    <a class="navlink" href="Main.dc.html">
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="2" y="2" width="5" height="5" rx="1"></rect><rect x="9" y="2" width="5" height="5" rx="1"></rect><rect x="2" y="9" width="5" height="5" rx="1"></rect><rect x="9" y="9" width="5" height="5" rx="1"></rect></svg>
+      Worker
+    </a>
+    <a class="navlink" href="Tasks.dc.html" style="background: {{accent}}; color: #FFFFFF; font-weight: 500;" aria-current="page">
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><path d="M2 4h12M2 8h12M2 12h8"></path></svg>
+      Tasks
+    </a>
+    <a class="navlink" href="DeadLetter.dc.html">
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 9.5V13a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V9.5M2 9.5 3.8 3.4A1 1 0 0 1 4.76 2.7h6.48a1 1 0 0 1 .96.7L14 9.5M2 9.5h3.2l.9 1.8h3.8l.9-1.8H14"></path></svg>
+      Dead Letter
+      <span class="mono" style="margin-left: auto; font-size: 11.5px; color: #A33A31;">37</span>
+    </a>
+    <a class="navlink" href="#">
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6"></circle><path d="M8 4.6V8l2.4 1.6"></path></svg>
+      Audit
+    </a>
+    <div style="flex-grow: 1;"></div>
+    <div style="border-top: 1px solid #EFEFE9; padding: 12px 8px 2px; display: flex; align-items: center; gap: 9px;">
+      <div class="mono" style="width: 26px; height: 26px; border-radius: 4px; background: #EDEDE7; color: #4A4C46; font-size: 11.5px; font-weight: 600; display: flex; align-items: center; justify-content: center;">GS</div>
+      <div style="flex-grow: 1; min-width: 0;">
+        <div style="font-size: 12.5px; font-weight: 500;">georg</div>
+        <a href="#" style="font-size: 11.5px; color: #8A8C83;">Abmelden</a>
+      </div>
+    </div>
+  </nav>
+
+  <main style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column;">
+
+    <header style="height: 56px; flex-shrink: 0; box-sizing: border-box; border-bottom: 1px solid #E3E3DC; background: #FFFFFF; display: flex; align-items: center; gap: 10px; padding: 0 24px;">
+      <a href="Tasks.dc.html" style="font-size: 13px; color: #6E7068;">Tasks</a>
+      <span style="color: #C6C7BE;">/</span>
+      <span class="mono" style="font-size: 13px;">a41f8c2e</span>
+      <div style="flex-grow: 1;"></div>
+      <div style="display: flex; align-items: center; gap: 7px;">
+        <span class="chip" style="background: #E7F0EA; color: #235C43;"><span class="dot" style="background: #2E6F52;"></span>Broker</span>
+        <span class="chip" style="background: #E7F0EA; color: #235C43;"><span class="dot" style="background: #2E6F52;"></span>Backend</span>
+        <span class="chip" style="background: #E7F0EA; color: #235C43;"><span class="dot" style="background: #2E6F52;"></span>Strom · vor 2 s</span>
+      </div>
+    </header>
+
+    <div style="flex-grow: 1; overflow: hidden; padding: 20px 24px; display: flex; flex-direction: column; gap: 16px;">
+
+      <div style="display: flex; align-items: flex-start; gap: 14px;">
+        <div style="flex-grow: 1;">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <h1 class="mono" style="margin: 0; font-size: 21px; font-weight: 600; letter-spacing: -.015em;">render_pdf</h1>
+            <span class="chip" style="background: #E7F0EA; color: #235C43;"><span class="dot" style="background: #2E6F52;"></span>fertig</span>
+          </div>
+          <div class="mono" style="font-size: 12.5px; color: #8A8C83; margin-top: 4px;">a41f8c2e-5b17-4d90-9f33-2c0e81447aa1</div>
+        </div>
+        <button type="button" class="btn" disabled style="opacity: .45; cursor: default;">Stornieren</button>
+      </div>
+
+      <div style="padding: 8px 12px; background: #EEEEE8; border-radius: 4px; display: flex; align-items: center; gap: 9px; font-size: 12.5px; color: #4A4C46;">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#6E7068" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6"></circle><path d="M8 7.4v4M8 4.8v.2"></path></svg>
+        Dieser Task ist bereits beendet und kann nicht mehr storniert werden.
+      </div>
+
+      <div style="flex-grow: 1; display: flex; gap: 16px; min-height: 0;">
+
+        <div style="width: 620px; flex-shrink: 0; display: flex; flex-direction: column; gap: 16px;">
+          <section class="card">
+            <div class="sec">Verzeichnis</div>
+            <div style="padding: 16px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px 20px;">
+              <div><div class="lbl">Queue</div><div class="val mono">reports</div></div>
+              <div><div class="lbl">Worker</div><div class="val mono">phx-w3:1</div></div>
+              <div><div class="lbl">Wiederholungen</div><div class="val mono">0</div></div>
+              <div><div class="lbl">Eingereiht</div><div class="val mono">14:28:04,112</div></div>
+              <div><div class="lbl">Gestartet</div><div class="val mono">14:28:04,338</div></div>
+              <div><div class="lbl">Beendet</div><div class="val mono">14:28:09,150</div></div>
+              <div><div class="lbl">Laufzeit</div><div class="val mono">4.812 ms</div></div>
+              <div><div class="lbl">Zustellart</div><div class="val mono">at_least_once</div></div>
+              <div><div class="lbl">Ergebnis</div><div class="val mono"><a href="#">sq:result:a41f8c2e</a></div></div>
+            </div>
+          </section>
+
+          <section class="card" style="flex-grow: 1; display: flex; flex-direction: column; min-height: 0;">
+            <div class="sec" style="display: flex; align-items: center; gap: 8px;">
+              Argumente
+              <span style="font-weight: 400; text-transform: none; letter-spacing: 0; font-size: 11.5px; color: #8A8C83;">im Klartext, wie eingereiht</span>
+            </div>
+            <div class="mono" style="flex-grow: 1; margin: 0; padding: 14px 16px; font-size: 12.5px; line-height: 1.75; color: #33352F; white-space: pre; overflow: auto;">args   []
+kwargs {
+  "report_id": 812,
+  "locale": "de_AT",
+  "empfaenger": "ops@example.com",
+  "layout": "kompakt",
+  "seiten": [1, 2, 3, 4]
+}</div>
+          </section>
+        </div>
+
+        <section class="card" style="flex-grow: 1; display: flex; flex-direction: column; min-height: 0;">
+          <div class="sec">Signalfolge</div>
+          <div style="padding: 16px 18px; display: flex; flex-direction: column; gap: 0;">
+
+            <div style="display: flex; gap: 13px;">
+              <div style="display: flex; flex-direction: column; align-items: center; width: 10px; flex-shrink: 0;">
+                <span style="width: 9px; height: 9px; border-radius: 50%; background: #6E7068; margin-top: 5px;"></span>
+                <span style="flex-grow: 1; width: 1px; background: #E3E3DC;"></span>
+              </div>
+              <div style="padding-bottom: 20px; min-width: 0;">
+                <div class="mono" style="font-size: 13px; font-weight: 500;">task_enqueued</div>
+                <div class="mono" style="font-size: 11.5px; color: #8A8C83; margin-top: 2px;">14:28:04,112 · Anwendungs-Hook</div>
+                <div class="mono" style="font-size: 11.5px; color: #55574F; margin-top: 5px;">queue=reports delivery_mode=at_least_once</div>
+              </div>
+            </div>
+
+            <div style="display: flex; gap: 13px;">
+              <div style="display: flex; flex-direction: column; align-items: center; width: 10px; flex-shrink: 0;">
+                <span style="width: 9px; height: 9px; border-radius: 50%; background: #2A5F8F; margin-top: 5px;"></span>
+                <span style="flex-grow: 1; width: 1px; background: #E3E3DC;"></span>
+              </div>
+              <div style="padding-bottom: 20px; min-width: 0;">
+                <div class="mono" style="font-size: 13px; font-weight: 500;">task_started</div>
+                <div class="mono" style="font-size: 11.5px; color: #8A8C83; margin-top: 2px;">14:28:04,338 · phx-w3:1 · +226 ms</div>
+              </div>
+            </div>
+
+            <div style="display: flex; gap: 13px;">
+              <div style="display: flex; flex-direction: column; align-items: center; width: 10px; flex-shrink: 0;">
+                <span style="width: 9px; height: 9px; border-radius: 50%; background: #2E6F52; margin-top: 5px;"></span>
+              </div>
+              <div style="min-width: 0;">
+                <div class="mono" style="font-size: 13px; font-weight: 500;">task_completed</div>
+                <div class="mono" style="font-size: 11.5px; color: #8A8C83; margin-top: 2px;">14:28:09,150 · phx-w3:1 · +4.812 ms</div>
+                <div class="mono" style="font-size: 11.5px; color: #55574F; margin-top: 5px;">duration_ms=4812</div>
+              </div>
+            </div>
+
+          </div>
+          <div style="flex-grow: 1;"></div>
+          <div style="border-top: 1px solid #EFEFE9; padding: 10px 16px; font-size: 12px; color: #8A8C83;">
+            3 Signale · lückenlos
+          </div>
+        </section>
+
+      </div>
+    </div>
+  </main>
+</div>
+</x-dc>
+<script data-dc-script data-props='{"accent":{"editor":"color","default":"#2B2C30","options":["#2B2C30","#2E6F52","#2A5F8F","#574A8C"],"section":"Marke"},"$preview":{"width":1360,"height":960}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return { accent: this.props.accent ?? '#2B2C30' };
+  }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;display=swap">
+  <style>
+    body { margin: 0; -webkit-font-smoothing: antialiased; }
+    a { color: #2E6F52; text-decoration: none; } a:hover { color: #1F4F3A; }
+    .mono { font-family: 'IBM Plex Mono', ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+    .fl { display: block; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: #6E7068; margin-bottom: 5px; }
+    input { font: inherit; font-size: 13.5px; width: 100%; box-sizing: border-box; height: 38px; border: 1px solid #D6D6CD; border-radius: 4px; background: #FFFFFF; color: #17181A; padding: 0 11px; }
+    input:focus { outline: 2px solid #17181A; outline-offset: -1px; }
+  </style>
+</helmet>
+
+<div style="width: 800px; height: 620px; box-sizing: border-box; display: flex; align-items: center; justify-content: center; background: #F5F5F1; font-family: 'IBM Plex Sans', system-ui, sans-serif; color: #17181A;">
+
+  <div style="width: 352px;">
+
+    <div style="display: flex; align-items: center; gap: 11px; margin-bottom: 26px;">
+      <svg width="26" height="26" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+        <rect x="1.5" y="1.5" width="7" height="7" rx="1.5" fill="{{accent}}"></rect>
+        <rect x="11.5" y="1.5" width="7" height="7" rx="1.5" fill="{{accent}}" opacity="0.45"></rect>
+        <rect x="1.5" y="11.5" width="7" height="7" rx="1.5" fill="{{accent}}" opacity="0.45"></rect>
+        <rect x="11.5" y="11.5" width="7" height="7" rx="1.5" fill="{{accent}}" opacity="0.18"></rect>
+      </svg>
+      <div>
+        <div class="mono" style="font-size: 18px; font-weight: 600; letter-spacing: -.015em; line-height: 1.1;">swarmq</div>
+        <div style="font-size: 11px; letter-spacing: .09em; text-transform: uppercase; color: #8A8C83; line-height: 1.5;">Dashboard</div>
+      </div>
+    </div>
+
+    <div style="background: #FFFFFF; border: 1px solid #E3E3DC; border-radius: 6px; padding: 24px;">
+      <h1 style="margin: 0 0 20px; font-size: 16px; font-weight: 600;">Anmelden</h1>
+
+      <div style="margin-bottom: 15px;">
+        <label class="fl" for="konto">Konto</label>
+        <input id="konto" type="text" name="konto" autocomplete="username" value="georg">
+      </div>
+
+      <div style="margin-bottom: 20px;">
+        <label class="fl" for="pw">Passwort</label>
+        <input id="pw" type="password" name="passwort" autocomplete="current-password" value="oooooooooooo">
+      </div>
+
+      <button type="submit" style="font: inherit; font-size: 13.5px; font-weight: 500; width: 100%; height: 40px; border-radius: 4px; cursor: pointer; border: 1px solid {{accent}}; background: {{accent}}; color: #FFFFFF;">Anmelden</button>
+
+      <p style="margin: 16px 0 0; font-size: 12px; line-height: 1.55; color: #8A8C83;">
+        Konten legt der Betreiber über die Kommandozeile an. Nach wiederholten Fehlversuchen verzögert sich die Antwort.
+      </p>
+    </div>
+
+    <div style="margin-top: 18px; display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: #8A8C83;">
+      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="#8A8C83" stroke-width="1.4" aria-hidden="true"><rect x="3" y="7" width="10" height="7" rx="1.5"></rect><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"></path></svg>
+      <span class="mono">phoenix-prod</span> · Broker und Backend erreichbar
+    </div>
+
+  </div>
+</div>
+</x-dc>
+<script data-dc-script data-props='{"accent":{"editor":"color","default":"#2B2C30","options":["#2B2C30","#2E6F52","#2A5F8F","#574A8C"],"section":"Marke"},"$preview":{"width":800,"height":620}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return { accent: this.props.accent ?? '#2B2C30' };
+  }
+}
+</script>
+</body>
+</html>

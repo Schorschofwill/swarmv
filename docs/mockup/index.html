@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>swarmq-dashboard — Design-Mockup</title>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;display=swap">
+  <style>
+    :root { color-scheme: light dark; }
+    html { background: light-dark(#E8E8E2, #0B0C0E); }
+    body { margin: 0; padding: 56px 32px; font-family: 'IBM Plex Sans', system-ui, sans-serif;
+           color: light-dark(#17181A, #E9E9E4); display: flex; justify-content: center; }
+    .wrap { width: 100%; max-width: 900px; }
+    h1 { font-size: 24px; font-weight: 600; letter-spacing: -.015em; margin: 0 0 6px; }
+    .sub { font-size: 13.5px; color: light-dark(#6E7068, #9A9C94); margin: 0 0 32px; line-height: 1.6; }
+    .mono { font-family: 'IBM Plex Mono', ui-monospace, monospace; }
+    ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+    a.item { display: flex; align-items: baseline; gap: 14px; padding: 15px 18px; text-decoration: none;
+             background: light-dark(#FFFFFF, #1A1B1F); border: 1px solid light-dark(#E3E3DC, #2A2C31);
+             border-radius: 6px; color: inherit; }
+    a.item:hover { border-color: light-dark(#B9BAB1, #42454B); }
+    .name { font-size: 14.5px; font-weight: 600; }
+    .why { font-size: 12.5px; color: light-dark(#6E7068, #9A9C94); flex-grow: 1; }
+    .file { font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11.5px;
+            color: light-dark(#8A8C83, #74766E); }
+    .note { margin-top: 30px; padding: 14px 16px; border-radius: 6px; font-size: 12.5px; line-height: 1.65;
+            background: light-dark(#EEEEE8, #1A1B1F); color: light-dark(#4A4C46, #9A9C94); }
+    .mark { display: flex; align-items: center; gap: 10px; margin-bottom: 26px; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="mark">
+    <svg width="24" height="24" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+      <rect x="1.5" y="1.5" width="7" height="7" rx="1.5" fill="currentColor"></rect>
+      <rect x="11.5" y="1.5" width="7" height="7" rx="1.5" fill="currentColor" opacity="0.45"></rect>
+      <rect x="1.5" y="11.5" width="7" height="7" rx="1.5" fill="currentColor" opacity="0.45"></rect>
+      <rect x="11.5" y="11.5" width="7" height="7" rx="1.5" fill="currentColor" opacity="0.18"></rect>
+    </svg>
+    <span class="mono" style="font-size: 16px; font-weight: 600;">swarmq-dashboard</span>
+  </div>
+
+  <h1>Design-Mockup</h1>
+  <p class="sub">
+    Sechs Seiten, Stand 2026-09-17. Statisch — die Navigation in den Seiten ist verlinkt,
+    alle anderen Bedienelemente sind Attrappen. Grundform nach R24, Inhalte nach R4a, R7–R19 und R28–R30
+    des Dashboard-Plans.
+  </p>
+
+  <ul>
+    <li><a class="item" href="Main.html"><span class="name">Worker</span><span class="why">Startseite. Drei Gruppen: bestätigter Sollwert, unbestätigter Sollwert, Konsument ohne Hook und getrennter Worker.</span><span class="file">Main.html</span></a></li>
+    <li><a class="item" href="Tasks.html"><span class="name">Tasks</span><span class="why">Suche über Argumenttext, vier Filter, Reichweite des Verzeichnisses und eine Lücke im Strom.</span><span class="file">Tasks.html</span></a></li>
+    <li><a class="item" href="TaskDetail.html"><span class="name">Task-Detail</span><span class="why">Argumente im Klartext, Signalfolge als Zeitachse, Stornieren gesperrt weil beendet.</span><span class="file">TaskDetail.html</span></a></li>
+    <li><a class="item" href="DeadLetter.html"><span class="name">Dead Letter</span><span class="why">Queue-Reiter und die Bestätigung mit Nennung von Queue und Nachrichtenzahl.</span><span class="file">DeadLetter.html</span></a></li>
+    <li><a class="item" href="WorkerDark.html"><span class="name">Worker, dunkel</span><span class="why">Dieselbe Seite in der dunklen Fassung, zum Vergleich.</span><span class="file">WorkerDark.html</span></a></li>
+    <li><a class="item" href="Anmeldung.html"><span class="name">Anmeldung</span><span class="why">Konto und Passwort, Hinweis auf die Verzögerung nach Fehlversuchen.</span><span class="file">Anmeldung.html</span></a></li>
+  </ul>
+
+  <div class="note">
+    <strong style="font-weight: 600;">Gestalterische Regel:</strong> Farbe trägt nur Bedeutung, nie Marke.
+    Das Gehäuse ist grafit und papierfarben; grün heißt verbunden, blau arbeitet, bernstein wartet auf
+    Bestätigung, rot ist kaputt. Schrift ist IBM Plex Sans, alle Kennungen und Zahlen IBM Plex Mono mit
+    <span class="mono">tabular-nums</span>, damit Spalten beim Live-Update nicht zucken.
+    <br><br>
+    Ohne Netz fallen die Schriften auf die Systemschrift zurück; Layout und Farben bleiben.
+    Die Canvas-Fassung samt Quellen liegt in <span class="mono">canvas-quelle/</span>.
+  </div>
+
+</div>
+</body>
+</html>

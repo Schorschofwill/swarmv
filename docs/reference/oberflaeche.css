@@ -1,0 +1,326 @@
+/* swarmq-dashboard — Stylesheet der Oberfläche
+ *
+ * Abgeleitet aus dem freigegebenen Mockup (docs/mockup/, Stand 2026-09-17).
+ * Verbindlich für den Bau; die Regeln dahinter stehen in oberflaeche.md.
+ * Beim Bau nach  src/swarmq_dashboard/static/app.css.
+ *
+ * Bezeichner englisch wie im swarmq-Kern, Prosa deutsch.
+ * Schriften selbst gehostet unter  static/fonts/  — kein CDN, das
+ * Dashboard soll im geschlossenen Netz laufen.
+ */
+
+@layer reset, fonts, tokens, shell, parts, utils;
+
+/* ------------------------------------------------------------------ */
+@layer fonts {
+  @font-face { font-family: 'IBM Plex Sans'; font-weight: 400; font-display: swap;
+               src: url('fonts/ibm-plex-sans-400.woff2') format('woff2'); }
+  @font-face { font-family: 'IBM Plex Sans'; font-weight: 500; font-display: swap;
+               src: url('fonts/ibm-plex-sans-500.woff2') format('woff2'); }
+  @font-face { font-family: 'IBM Plex Sans'; font-weight: 600; font-display: swap;
+               src: url('fonts/ibm-plex-sans-600.woff2') format('woff2'); }
+  @font-face { font-family: 'IBM Plex Mono'; font-weight: 400; font-display: swap;
+               src: url('fonts/ibm-plex-mono-400.woff2') format('woff2'); }
+  @font-face { font-family: 'IBM Plex Mono'; font-weight: 500; font-display: swap;
+               src: url('fonts/ibm-plex-mono-500.woff2') format('woff2'); }
+  @font-face { font-family: 'IBM Plex Mono'; font-weight: 600; font-display: swap;
+               src: url('fonts/ibm-plex-mono-600.woff2') format('woff2'); }
+}
+
+/* ------------------------------------------------------------------ */
+@layer tokens {
+  :root {
+    color-scheme: light dark;
+
+    /* Flächen und Linien */
+    --ground:      light-dark(#F5F5F1, #131417);
+    --surface:     light-dark(#FFFFFF, #1A1B1F);
+    --line:        light-dark(#E3E3DC, #2A2C31);
+    --line-soft:   light-dark(#EFEFE9, #232529);
+    --fill:        light-dark(#EDEDE7, #26282C);
+    --fill-hover:  light-dark(#F3F3EE, #2A2C31);
+    --row-hover:   light-dark(#FAFAF6, #1F2126);
+
+    /* Schrift */
+    --ink:         light-dark(#17181A, #E9E9E4);
+    --ink-2:       light-dark(#3C3E39, #B9BBB2);
+    --muted:       light-dark(#6E7068, #9A9C94);
+    --dim:         light-dark(#8A8C83, #74766E);
+
+    /* Bedienelemente */
+    --control-border: light-dark(#D6D6CD, #383A40);
+    --control-bg:     light-dark(#FFFFFF, #212328);
+
+    /* Marke — bewusst keine Farbe, nur Grafit */
+    --brand:       light-dark(#2B2C30, #E9E9E4);
+    --on-brand:    light-dark(#FFFFFF, #17181A);
+
+    /* Bedeutung — die einzigen Farben der Oberfläche */
+    --ok:          light-dark(#2E6F52, #6FBF95);
+    --ok-text:     light-dark(#235C43, #6FBF95);
+    --ok-bg:       light-dark(#E7F0EA, #1C3529);
+    --run:         light-dark(#2A5F8F, #7FB2E5);
+    --run-text:    light-dark(#1F4A70, #7FB2E5);
+    --run-bg:      light-dark(#E3EBF3, #1A2C40);
+    --wait:        light-dark(#8A5E12, #D9A54A);
+    --wait-text:   light-dark(#6F4A0C, #E2B968);
+    --wait-bg:     light-dark(#F6EEDC, #352B14);
+    --fail:        light-dark(#A33A31, #E8817A);
+    --fail-text:   light-dark(#8A2F28, #E8817A);
+    --fail-bg:     light-dark(#F6E6E4, #3A2320);
+
+    /* Geometrie */
+    --radius-card:    6px;
+    --radius-control: 4px;
+    --radius-tag:     3px;
+    --nav-w:          216px;
+    --head-h:         56px;
+
+    /* Typografie */
+    --font-sans: 'IBM Plex Sans', system-ui, sans-serif;
+    --font-mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', monospace;
+  }
+
+  :root[data-theme="light"] { color-scheme: light; }
+  :root[data-theme="dark"]  { color-scheme: dark; }
+}
+
+/* ------------------------------------------------------------------ */
+@layer reset {
+  *, *::before, *::after { box-sizing: border-box; }
+  body { margin: 0; -webkit-font-smoothing: antialiased; }
+  h1, h2, h3, p, dd { margin: 0; }
+  button, input, select { font: inherit; }
+  :focus-visible { outline: 2px solid var(--brand); outline-offset: 1px; }
+}
+
+/* ------------------------------------------------------------------ */
+@layer shell {
+  body {
+    min-height: 100vh;
+    display: flex;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    font-size: 13px;
+  }
+
+  a { color: var(--ok); text-decoration: none; }
+  a:hover { color: color-mix(in oklab, var(--ok) 78%, black); }
+
+  /* Linke Navigation (R24) */
+  .nav {
+    width: var(--nav-w);
+    flex-shrink: 0;
+    background: var(--surface);
+    border-right: 1px solid var(--line);
+    display: flex;
+    flex-direction: column;
+    padding: 18px 12px;
+  }
+  .nav-brand { display: flex; align-items: center; gap: 9px; padding: 0 8px 20px; }
+  .nav-word {
+    font-family: var(--font-mono); font-size: 14px; font-weight: 600;
+    letter-spacing: -.01em; line-height: 1.1;
+  }
+  .nav-sub {
+    font-size: 10.5px; letter-spacing: .09em; text-transform: uppercase;
+    color: var(--dim); line-height: 1.4;
+  }
+  .nav-link {
+    display: flex; align-items: center; gap: 10px;
+    height: 34px; padding: 0 10px; border-radius: var(--radius-control);
+    font-size: 13.5px; color: var(--ink-2); text-decoration: none;
+  }
+  .nav-link:hover { background: var(--line-soft); color: var(--ink); }
+  .nav-link[aria-current="page"] {
+    background: var(--brand); color: var(--on-brand); font-weight: 500;
+  }
+  .nav-count { margin-left: auto; font-family: var(--font-mono); font-size: 11.5px; }
+  .nav-foot {
+    border-top: 1px solid var(--line-soft); padding: 12px 8px 2px;
+    display: flex; align-items: center; gap: 9px;
+  }
+
+  .content { flex-grow: 1; min-width: 0; display: flex; flex-direction: column; }
+
+  /* Kopfzeile mit Broker-, Backend- und Stromzustand (R26) */
+  .head {
+    height: var(--head-h); flex-shrink: 0;
+    border-bottom: 1px solid var(--line); background: var(--surface);
+    display: flex; align-items: center; gap: 14px; padding: 0 24px;
+  }
+  .head-title { font-size: 16px; font-weight: 600; letter-spacing: -.01em; }
+  .head-meta { font-size: 12.5px; color: var(--muted); }
+  .head-state { margin-left: auto; display: flex; align-items: center; gap: 7px; }
+
+  .page { flex-grow: 1; padding: 20px 24px; display: flex; flex-direction: column; gap: 16px; }
+}
+
+/* ------------------------------------------------------------------ */
+@layer parts {
+
+  /* Zustandsmarke — trägt die einzige Farbe der Oberfläche.
+     Immer Punkt UND Wort; Farbe allein trägt nie die Aussage. */
+  .tag {
+    display: inline-flex; align-items: center; gap: 6px;
+    height: 21px; padding: 0 9px; border-radius: var(--radius-tag);
+    font-size: 11.5px; font-weight: 500;
+    background: var(--fill); color: var(--ink-2);
+  }
+  .tag-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; background: currentColor; }
+  .tag.is-ok   { background: var(--ok-bg);   color: var(--ok-text); }
+  .tag.is-run  { background: var(--run-bg);  color: var(--run-text); }
+  .tag.is-wait { background: var(--wait-bg); color: var(--wait-text); }
+  .tag.is-fail { background: var(--fail-bg); color: var(--fail-text); }
+
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-card); }
+  .card-head { display: flex; align-items: center; gap: 12px; padding: 13px 16px; }
+  .card-name { font-family: var(--font-mono); font-size: 14.5px; font-weight: 600; }
+  .card-meta {
+    display: flex; gap: 22px; padding: 0 16px 12px;
+    font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--line-soft);
+  }
+  .card-meta .val { font-family: var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink); }
+  .card-section {
+    font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+    color: var(--muted); padding: 12px 16px; border-bottom: 1px solid var(--line-soft);
+  }
+  .card-foot {
+    border-top: 1px solid var(--line-soft); padding: 10px 16px;
+    display: flex; align-items: center; gap: 12px; font-size: 12.5px; color: var(--muted);
+  }
+
+  /* Tabellen — Grundform jeder Bereichsseite (R24) */
+  table { border-collapse: collapse; width: 100%; }
+  th {
+    text-align: left; font-weight: 500; font-size: 10.5px;
+    letter-spacing: .07em; text-transform: uppercase;
+    color: var(--muted); padding: 0 14px 7px;
+  }
+  th.right, td.right { text-align: right; }
+  td { padding: 8px 14px; border-top: 1px solid var(--line-soft); font-size: 13px; color: var(--ink); }
+  tbody tr:hover { background: var(--row-hover); }
+  tr.is-gone td { color: var(--dim); }
+
+  /* Knöpfe. 32 px ist Absicht: dichtes Schreibtisch-Werkzeug, keine
+     Touch-Oberfläche. Siehe oberflaeche.md, Abschnitt Abweichungen. */
+  .btn {
+    font-size: 13px; font-weight: 500; height: 32px; padding: 0 13px;
+    border-radius: var(--radius-control); cursor: pointer;
+    border: 1px solid var(--control-border); background: var(--control-bg); color: var(--ink);
+  }
+  .btn:hover { background: var(--fill-hover); }
+  .btn:disabled { opacity: .45; cursor: default; }
+  .btn:disabled:hover { background: var(--control-bg); }
+  .btn-sm { height: 27px; font-size: 12px; padding: 0 10px; }
+  .btn-lg { height: 36px; padding: 0 15px; }
+  .btn-primary { border-color: var(--brand); background: var(--brand); color: var(--on-brand); }
+  .btn-primary:hover { background: color-mix(in oklab, var(--brand) 88%, var(--ground)); }
+  .btn-danger { border-color: color-mix(in oklab, var(--fail) 55%, var(--control-border)); color: var(--fail-text); }
+  .btn-danger:hover { background: var(--fail-bg); }
+  .btn-destructive { border-color: var(--fail-text); background: var(--fail); color: #FFFFFF; }
+  .btn-destructive:hover { background: color-mix(in oklab, var(--fail) 88%, black); }
+
+  /* Hinweisleisten: Reichweite (R8), Lücke (R4a), Konsument ohne Hook (R18) */
+  .notice {
+    padding: 9px 12px; border-radius: var(--radius-control);
+    display: flex; align-items: center; gap: 9px;
+    font-size: 12.5px; background: var(--fill); color: var(--ink-2);
+  }
+  .notice > svg { flex-shrink: 0; }
+  .notice.is-wait { background: var(--wait-bg); color: var(--wait-text); }
+  .notice.is-fail { background: var(--fail-bg); color: var(--fail-text); }
+
+  /* Filterleiste (R10) */
+  .filters { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  .field { display: flex; align-items: center; }
+  .field-label { font-size: 11px; color: var(--muted); margin-right: 6px; }
+  input, select {
+    font-size: 12.5px; height: 30px; padding: 0 8px;
+    border: 1px solid var(--control-border); border-radius: var(--radius-control);
+    background: var(--control-bg); color: var(--ink);
+  }
+  .search { height: 32px; width: 322px; padding-left: 29px; }
+
+  /* Anmeldeformular (R20) */
+  .formfield { margin-bottom: 15px; }
+  .formfield > label {
+    display: block; font-size: 11px; letter-spacing: .06em;
+    text-transform: uppercase; color: var(--muted); margin-bottom: 5px;
+  }
+  .formfield > input { width: 100%; height: 38px; font-size: 13.5px; padding: 0 11px; }
+
+  /* Bestätigung vor dem Leeren (R30) */
+  .scrim {
+    position: fixed; inset: 0; background: rgb(23 24 26 / .34);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .dialog {
+    width: 452px; background: var(--surface); border-radius: 8px;
+    box-shadow: 0 16px 48px rgb(23 24 26 / .24); overflow: hidden;
+  }
+  .dialog-body { padding: 20px 22px 0; }
+  .dialog-title { font-size: 16px; font-weight: 600; }
+  .dialog-text { margin-top: 10px; font-size: 13.5px; line-height: 1.55; color: var(--ink-2); }
+  .dialog-foot { padding: 18px 22px 20px; display: flex; justify-content: flex-end; gap: 9px; }
+
+  /* Signalfolge der Task-Seite (R11) */
+  .trail { padding: 16px 18px; display: flex; flex-direction: column; }
+  .trail-item { display: flex; gap: 13px; }
+  .trail-rail { display: flex; flex-direction: column; align-items: center; width: 10px; flex-shrink: 0; }
+  .trail-dot { width: 9px; height: 9px; border-radius: 50%; margin-top: 5px; background: var(--muted); }
+  .trail-dot.is-ok { background: var(--ok); }
+  .trail-dot.is-run { background: var(--run); }
+  .trail-dot.is-wait { background: var(--wait); }
+  .trail-dot.is-fail { background: var(--fail); }
+  .trail-line { flex-grow: 1; width: 1px; background: var(--line); }
+  .trail-name { font-family: var(--font-mono); font-size: 13px; font-weight: 500; }
+  .trail-time { font-family: var(--font-mono); font-size: 11.5px; color: var(--dim); margin-top: 2px; }
+  .trail-payload { font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-2); margin-top: 5px; }
+
+  /* Feldraster der Detailseite (R6) */
+  .fields { padding: 16px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px 20px; }
+  .fields dt {
+    font-size: 10.5px; letter-spacing: .07em; text-transform: uppercase;
+    color: var(--dim); margin-bottom: 3px;
+  }
+  .fields dd { font-size: 13px; }
+
+  /* Argumente im Klartext (R7) */
+  .args {
+    font-family: var(--font-mono); font-size: 12.5px; line-height: 1.75;
+    color: var(--ink-2); white-space: pre; overflow: auto; padding: 14px 16px;
+  }
+
+  /* Queue-Reiter der Dead-Letter-Seite (R28) */
+  .qtab {
+    display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 12px;
+    border-radius: var(--radius-control); border: 1px solid transparent;
+    font-family: var(--font-mono); font-size: 13px; color: var(--ink-2); text-decoration: none;
+  }
+  .qtab:hover { background: var(--surface); color: var(--ink); }
+  .qtab[aria-current="page"] { background: var(--surface); border-color: var(--control-border); font-weight: 600; }
+}
+
+/* ------------------------------------------------------------------ */
+@layer utils {
+  /* Idiomorph tauscht Zeilen im Bestand aus; ohne gleich breite Ziffern
+     springt die Spalte, sobald eine Zahl eine Stelle gewinnt. */
+  .mono, .num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+  .num { text-align: right; }
+
+  .muted { color: var(--muted); }
+  .dim { color: var(--dim); }
+  .grow { flex-grow: 1; }
+  .trunc { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
+
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; overflow: hidden;
+    clip-path: inset(50%); white-space: nowrap;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+  }
+}

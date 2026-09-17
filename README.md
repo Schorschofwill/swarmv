@@ -40,6 +40,17 @@ Live-Aktualisierung, SQLite mit FTS5 als durchsuchbares Task-Verzeichnis,
 Sitzungen im Valkey-Store, argon2id für Passwörter. Begründung, Messwerte und
 verworfene Alternativen: `docs/reference/stack-entscheidung.md`.
 
+## Oberfläche (freigegeben 2026-09-17)
+
+Mockup zum Öffnen: `docs/mockup/index.html` — sechs Seiten, verlinkte
+Navigation, kein Server nötig. Verbindlich für den Bau; die Regeln dahinter
+stehen in `docs/reference/oberflaeche.md`, das fertige Stylesheet in
+`docs/reference/oberflaeche.css` (wandert beim Bau nach
+`src/swarmq_dashboard/static/app.css`).
+
+Leitsatz: **Farbe trägt Bedeutung, nie Marke.** Gehäuse grafit und
+papierfarben, Farbe nur als Zustand. IBM Plex Sans und Mono, selbst gehostet.
+
 ## Offen vor dem ersten Code
 
 Speicherbudget des Stroms, DLQ-Lesen ohne Drain, Anbindung des Anwendungs-Hooks

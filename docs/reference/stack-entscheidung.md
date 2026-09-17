@@ -138,8 +138,9 @@ verspringen. SSE schickt die Fragmente. Beide Bibliotheken liegen als Dateien
 im Paket — **kein CDN** (geschlossenes Netz), kein Node, kein Bundler, keine
 gebauten Assets im Wheel.
 
-CSS von Hand, mit `@layer`, Nesting, `light-dark()`, `color-mix()` und
-Container Queries. Dark Mode fällt dabei ab.
+CSS von Hand, mit `@layer`, Nesting, `light-dark()` und `color-mix()`.
+Umgesetzt und freigegeben: `oberflaeche.css`, Regeln in `oberflaeche.md`,
+sichtbar in `docs/mockup/`. Dark Mode fällt über `light-dark()` ab.
 
 Verworfen: **React/Vue-SPA** (Node-Toolchain im Repo, zwei Test-Suiten, steht
 gegen R25). **Alpine.js zusätzlich** (Tabellenzustand läge doppelt vor; die

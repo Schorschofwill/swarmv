@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;display=swap">
+  <style>
+    body { margin: 0; -webkit-font-smoothing: antialiased; }
+    a { color: #2E6F52; text-decoration: none; } a:hover { color: #1F4F3A; }
+    table { border-collapse: collapse; width: 100%; }
+    th { text-align: left; font-weight: 500; font-size: 10.5px; letter-spacing: .07em; text-transform: uppercase; color: #6E7068; padding: 0 14px 7px; }
+    td { padding: 8px 14px; border-top: 1px solid #EFEFE9; font-size: 13px; color: #17181A; }
+    .mono { font-family: 'IBM Plex Mono', ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+    .num { font-family: 'IBM Plex Mono', ui-monospace, monospace; font-variant-numeric: tabular-nums; text-align: right; }
+    .muted { color: #6E7068; }
+    .chip { display: inline-flex; align-items: center; gap: 6px; height: 21px; padding: 0 9px; border-radius: 3px; font-size: 11.5px; font-weight: 500; }
+    .dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+    .card { background: #FFFFFF; border: 1px solid #E3E3DC; border-radius: 6px; }
+    .btn { font: inherit; font-size: 13px; font-weight: 500; height: 32px; padding: 0 13px; border-radius: 4px; cursor: pointer; border: 1px solid #D6D6CD; background: #FFFFFF; color: #17181A; }
+    .btn:hover { background: #F3F3EE; }
+    .btn-danger { border-color: #D8B4AF; color: #8A2F28; }
+    .btn-danger:hover { background: #FBF1F0; }
+    .navlink { display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 4px; font-size: 13.5px; color: #3C3E39; text-decoration: none; }
+    .navlink:hover { background: #F0F0EA; color: #17181A; }
+    .qtab { display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 12px; border-radius: 4px; font-size: 13px; color: #3C3E39; text-decoration: none; border: 1px solid transparent; }
+    .err { font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11.5px; color: #8A2F28; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 380px; display: block; }
+  </style>
+</helmet>
+
+<div style="width: 1360px; height: 880px; box-sizing: border-box; display: flex; background: #F5F5F1; font-family: 'IBM Plex Sans', system-ui, sans-serif; color: #17181A; position: relative;">
+
+  <nav style="width: 216px; flex-shrink: 0; background: #FFFFFF; border-right: 1px solid #E3E3DC; display: flex; flex-direction: column; padding: 18px 12px;">
+    <div style="display: flex; align-items: center; gap: 9px; padding: 0 8px 20px;">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+        <rect x="1.5" y="1.5" width="7" height="7" rx="1.5" fill="{{accent}}"></rect>
+        <rect x="11.5" y="1.5" width="7" height="7" rx="1.5" fill="{{accent}}" opacity="0.45"></rect>
+        <rect x="1.5" y="11.5" width="7" height="7" rx="1.5" fill="{{accent}}" opacity="0.45"></rect>
+        <rect x="11.5" y="11.5" width="7" height="7" rx="1.5" fill="{{accent}}" opacity="0.18"></rect>
+      </svg>
+      <div>
+        <div class="mono" style="font-size: 14px; font-weight: 600; letter-spacing: -.01em; line-height: 1.1;">swarmq</div>
+        <div style="font-size: 10.5px; letter-spacing: .09em; text-transform: uppercase; color: #8A8C83; line-height: 1.4;">Dashboard</div>
+      </div>
+    </div>
+    <a class="navlink" href="Main.dc.html">
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="2" y="2" width="5" height="5" rx="1"></rect><rect x="9" y="2" width="5" height="5" rx="1"></rect><rect x="2" y="9" width="5" height="5" rx="1"></rect><rect x="9" y="9" width="5" height="5" rx="1"></rect></svg>
+      Worker
+    </a>
+    <a class="navlink" href="Tasks.dc.html">
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><path d="M2 4h12M2 8h12M2 12h8"></path></svg>
+      Tasks
+    </a>
+    <a class="navlink" href="DeadLetter.dc.html" style="background: {{accent}}; color: #FFFFFF; font-weight: 500;" aria-current="page">
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 9.5V13a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V9.5M2 9.5 3.8 3.4A1 1 0 0 1 4.76 2.7h6.48a1 1 0 0 1 .96.7L14 9.5M2 9.5h3.2l.9 1.8h3.8l.9-1.8H14"></path></svg>
+      Dead Letter
+      <span class="mono" style="margin-left: auto; font-size: 11.5px;">37</span>
+    </a>
+    <a class="navlink" href="#">
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6"></circle><path d="M8 4.6V8l2.4 1.6"></path></svg>
+      Audit
+    </a>
+    <div style="flex-grow: 1;"></div>
+    <div style="border-top: 1px solid #EFEFE9; padding: 12px 8px 2px; display: flex; align-items: center; gap: 9px;">
+      <div class="mono" style="width: 26px; height: 26px; border-radius: 4px; background: #EDEDE7; color: #4A4C46; font-size: 11.5px; font-weight: 600; display: flex; align-items: center; justify-content: center;">GS</div>
+      <div style="flex-grow: 1; min-width: 0;">
+        <div style="font-size: 12.5px; font-weight: 500;">georg</div>
+        <a href="#" style="font-size: 11.5px; color: #8A8C83;">Abmelden</a>
+      </div>
+    </div>
+  </nav>
+
+  <main style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column;">
+
+    <header style="height: 56px; flex-shrink: 0; box-sizing: border-box; border-bottom: 1px solid #E3E3DC; background: #FFFFFF; display: flex; align-items: center; gap: 14px; padding: 0 24px;">
+      <h1 style="margin: 0; font-size: 16px; font-weight: 600; letter-spacing: -.01em;">Dead Letter</h1>
+      <span class="muted" style="font-size: 12.5px;">3 Queues · 44 Nachrichten</span>
+      <div style="flex-grow: 1;"></div>
+      <div style="display: flex; align-items: center; gap: 7px;">
+        <span class="chip" style="background: #E7F0EA; color: #235C43;"><span class="dot" style="background: #2E6F52;"></span>Broker</span>
+        <span class="chip" style="background: #E7F0EA; color: #235C43;"><span class="dot" style="background: #2E6F52;"></span>Backend</span>
+        <span class="chip" style="background: #E7F0EA; color: #235C43;"><span class="dot" style="background: #2E6F52;"></span>Strom · vor 1 s</span>
+      </div>
+    </header>
+
+    <div style="flex-grow: 1; overflow: hidden; padding: 20px 24px; display: flex; flex-direction: column; gap: 14px;">
+
+      <div style="display: flex; align-items: center; gap: 6px;">
+        <a class="qtab mono" href="#" style="background: #FFFFFF; border-color: #D6D6CD; font-weight: 600;" aria-current="page">reports.XQ <span style="color: #A33A31;">37</span></a>
+        <a class="qtab mono" href="#">billing.XQ <span class="muted">6</span></a>
+        <a class="qtab mono" href="#">orders.XQ <span class="muted">1</span></a>
+      </div>
+
+      <div style="display: flex; align-items: center; gap: 10px;">
+        <span style="font-size: 12.5px; color: #6E7068;">Gelesen ohne Umreihen — die Reihenfolge der Queue bleibt unberührt.</span>
+        <div style="flex-grow: 1;"></div>
+        <button type="button" class="btn">Alle erneut einreihen</button>
+        <button type="button" class="btn btn-danger">Queue leeren</button>
+      </div>
+
+      <section class="card" style="flex-grow: 1; display: flex; flex-direction: column; overflow: hidden;">
+        <div style="padding: 12px 2px 0;">
+          <table>
+            <colgroup><col style="width: 116px"><col style="width: 170px"><col style="width: 86px"><col><col style="width: 104px"><col style="width: 172px"></colgroup>
+            <thead><tr><th>Kennung</th><th>Name</th><th style="text-align:right">Versuche</th><th>Fehler</th><th style="text-align:right">Alter</th><th></th></tr></thead>
+            <tbody>
+              <tr><td class="mono"><a href="TaskDetail.dc.html">4e6f8a35</a></td><td class="mono">sync_invoice</td><td class="num">5</td><td><span class="err">ConnectionError: billing-api nicht erreichbar (ETIMEDOUT)</span></td><td class="num muted">2 h 14 m</td><td style="text-align: right;"><button type="button" class="btn" style="height: 27px; font-size: 12px;">Erneut einreihen</button></td></tr>
+              <tr><td class="mono"><a href="TaskDetail.dc.html">91c0de44</a></td><td class="mono">render_pdf</td><td class="num">5</td><td><span class="err">TemplateNotFound: reports/kompakt_v3.html</span></td><td class="num muted">2 h 09 m</td><td style="text-align: right;"><button type="button" class="btn" style="height: 27px; font-size: 12px;">Erneut einreihen</button></td></tr>
+              <tr><td class="mono"><a href="TaskDetail.dc.html">0b7f2ac1</a></td><td class="mono">render_pdf</td><td class="num">5</td><td><span class="err">TemplateNotFound: reports/kompakt_v3.html</span></td><td class="num muted">2 h 09 m</td><td style="text-align: right;"><button type="button" class="btn" style="height: 27px; font-size: 12px;">Erneut einreihen</button></td></tr>
+              <tr><td class="mono"><a href="TaskDetail.dc.html">ee13805b</a></td><td class="mono">render_pdf</td><td class="num">5</td><td><span class="err">TemplateNotFound: reports/kompakt_v3.html</span></td><td class="num muted">2 h 08 m</td><td style="text-align: right;"><button type="button" class="btn" style="height: 27px; font-size: 12px;">Erneut einreihen</button></td></tr>
+              <tr><td class="mono"><a href="TaskDetail.dc.html">3a9c6612</a></td><td class="mono">render_pdf</td><td class="num">5</td><td><span class="err">MemoryError: Rendering überschritt 512 MB</span></td><td class="num muted">1 h 52 m</td><td style="text-align: right;"><button type="button" class="btn" style="height: 27px; font-size: 12px;">Erneut einreihen</button></td></tr>
+              <tr><td class="mono"><a href="TaskDetail.dc.html">c5408f7d</a></td><td class="mono">render_pdf</td><td class="num">5</td><td><span class="err">TemplateNotFound: reports/kompakt_v3.html</span></td><td class="num muted">1 h 47 m</td><td style="text-align: right;"><button type="button" class="btn" style="height: 27px; font-size: 12px;">Erneut einreihen</button></td></tr>
+              <tr><td class="mono"><a href="TaskDetail.dc.html">77b1e0a9</a></td><td class="mono">render_pdf</td><td class="num">5</td><td><span class="err">TemplateNotFound: reports/kompakt_v3.html</span></td><td class="num muted">1 h 44 m</td><td style="text-align: right;"><button type="button" class="btn" style="height: 27px; font-size: 12px;">Erneut einreihen</button></td></tr>
+              <tr><td class="mono"><a href="TaskDetail.dc.html">d2f93c05</a></td><td class="mono">render_pdf</td><td class="num">5</td><td><span class="err">TemplateNotFound: reports/kompakt_v3.html</span></td><td class="num muted">1 h 40 m</td><td style="text-align: right;"><button type="button" class="btn" style="height: 27px; font-size: 12px;">Erneut einreihen</button></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div style="flex-grow: 1;"></div>
+        <div style="border-top: 1px solid #EFEFE9; padding: 10px 16px; display: flex; align-items: center; font-size: 12.5px; color: #6E7068;">
+          <span><span class="mono" style="color: #17181A;">1–8</span> von <span class="mono" style="color: #17181A;">37</span></span>
+          <div style="flex-grow: 1;"></div>
+          <button type="button" class="btn">Weiter</button>
+        </div>
+      </section>
+
+    </div>
+  </main>
+
+  <div style="position: absolute; inset: 0; background: rgba(23, 24, 26, 0.34); display: flex; align-items: center; justify-content: center;">
+    <div role="dialog" aria-modal="true" aria-labelledby="dlg-t" style="width: 452px; background: #FFFFFF; border-radius: 8px; box-shadow: 0 16px 48px rgba(23, 24, 26, 0.24); overflow: hidden;">
+      <div style="padding: 20px 22px 0;">
+        <h2 id="dlg-t" style="margin: 0; font-size: 16px; font-weight: 600;">Queue leeren?</h2>
+        <p style="margin: 10px 0 0; font-size: 13.5px; line-height: 1.55; color: #3C3E39;">
+          <span class="mono" style="font-weight: 600;">reports.XQ</span> enthält <span class="mono" style="font-weight: 600;">37 Nachrichten</span>. Sie werden endgültig gelöscht und lassen sich nicht wiederherstellen.
+        </p>
+        <div style="margin-top: 14px; padding: 10px 12px; background: #F6E6E4; border-radius: 4px; font-size: 12.5px; color: #8A2F28; display: flex; gap: 9px; align-items: flex-start;">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#A33A31" stroke-width="1.4" stroke-linecap="round" style="flex-shrink: 0; margin-top: 2px;" aria-hidden="true"><path d="M8 1.8 15 14H1L8 1.8Z"></path><path d="M8 6.4v3.2M8 11.8v.2"></path></svg>
+          <span>Die Aktion wird mit deinem Konto im Audit festgehalten.</span>
+        </div>
+      </div>
+      <div style="padding: 18px 22px 20px; display: flex; justify-content: flex-end; gap: 9px;">
+        <button type="button" class="btn" style="height: 36px;">Abbrechen</button>
+        <button type="button" style="font: inherit; font-size: 13px; font-weight: 500; height: 36px; padding: 0 15px; border-radius: 4px; cursor: pointer; border: 1px solid #8A2F28; background: #A33A31; color: #FFFFFF;">37 Nachrichten löschen</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+</x-dc>
+<script data-dc-script data-props='{"accent":{"editor":"color","default":"#2B2C30","options":["#2B2C30","#2E6F52","#2A5F8F","#574A8C"],"section":"Marke"},"$preview":{"width":1360,"height":880}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return { accent: this.props.accent ?? '#2B2C30' };
+  }
+}
+</script>
+</body>
+</html>

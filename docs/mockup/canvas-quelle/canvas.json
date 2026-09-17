@@ -1,0 +1,23 @@
+{
+  "v": 3,
+  "createdOnFiles": { "v": 1, "at": "2026-09-17T09:40:00Z" },
+  "title": "swarmq-dashboard — Design-Mockup",
+  "launch": { "view": "canvas" },
+  "pages": [],
+  "boards": {
+    "Main.dc.html":       { "x": 0,    "y": 0,    "w": 1360, "h": 960, "title": "Worker — Startseite", "is_interactive": true },
+    "Tasks.dc.html":      { "x": 1440, "y": 0,    "w": 1360, "h": 960, "title": "Tasks — Suche und Filter", "is_interactive": true },
+    "TaskDetail.dc.html": { "x": 2880, "y": 0,    "w": 1360, "h": 960, "title": "Task — Detail mit Signalfolge", "is_interactive": true },
+    "DeadLetter.dc.html": { "x": 0,    "y": 1400, "w": 1360, "h": 880, "title": "Dead Letter — Leeren bestätigen", "is_interactive": true },
+    "WorkerDark.dc.html": { "x": 1440, "y": 1400, "w": 1360, "h": 960, "title": "Worker — dunkle Fassung", "is_interactive": true },
+    "Anmeldung.dc.html":  { "x": 2880, "y": 1400, "w": 800,  "h": 620, "title": "Anmeldung" }
+  },
+  "order": ["Main.dc.html", "Tasks.dc.html", "TaskDetail.dc.html", "DeadLetter.dc.html", "WorkerDark.dc.html", "Anmeldung.dc.html"],
+  "notes": {
+    "t1": { "x": 0, "y": -300, "text": "Grundform — Seiten wie Flower", "kind": "title1", "maxW": 4240 },
+    "t2": { "x": 0, "y": 1100, "text": "Zustände, dunkle Fassung, Anmeldung", "kind": "title1", "maxW": 4240 },
+    "n1": { "x": 4320, "y": 0, "w": 300, "text": "Farbe trägt hier nur Bedeutung: grün läuft, blau arbeitet, bernstein wartet auf Bestätigung, rot ist kaputt. Das Gehäuse bleibt grafit.\n\nÜber Tweaks lässt sich eine Markenfarbe ausprobieren — die Vorgabe ist bewusst keine.", "color": "gray" },
+    "n2": { "x": 4320, "y": 1400, "w": 300, "text": "Die Navigation ist verlinkt: Play drücken und zwischen Worker, Tasks, Detail und Dead Letter klicken.", "color": "gray" }
+  },
+  "designSystems": []
+}
