@@ -7,9 +7,17 @@ Veröffentlichung; die Bibliothek bekommt dadurch keine neue Pflichtabhängigkei
 
 ## Stand (2026-09-17)
 
-- Anforderungen: `docs/plans/2026-09-16-1558-feat-dashboard-plan.md`
-  (ce-brainstorm, von sieben Reviewern geprüft; R1–R30, KD1–KD13).
-  Ein Implementierungsplan fehlt noch: nächster Schritt ist `ce-plan` auf dieser Datei.
+- Plan: `docs/plans/2026-09-16-1558-feat-dashboard-plan.md` — Anforderungen
+  (R1–R33), Entscheidungen (KD1–KD16, KTD1–KTD14) und 19 Implementierungs-
+  einheiten in fünf Stufen, umsetzungsreif.
+- Umgesetzt: **Stufe A** (Ereignisvertrag, Puffer, Strom, beide Hooks),
+  **Stufe B** (Verzeichnis mit Aufwärts-Ergänzung, Strom-Leser, Suche und
+  Filter, Broker-Beobachtung) und **U8** (Konten und Konto-Kommandozeile).
+- Stack: `docs/reference/stack-entscheidung.md` — Litestar, msgspec, Granian,
+  Jinja2 + HTMX, SQLite mit FTS5-Trigrammen, argon2id.
+- Oberfläche: `docs/reference/oberflaeche.md` und `docs/mockup/` (freigegeben).
+- **Betrieb: `docs/reference/betrieb.md`** — Datenverzeichnis, Rechte, was
+  gelöscht werden darf, Konten anlegen.
 - Voraussetzung im Kern: der Kontrollkanal ist umgesetzt, MR !60 in swarmq
   (`docs/plans/2026-09-16-1753-feat-kontrollkanal-plan.md`); Schnittstelle in
   `docs/reference/kontrollkanal-schnittstelle.md`.
