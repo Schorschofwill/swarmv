@@ -251,13 +251,16 @@ Dieser Plan besitzt das Dashboard-Paket. Die Aufteilung darunter ist der heutige
 
 ### Outstanding Questions
 
+**Gemessen und entschieden** (Messwerte im Anhang)
+
+- Trigramm-Indexgröße: **750 Byte je Task-Zeile**, davon 410 Byte Index. Bei 100.000 Tasks am Tag sind das 520 MB für sieben Tage. Der wortweise Index wäre 409 Byte je Zeile, findet aber Fragmente im Wortinneren gar nicht — der Aufpreis ist der Preis für R10. Ein zweiter Index daneben ist erst ab etwa 500.000 Tasks am Tag zu erwägen.
+- Sperrverhalten der Kontendatei: mit gesetzter Wartefrist bis 16 gleichzeitige Schreiber **fehlerfrei**, Mittelwert unter 1 ms. Ohne Wartefrist scheitern 99 % der Vorgänge. Die Wartefrist ist damit Pflicht, keine Feinabstimmung.
+- Frist für „getrennt“ (R19): je Quelle abgeleitet statt geschätzt — 40 s bei der Supervisor-Rückmeldung (Gnadenfrist 30 s + 5 s + 5 s), 35 s beim Lebenszeichen (drei verpasste Abtastungen à 10 s plus Nachsicht). Aus dem letzten Signal überhaupt ist keine Frist ableitbar; dort gilt ein langer Wert und die Ansicht markiert sich als eingeschränkt (R14a).
+- Rückstau-Deckel je Verbindung (R13a): aus Aufkommen mal Überbrückungszeit gerechnet — 100 Einträge bis 10.000 Tasks am Tag, 300 bei 100.000, 1400 bei 500.000. Der Deckel ist konfigurierbar, und ein Überlauf verliert nie schweigend, sondern fordert zum Neuladen auf.
+
 **Deferred to Implementation**
 
-- Ob der Sitzungsspeicher in der lokalen Datei bei mehreren gleichzeitigen Anmeldungen ohne Sperrkonflikte auskommt; entschieden ist der Ort (KTD8), nicht die Sperrstrategie.
-
-- Genaue Voreinstellung der Frist für „getrennt“ (R19); der Startwert folgt aus der beobachteten Signaldichte im ersten Betrieb.
-- Ob der Rückstau-Deckel je Verbindung (R13a) bei realem Aufkommen groß genug ist; messbar erst mit echtem Task-Durchsatz.
-- Ob die Trigramm-Indexgröße bei sieben Tagen Aufkommen vertretbar bleibt oder ein zweiter, wortweiser Index danebengestellt wird (KTD3).
+- Ob der gerechnete Rückstau-Deckel im Alltag reicht; die Rechnung nimmt an, dass ein Tab alle Ereignisse sieht, tatsächlich sieht er nur seine gefilterte Teilmenge. Der Wert ist damit eine Obergrenze, die sich im Betrieb senken lässt.
 
 ### Sources / Research
 
@@ -279,7 +282,7 @@ Dieser Plan besitzt das Dashboard-Paket. Die Aufteilung darunter ist der heutige
 
 - KTD1. **Jeder Hook schreibt in einen beschränkten Prozesspuffer, ein Hintergrund-Task leert ihn nach Valkey.** Kein Hook wartet je auf Netzwerk. Läuft der Puffer über, fallen die ältesten Ereignisse weg und ein Zähler steigt; nach Rückkehr des Stroms geht daraus das Verlust-Ereignis hervor. Grund: swarmq verschickt Task-Signale sequenziell im Ausführungspfad, ohne Zeitgrenze, während der Nebenläufigkeits-Slot gehalten wird und vor dem Broker-Ack — ein wartender Handler riskiert die Zustellfrist des Brokers. Protokollzeilen über verlorene oder fehlgeschlagene Schreibvorgänge nennen Ereignisart, Anzahl und Fehlergrund, nie die Nutzlast — sonst landen die Klartext-Argumente aus R7 in einer dritten Ablage, die weder die Rechtezusage aus R7a noch die Trimmung aus R9 erreicht. Vorbild ist der Relay der Loadsuite, der dafür eine Datei benutzt; hier genügt Arbeitsspeicher, weil ein verlorenes Beobachtungsereignis keinen Beweis zerstört. Der Preis ist benannt: stirbt ein Worker während einer Valkey-Störung, gehen gepufferte Ereignisse **und** der Verlustzähler zusammen verloren, und die Zeitspanne wird nie als unvollständig ausgewiesen. Governs R4, R4a.
 - KTD2. **Drei Aufnahmestellen statt zwei.** Der Anwendungs-Hook hängt an `post_enqueue`, der Worker-Hook an den Signalen *und* an `pre_execute`. Grund: Scheduler-Auslösungen und alle verzögerten Einreihungen publizieren direkt am Broker und passieren `post_enqueue` nie; ihre Argumente liegen erst im Ausführungspfad vor. Das Verzeichnis führt deshalb eine Aufwärts-Ergänzung je Kennung statt einer Einfügung. Governs R3, R3a, R3b, R31.
-- KTD3. **Das Verzeichnis ist eine SQLite-Datei mit FTS5 im Trigramm-Modus** (session-settled: user-approved — chosen over reinem Valkey und über PostgreSQL: Volltext über Argumente gibt es in Valkey OSS nicht, und SQLite kostet null zusätzliche Pakete). Trigramm statt wortweiser Zerlegung, weil eine Ops-Suche nach `0812` sonst `R-2026-0812` nicht findet; Preis ist ein deutlich größerer Index. Governs R5, R7, R10.
+- KTD3. **Das Verzeichnis ist eine SQLite-Datei mit FTS5 im Trigramm-Modus** (session-settled: user-approved — chosen over reinem Valkey und über PostgreSQL: Volltext über Argumente gibt es in Valkey OSS nicht, und SQLite kostet null zusätzliche Pakete). Trigramm statt wortweiser Zerlegung, weil eine Ops-Suche nach einem Fragment im Wortinneren sonst gar nichts findet: gemessen findet der Trigramm-Index das Fragment `3@example` 10.000-mal, der wortweise **null**-mal. Preis ist ein knapp doppelt so großes Verzeichnis — 750 statt 409 Byte je Zeile. Governs R5, R7, R10.
 - KTD4. **Litestar als Web-Rahmen** (session-settled: user-directed — chosen over Starlette und FastAPI: es bringt Sitzungsspeicher für Valkey, Kanal-Verteilung, Sitzungs-Anmeldung und CSRF fertig mit, und das wiegt 22 statt 4 Pakete auf). Governs R13, R20, R21, R23.
 - KTD5. **Granian mit genau einem Arbeitsprozess** (session-settled: user-directed — chosen over uvicorn: gemessen 21 MB gegen 1,2 MB und fünffacher Durchsatz, der hier nichts kauft; beide sprechen ASGI, der Wechsel bliebe ein Wort). Ein Prozess ist zugleich Bedingung: die Kanal-Verteilung lebt im Prozess, und das Sichten der DLQ wird darüber serialisiert. Governs R13, R28a.
 - KTD6. **Live-Aktualisierung über Server-Sent-Events mit gedeckeltem Rückstau je Verbindung** (session-settled: user-approved — chosen over WebSocket und Polling: eine Richtung genügt, das Sitzungscookie authentifiziert mit, der Browser verbindet selbst neu). Der Deckel ist Pflicht, nicht Feinabstimmung: ohne ihn wächst die Warteschlange einer stehengebliebenen Ansicht unbegrenzt. Läuft sie über, wird nicht still verworfen, sondern die Ansicht zum Neuladen aufgefordert. Dazu ein Herzschlag im Leerlauf, damit zwischengeschaltete Proxys die Verbindung nicht abräumen. Governs R13, R13a.
@@ -602,7 +605,7 @@ Fünf Stufen. A bis D bilden die erste Auslieferung gegen die veröffentlichte B
   2. Jedes Ereignis ergänzt die Zeile aufwärts statt sie einzufügen: ein `pre_execute` vor jeder Einreihungsmeldung legt die Zeile an, eine spätere Einreihungsmeldung füllt Zeitpunkt und Herkunft nach (KTD2).
   3. Die Herkunftsart wird nur von „erst beim Aufgreifen“ auf „aus Einreihung“ gehoben, nie umgekehrt; der Einreihungszeitpunkt bleibt leer, solange er unbekannt ist (R31).
   4. Statusableitung aus der Signalfolge, nicht aus einem einzelnen Ereignis. Geordnet wird nach dem Zeitstempel des Ereignisses; die Stromkennung entscheidet nur bei Gleichstand. Die Stromreihenfolge ist wegen KTD1 die Reihenfolge des Pufferleerens, nicht die der Ereignisse — sonst gewänne bei zwei ungleich verzögerten Puffern der ältere Ausgang.
-  5. Aufbewahrung ist ein Löschen nach Alter in der Datei, im selben Takt wie die Stromtrimmung durch den Dienst (R5, R7a, U2). Die Datei wird mit Rechten nur für den Dienstbenutzer angelegt. Damit „löscht wirklich“ auch stimmt, läuft die Verbindung mit sicherem Löschen, der Volltextindex wird im selben Takt aufgeräumt und ein Prüfpunkt des Journals angestoßen — ein gewöhnliches Löschen gibt die Seiten nur frei und lässt die Klartext-Argumente als Rohbytes stehen.
+  5. Jede Verbindung setzt eine Wartefrist auf gesperrte Schreibvorgänge — ohne sie scheitern unter Last 99 % der Vorgänge, mit ihr keiner bis 16 gleichzeitige Schreiber. Aufbewahrung ist ein Löschen nach Alter in der Datei, im selben Takt wie die Stromtrimmung durch den Dienst (R5, R7a, U2). Die Datei wird mit Rechten nur für den Dienstbenutzer angelegt. Damit „löscht wirklich“ auch stimmt, läuft die Verbindung mit sicherem Löschen, der Volltextindex wird im selben Takt aufgeräumt und ein Prüfpunkt des Journals angestoßen — ein gewöhnliches Löschen gibt die Seiten nur frei und lässt die Klartext-Argumente als Rohbytes stehen.
   6. Der Lesefortschritt im Strom wird mitgeführt, damit ein Neustart dort weitermacht. Bei jedem Lesen vergleicht der Leser ihn mit der kleinsten noch vorhandenen Ereigniskennung; liegt er davor, hat der Längendeckel ungelesene Ereignisse abgeschnitten, und die Zeitspanne dazwischen wird mit demselben Mittel als unvollständig markiert wie ein Verlust-Ereignis (R4a). Ohne diesen Vergleich setzt der Leser still am ältesten Rest auf und die fehlenden Tasks werden als „nicht gelaufen“ gelesen.
   7. Fehlt die Verzeichnisdatei, wird sie aus dem Strom neu aufgebaut und dieser Zustand ist von außen sichtbar (R8). Der Neuaufbau betrifft **nur** die Verzeichnisdatei; Konten, Sitzungen und Bremszähler liegen in einer eigenen Datei und werden nie berührt (KTD8).
 - **Patterns to follow:** Schreibvorgang gebündelt in einem Task mit eigener Verbindung; Lesen über Threadauslagerung; Journal im WAL-Modus.
@@ -717,7 +720,7 @@ Fünf Stufen. A bis D bilden die erste Auslieferung gegen die veröffentlichte B
 - **Dependencies:** U8, U9
 - **Files:** `src/swarmq_dashboard/web/auth.py`, `src/swarmq_dashboard/web/routes/login.py`, `tests/unit/web/test_auth.py`, `tests/integration/test_login_flow.py`
 - **Approach:**
-  1. Sitzungen in derselben eigenen Datei wie die Konten (KTD8), Ablaufspalte gleich der Inaktivitätsfrist, Verlängerung bei Zugriff. Sitzungs- und CSRF-Cookie tragen ausdrücklich `secure` und strenge Seitenbindung, das Sitzungscookie zusätzlich den Skriptschutz — der Rahmen setzt nichts davon von selbst, seine Vorgaben sind `secure=False` und lockere Bindung. Der Dienst ist ausschließlich über TLS erreichbar, entweder direkt oder hinter einem vorgelagerten Abschluss; sonst gehen Passwörter und sieben Tage Klartext-Argumente über eine mitlesbare Leitung.
+  1. Sitzungen in derselben eigenen Datei wie die Konten (KTD8), Ablaufspalte gleich der Inaktivitätsfrist, Verlängerung bei Zugriff — aber höchstens einmal je Minute, sonst ist jede Anfrage ein Schreibvorgang und die Schreiber reihen sich auf. Jede Verbindung setzt eine Wartefrist auf gesperrte Schreibvorgänge. Sitzungs- und CSRF-Cookie tragen ausdrücklich `secure` und strenge Seitenbindung, das Sitzungscookie zusätzlich den Skriptschutz — der Rahmen setzt nichts davon von selbst, seine Vorgaben sind `secure=False` und lockere Bindung. Der Dienst ist ausschließlich über TLS erreichbar, entweder direkt oder hinter einem vorgelagerten Abschluss; sonst gehen Passwörter und sieben Tage Klartext-Argumente über eine mitlesbare Leitung.
   2. Der Sitzungsspeicher wird ausdrücklich registriert; ein unbekannter Name muss den Start scheitern lassen, weil der Rahmen sonst still auf einen prozesslokalen Speicher zurückfällt.
   3. CSRF für alle schreibenden Anfragen; das Merkmal erreicht Formulare über das eingebaute Feld und Fragmentaufrufe über einen Kopfzeilenwert.
   4. Anmeldebremse von Hand im Anmelde-Handler: Zähler je Konto **und** je Herkunft, wachsende Verzögerung, keine Sperre. Die Zähler liegen in derselben eigenen Datei wie Konten und Sitzungen (KTD8) — lägen sie in Valkey, verschwände die Bremse genau bei dem Ausfall, für den KTD8 die Anmeldung erreichbar hält. Die eingebaute Ratenbegrenzung des Rahmens kann das nicht, weil ihre Schlüsselfunktion den Anfragekörper nicht lesen kann.
@@ -842,7 +845,7 @@ Fünf Stufen. A bis D bilden die erste Auslieferung gegen die veröffentlichte B
 - **Files:** `src/swarmq_dashboard/web/routes/worker.py`, `src/swarmq_dashboard/web/templates/worker/`, `tests/unit/web/test_worker_routes.py`, `tests/integration/test_worker_page.py`
 - **Approach:**
   1. Worker aus dem Strom nach Gruppe gebündelt; der Gruppenschlüssel kommt aus der Rückmeldung, sonst aus der sortierten Queue-Menge des Workers.
-  2. Verbundenheit nach der Quellenreihenfolge aus KTD10; die Seite nennt die verwendete Quelle und markiert sich als eingeschränkt, wenn nur die schwächste greift (R14a).
+  2. Verbundenheit nach der Quellenreihenfolge aus KTD10; die Seite nennt die verwendete Quelle und markiert sich als eingeschränkt, wenn nur die schwächste greift (R14a). Die Frist für „getrennt“ hängt an der Quelle und ist aus deren Takt abgeleitet: 40 s bei der Supervisor-Rückmeldung, 35 s beim Lebenszeichen, ein langer konfigurierbarer Wert beim letzten Signal überhaupt.
   3. Konsumenten-Differenz je Queue aus U7, einschließlich des Falls „kein Worker bekannt“ (R18).
   4. Getrennte Worker bleiben mit dem Zeitpunkt des letzten Lebenszeichens stehen; Entfernen ist eine Aktion mit Audit-Eintrag (R19).
   5. Ohne Kontrollkanal entfallen Spielraum, die vom Supervisor gemeldete Slot-Kapazität und der Sollwert; an ihrer Stelle steht eine benannte Ursache, kein leerer Bereich (R33). Die Zahl wartender Nachrichten **bleibt** — sie kommt aus U7 und hängt nicht am Kontrollkanal. Sie ist in der ersten Auslieferung die einzige Antwort auf „staut es sich?“.
@@ -969,3 +972,65 @@ Tests sind deterministisch und warten nicht mit `sleep`, sondern auf Ereignisse 
 - Der Rückstau-Fluss läuft gegen einen echten Worker mit Kontrollkanal durch.
 - AE4, AE5, AE6 und AE6a laufen nach.
 - Eine Ablehnung führt nie zu einer Wiederholungsschleife, und ein abgelehnter Wert bleibt nicht im Kontrollkanal liegen.
+
+---
+
+## Appendix — Messwerte
+
+Gemessen am 2026-09-17 auf der Entwicklungsmaschine, gegen synthetische Task-Zeilen in der erwarteten Form (fünf Argument-Muster, gemischte Größen) und gegen SQLite 3.45.1.
+
+### Verzeichnisgröße und Suchzeit (KTD3)
+
+| Tokenisierung | Datei je 100.000 Zeilen | davon Index | Byte je Zeile | Indexbau |
+|---|---|---|---|---|
+| wortweise | 39,0 MB | 7,0 MB | 409 | 0,2 s |
+| **Trigramm** | **73,5 MB** | **40,8 MB** | **770** | 1,2 s |
+
+Bei 300.000 Zeilen: 213,2 MB, 745 Byte je Zeile — der Aufwand wächst linear.
+
+Suchzeit bei 300.000 Zeilen, Trigramm: 0,0 ms für seltene Begriffe, 7 ms für einen Begriff mit 60.000 Treffern, 18 ms für den häufigsten. Die Oberfläche blättert, zählt also nie alles.
+
+Entscheidend für die Wahl ist nicht die Größe, sondern was gefunden wird:
+
+| Fragment | wortweise | Trigramm |
+|---|---|---|
+| `kunde3@example.com` (ganzer Wert) | 5 | 5 |
+| `kunde3` (Wortanfang) | 5 | 1.115 |
+| `3@example` (**quer über die Wortgrenze**) | **0** | **10.000** |
+| `nde3` (Wortinneres) | 0 | 1.115 |
+
+Hochrechnung für sieben Tage Aufbewahrung: 10.000 Tasks/Tag → 53 MB · 50.000 → 260 MB · 100.000 → 520 MB · 500.000 → 2,6 GB.
+
+### Sperrverhalten der Konten- und Sitzungsdatei (KTD8)
+
+SQLite im WAL-Modus, je Vorgang ein Lesen plus ein Schreiben, jeder zehnte zusätzlich ein Bremszähler.
+
+| Wartefrist | Threads | Durchsatz | Mittel | 95 % | 99,9 % | Sperrfehler |
+|---|---|---|---|---|---|---|
+| 5 s | 4 | 856/s | 0,99 ms | 1,12 ms | 731 ms | 0 |
+| 5 s | 16 | 1.448/s | 0,48 ms | 1,03 ms | 1,73 s | 0 |
+| 5 s | 64 | 1.504/s | 0,48 ms | 1,00 ms | 3,36 s | 22 |
+| **keine** | 32 | 24.128/s | 3,94 ms | 15,3 ms | 23,9 ms | **6.348 von 6.400** |
+
+Lesart: die Wartefrist ist Pflicht — ohne sie scheitern 99 % der Vorgänge. Mit ihr trägt die Datei bis 16 gleichzeitige Schreiber fehlerfrei, und der Mittelwert bleibt unter einer Millisekunde. Der lange Schwanz entsteht daraus, dass SQLite immer nur einen Schreiber zulässt; deshalb wird die Sitzungsverlängerung auf höchstens einmal je Minute gedrosselt (U17), was die meisten Anfragen zu reinen Lesevorgängen macht.
+
+### Abgeleitete Fristen
+
+| Größe | Wert | Woraus |
+|---|---|---|
+| „unbestätigt“ (R17) | 15 s | zwei Abtastintervalle des Supervisors (2 × 5 s) plus Nachsicht |
+| „getrennt“, Supervisor-Rückmeldung | 40 s | Gnadenfrist 30 s + Terminierung 5 s + Intervall 5 s |
+| „getrennt“, Lebenszeichen | 35 s | drei verpasste Abtastungen (3 × 10 s) plus Nachsicht |
+| „getrennt“, letztes Signal | nicht ableitbar | ein untätiger Worker sendet nichts; langer Wert plus Kennzeichnung nach R14a |
+
+### Rückstau-Deckel je Verbindung (R13a)
+
+Vier Ereignisse je Task, Überbrückung einer 60-Sekunden-Stockung:
+
+| Tasks/Tag | Ereignisse/s | Deckel |
+|---|---|---|
+| 10.000 | 0,5 | 100 |
+| 100.000 | 4,6 | 300 |
+| 500.000 | 23,1 | 1.400 |
+
+Obergrenze, weil ein Tab nur seine gefilterte Teilmenge sieht.
