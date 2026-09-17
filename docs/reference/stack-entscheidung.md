@@ -20,10 +20,10 @@ Alle Zahlen unten sind gemessen, nicht geschätzt.
 | Live-Aktualisierung | **SSE** über `ServerSentEvent` + `litestar.channels` | **R13** |
 | CSS | handgeschrieben, ~400 Zeilen, modernes CSS | R24, R26 |
 | Task-Verzeichnis | **SQLite + FTS5**, Stdlib `sqlite3`, WAL | R5–R11 |
-| Sitzungen | **`litestar.stores.valkey.ValkeyStore`** | R21 |
+| Sitzungen | lokale SQLite-Datei neben den Konten | R21 |
 | Anmeldung | `litestar.security.session_auth.SessionAuth` | R20, R23 |
 | CSRF | `CSRFConfig(cookie_samesite="strict")` | R23 |
-| Anmeldebremse | `litestar.middleware.rate_limit` | R22 |
+| Anmeldebremse | von Hand im Anmelde-Handler, Zähler in derselben lokalen Datei | R22 |
 | Passwörter | **argon2-cffi** (argon2id) | R21 |
 | Konto-CLI | **argparse** (wie der swarmq-Kern) | R20 |
 | Broker/DLQ | `RabbitMQBroker` + `BrokerAdmin` aus swarmq | R18, R28–R30 |
@@ -44,8 +44,9 @@ Import über `app.py` → `_openapi`.)
 Dagegen steht, was Litestar an Eigencode abnimmt, und das ist genau die
 Fläche, auf der Sicherheitsfehler wohnen:
 
-- `stores/valkey.py` — Sitzungen in **Valkey**, nicht Redis. Die TTL *ist* der
-  Inaktivitätsablauf aus R21, Abmelden *ist* ein `DEL`.
+- `stores/valkey.py` — Sitzungen in **Valkey**, nicht Redis, mit der TTL als
+  Inaktivitätsablauf. Steht bereit, wird aber nicht benutzt — siehe die erste
+  Berichtigung unten.
 - `channels` mit `MemoryChannelsBackend` — der Fanout eines Valkey-Stroms auf
   N offene Browser (R13). Warteschlange je Verbindung, Backpressure,
   Abo-Lebenszyklus, Verhalten bei langsamen Lesern: das ist der größte Posten
@@ -55,6 +56,18 @@ Fläche, auf der Sicherheitsfehler wohnen:
 - `CSRFConfig` — die zweite Hälfte von R23.
 - `litestar-htmx` — HTMX-Integration, schon als Abhängigkeit dabei.
 
+**Berichtigung (2026-09-17, nach Prüfung der Litestar-Quellen):** Die
+Rate-Limit-Middleware deckt R22 **nicht** ab. Sie schlüsselt über
+`identifier_for_request`, das synchron ist und den Request-Body nicht lesen
+kann — auf einem Anmelde-POST kommt man damit nicht an den Kontonamen. Sie
+kann nur nach IP bremsen. R22 verlangt aber ausdrücklich eine Bremse *für
+dieses Konto*, also wird sie im Anmelde-Handler selbst gebaut, mit Zählern in derselben lokalen
+Datei wie Konten und Sitzungen (siehe Berichtigung unten). Zwei weitere Fallen derselben Middleware,
+falls sie später doch für IP-Bremsen benutzt wird: ihre Schlüssel enthalten
+die Route nicht (zwei Begrenzungen teilen einen Zähler), und ihr Store muss
+ausdrücklich registriert werden, sonst fällt sie still auf einen
+prozesslokalen Speicher zurück.
+
 Erste Schätzung für den Eigenbau auf Starlette waren 150 Zeilen. Das war zu
 optimistisch: Sitzung und CSRF treffen ungefähr zu, der Channels-Fanout allein
 ist mehr als das. Die Entscheidung fiel gegen die Paketzahl und für weniger
@@ -62,6 +75,12 @@ sicherheitskritischen Eigencode.
 
 FastAPI wäre 10 Pakete, brächte aber Pydantic als zweite Serialisierungswelt
 neben dem msgspec, das swarmq ohnehin lädt.
+
+**Berichtigung (2026-09-17, aus der Dokumentprüfung des Plans):** Sitzungen, Konten und die Zähler der Anmeldebremse liegen **nicht** im Valkey-Store, sondern in einer eigenen lokalen SQLite-Datei. Der Valkey-Store war als Vorteil von Litestar gebucht, und seine Ablaufzeit hätte die Inaktivitätsfrist geschenkt mitgebracht. Dagegen steht der Zweck des Werkzeugs: fällt Valkey aus, kommt sonst niemand mehr hinein — in genau dem Vorfall, für den das Dashboard existiert — und die Anmeldebremse verschwände gleich mit. Der einzige Vorteil des geteilten Speichers wäre Mehrprozessbetrieb, und den schließt Granian mit einem Arbeiter ohnehin aus.
+
+Eigene Datei, nicht dieselbe wie das Verzeichnis: der Neuaufbau des Verzeichnisses aus dem Strom ist ein vorgesehener Weg, und läge alles zusammen, würde sein Löschen das Team aussperren.
+
+**Zweite Berichtigung:** Litestar setzt `secure` bei Sitzungs- **und** CSRF-Cookie standardmäßig auf `False`, das Sitzungscookie zusätzlich auf lockere Seitenbindung. Beides muss ausdrücklich gesetzt werden, und der Dienst gehört hinter TLS — sonst gehen Passwörter und sieben Tage Klartext-Argumente über eine mitlesbare Leitung.
 
 ## Warum Granian und nicht uvicorn
 
