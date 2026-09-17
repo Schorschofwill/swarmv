@@ -183,3 +183,115 @@ async def test_protokollzeile_nennt_keine_argumentwerte(caplog: pytest.LogCaptur
     assert "Maria Musterfrau" not in text
     assert "AT61" not in text
     assert "ConnectionError" in text or "Valkey" in text
+
+
+# === Befunde aus der Codepruefung Stufe A ================================
+#
+# 11. Die Ruecklage nach einem Schreibfehler zaehlt verdraengte Ereignisse.
+# 12. Die Lueckenmeldung nennt die Zahl ihrer Zeitspanne, nicht die Gesamtzahl.
+# 13. Zwei gleichzeitige Durchlaeufe ueberlappen nicht.
+# 14. stop() leert mehr als einen Stapel.
+# 15. Ein Abbruch waehrend des Schreibens verliert den Stapel nicht ungezaehlt.
+
+
+async def test_ruecklage_zaehlt_verdraengte_ereignisse() -> None:
+    """Befund 2: extendleft verdraengt am anderen Ende, ohne zu zaehlen."""
+
+    class Langsam:
+        async def connect(self) -> None: ...
+        async def xadd_batch(self, key: str, events: list[bytes], maxlen: int) -> None:
+            await asyncio.sleep(0)
+            raise ConnectionError("aus")
+
+    puffer = EventBuffer(capacity=10, client=Langsam(), batch=5)
+    for i in range(10):
+        puffer.record(_ev(i))
+    aufgabe = asyncio.create_task(puffer.flush_once())
+    await asyncio.sleep(0)
+    for i in range(100, 105):
+        puffer.record(_ev(i))
+    await aufgabe
+
+    drin = {e.payload["task_id"] for e in puffer.peek()}
+    erwartet = {f"t{i}" for i in range(10)} | {f"t{i}" for i in range(100, 105)}
+    verloren = len(erwartet - drin)
+    assert puffer.counters.dropped >= verloren, (
+        f"{verloren} Ereignisse verloren, nur {puffer.counters.dropped} gezaehlt"
+    )
+
+
+async def test_lueckenmeldung_nennt_die_zahl_ihrer_zeitspanne() -> None:
+    """Befund 3: der Zaehler ist kumulativ, die Zeitspanne wird zurueckgesetzt."""
+    from swarmq_dashboard.events import decode
+
+    strom = _Strom()
+    puffer = EventBuffer(capacity=2, client=strom)
+    for i in range(6):
+        puffer.record(_ev(i))
+    await puffer.flush_once()
+    erste = next(decode(r) for r in strom.geschrieben if b"sqd_events_lost" in r)
+
+    strom.geschrieben.clear()
+    for i in range(10, 15):
+        puffer.record(_ev(i))
+    await puffer.flush_once()
+    zweite = next(decode(r) for r in strom.geschrieben if b"sqd_events_lost" in r)
+
+    assert erste.payload["count"] + zweite.payload["count"] == puffer.counters.dropped, (
+        f"Summe der Meldungen {erste.payload['count']}+{zweite.payload['count']} "
+        f"weicht vom Gesamtverlust {puffer.counters.dropped} ab"
+    )
+
+
+async def test_zwei_durchlaeufe_ueberlappen_nicht() -> None:
+    """Befund 5: ohne Ausschluss schreiben zwei Durchlaeufe durcheinander."""
+    gleichzeitig = 0
+    hoechststand = 0
+
+    class Zaehlend:
+        async def connect(self) -> None: ...
+        async def xadd_batch(self, key: str, events: list[bytes], maxlen: int) -> None:
+            nonlocal gleichzeitig, hoechststand
+            gleichzeitig += 1
+            hoechststand = max(hoechststand, gleichzeitig)
+            await asyncio.sleep(0.01)
+            gleichzeitig -= 1
+
+    puffer = EventBuffer(capacity=100, client=Zaehlend(), batch=5)
+    for i in range(50):
+        puffer.record(_ev(i))
+    await asyncio.gather(puffer.flush_once(), puffer.flush_once(), puffer.flush_once())
+    assert hoechststand == 1, f"{hoechststand} Durchlaeufe gleichzeitig im Schreibvorgang"
+
+
+async def test_stop_leert_mehr_als_einen_stapel() -> None:
+    """Befund 8: stop() schrieb hoechstens einen Stapel."""
+    strom = _Strom()
+    puffer = EventBuffer(capacity=2000, client=strom, batch=100)
+    for i in range(1000):
+        puffer.record(_ev(i))
+    await puffer.stop()
+    assert len(strom.geschrieben) == 1000, (
+        f"nur {len(strom.geschrieben)} von 1000 geschrieben — der Rest ist weg"
+    )
+
+
+async def test_abbruch_waehrend_des_schreibens_verliert_nicht_ungezaehlt() -> None:
+    """Befund 6/8: ein abgebrochener Schreibvorgang darf den Stapel nicht verschlucken."""
+
+    class Haengend:
+        async def connect(self) -> None: ...
+        async def xadd_batch(self, key: str, events: list[bytes], maxlen: int) -> None:
+            await asyncio.sleep(30)
+
+    puffer = EventBuffer(capacity=100, client=Haengend(), batch=10)
+    for i in range(10):
+        puffer.record(_ev(i))
+    aufgabe = asyncio.create_task(puffer.flush_once())
+    await asyncio.sleep(0.02)
+    aufgabe.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await aufgabe
+
+    erhalten = len(puffer.peek()) + puffer.counters.dropped
+    assert erhalten == 10, f"nur {erhalten} von 10 Ereignissen erhalten oder gezaehlt"

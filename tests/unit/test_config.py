@@ -133,3 +133,36 @@ def test_unbrauchbare_zahl_wirft_benannt(monkeypatch: pytest.MonkeyPatch) -> Non
     with pytest.raises(ConfigError) as exc:
         DashboardConfig.from_env()
     assert "SQD_RETENTION_DAYS" in str(exc.value)
+
+
+# === Befunde aus der Codepruefung Stufe A ================================
+#
+# 10. Eine Unix-Socket-Adresse ueberlebt die Ableitung des Strom-Index.
+# 11. Der FLUSHDB-Hinweis erkennt dieselbe Datenbank trotz Zugangsdaten.
+# 12. Der FLUSHDB-Hinweis erkennt dieselbe Datenbank ohne ausgeschriebenen Index.
+
+
+@pytest.mark.usefixtures("clean_env")
+def test_unix_socket_ueberlebt_die_ableitung(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SWARMQ_BROKER_URL", "amqp://localhost:5699/")
+    monkeypatch.setenv("SWARMQ_BACKEND_URL", "unix:///var/run/valkey.sock?db=0")
+    cfg = DashboardConfig.from_env()
+    assert "/var/run/valkey.sock" in cfg.stream_url, f"Socketpfad verloren: {cfg.stream_url}"
+
+
+@pytest.mark.usefixtures("clean_env")
+def test_gleiche_datenbank_trotz_zugangsdaten(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SWARMQ_BROKER_URL", "amqp://localhost:5699/")
+    monkeypatch.setenv("SWARMQ_BACKEND_URL", "valkey://localhost:6399/0")
+    monkeypatch.setenv("SQD_STREAM_URL", "valkey://:geheim@localhost:6399/0")
+    cfg = DashboardConfig.from_env()
+    assert cfg.shares_backend_db is True, "Zugangsdaten haben den Vergleich ausgehebelt"
+
+
+@pytest.mark.usefixtures("clean_env")
+def test_gleiche_datenbank_ohne_ausgeschriebenen_index(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SWARMQ_BROKER_URL", "amqp://localhost:5699/")
+    monkeypatch.setenv("SWARMQ_BACKEND_URL", "valkey://localhost:6399/0")
+    monkeypatch.setenv("SQD_STREAM_URL", "valkey://localhost:6399")
+    cfg = DashboardConfig.from_env()
+    assert cfg.shares_backend_db is True, "fehlender Index wurde nicht als 0 gelesen"

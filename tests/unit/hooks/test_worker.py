@@ -32,6 +32,7 @@ Test-Liste (AGENTS.md):
 
 from __future__ import annotations
 
+import asyncio
 import time
 
 import pytest
@@ -198,3 +199,71 @@ async def test_herunterfahr_signal_beendet_den_flusher_nicht() -> None:
         assert any(e.payload.get("task_id") == "spaet" for e in puffer.peek())
     finally:
         await puffer.stop()
+
+
+# === Befunde aus der Codepruefung Stufe A ================================
+#
+# 12. setup() zweimal aufgerufen ergibt keine doppelten Ereignisse.
+# 13. setup() uebernimmt einen vorhandenen Puffer, statt ihn zu ersetzen.
+# 14. Der Herunterfahr-Handler wartet nicht auf Netz.
+
+
+@pytest.mark.usefixtures("env")
+async def test_setup_zweimal_ergibt_keine_doppelten_ereignisse() -> None:
+    """Befund 7: nur der Anwendungs-Hook war gegen Doppelinstallation geschuetzt."""
+    app = _app()
+    setup(app)
+    setup(app)
+    await app._signal_dispatcher.dispatch(
+        Signal.TASK_STARTED, task_id="a41f", task_name="render_pdf", queue="reports"
+    )
+    ereignisse = [e for e in app.hook_buffer.peek() if e.type == "task_started"]  # type: ignore[attr-defined]
+    assert len(ereignisse) == 1, f"{len(ereignisse)} Ereignisse fuer ein Signal"
+
+
+@pytest.mark.usefixtures("env")
+async def test_setup_uebernimmt_vorhandenen_puffer() -> None:
+    """Befund 4: bei umgekehrter Reihenfolge entstand ein zweiter, toter Puffer."""
+    from swarmq_dashboard.hooks.app import install
+
+    app = _app()
+    install(app)                      # Anwendungs-Hook zuerst
+    erster = app.hook_buffer          # type: ignore[attr-defined]
+    setup(app)                        # dann der Worker-Hook
+    assert app.hook_buffer is erster, "der Worker-Hook hat den Puffer ersetzt"
+
+    await app.middleware_chain.run_post_enqueue(
+        {"task_id": "x", "task_name": "t", "queue": "q", "args": [], "kwargs": {},
+         "delivery_mode": "at_least_once"}
+    )
+    assert len(erster.peek()) == 1, "die Einreihung landete in einem anderen Puffer"
+
+
+@pytest.mark.usefixtures("env")
+async def test_herunterfahr_handler_wartet_nicht_auf_netz() -> None:
+    """Befund 6: WORKER_SHUTDOWN laeuft mit 10 s Zeitgrenze, die Gnadenfrist tickt."""
+    import time as _t
+
+    app = _app()
+    setup(app)
+    puffer = app.hook_buffer  # type: ignore[attr-defined]
+
+    class Haengend:
+        async def connect(self) -> None: ...
+        async def xadd_batch(self, key: str, events: list[bytes], maxlen: int) -> None:
+            await asyncio.sleep(30)
+
+    puffer._client = Haengend()
+    puffer.record(_ev_worker())
+
+    t0 = _t.perf_counter()
+    await app._signal_dispatcher.dispatch(Signal.WORKER_SHUTDOWN, worker_id="phx-w1:0")
+    dauer = _t.perf_counter() - t0
+    assert dauer < 0.2, f"der Handler wartete {dauer:.2f}s auf den Strom"
+
+
+def _ev_worker() -> object:
+    from swarmq_dashboard.events import Event, Origin
+
+    return Event(type="task_started", ts=1.0, source="phx-w1:0",
+                 origin=Origin.PICKUP, payload={"task_id": "x"})

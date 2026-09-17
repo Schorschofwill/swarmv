@@ -108,16 +108,27 @@ def setup(app: Any) -> None:
 
 
 def _install(app: Any) -> None:
-    hook_cfg = HookConfig.from_env()
-    app.hook_buffer = None
-    if not hook_cfg.usable:
-        logger.warning("dashboard_hook_inaktiv reason=%s", hook_cfg.reason)
+    if getattr(app, "_sqd_worker_hook", False):
+        # Zweimal registrieren hiesse jedes Signal doppelt melden, und das
+        # Verzeichnis kann Dubletten nicht von echten Wiederholungen trennen.
         return
 
+    buffer: EventBuffer | None = getattr(app, "hook_buffer", None)
+    if buffer is None:
+        hook_cfg = HookConfig.from_env()
+        if not hook_cfg.usable:
+            logger.warning("dashboard_hook_inaktiv reason=%s", hook_cfg.reason)
+            app.hook_buffer = None
+            app._sqd_worker_hook = True
+            return
+        buffer = EventBuffer(
+            capacity=DEFAULT_CAPACITY,
+            client=ValkeyStreamClient(hook_cfg.stream_url or ""),
+        )
+        app.hook_buffer = buffer
+
     source = str(app.config.worker_identity)
-    client = ValkeyStreamClient(hook_cfg.stream_url or "")
-    buffer = EventBuffer(capacity=DEFAULT_CAPACITY, client=client)
-    app.hook_buffer = buffer
+    app._sqd_worker_hook = True
 
     _register_signals(app, buffer, source)
     app.add_middleware(_PickupMiddleware(buffer, source))
@@ -180,13 +191,7 @@ def _on_online(app: Any, buffer: EventBuffer, source: str) -> Any:
                 },
             )
         )
-        try:
-            await buffer.client.connect()
-            await buffer.start()
-        except Exception:
-            # Auch hier: der Worker laeuft weiter. Der Flusher versucht es
-            # spaeter erneut, der Puffer haelt solange.
-            logger.warning("dashboard_stream_connect_failed", exc_info=True)
+        await buffer.ensure_started()
 
     handler.__qualname__ = "dashboard_worker_online"
     return handler
@@ -202,10 +207,12 @@ def _on_shutdown(buffer: EventBuffer) -> Any:
     """
 
     async def handler(**kwargs: Any) -> None:
-        try:
-            await buffer.flush_once()
-        except Exception:
-            logger.warning("dashboard_shutdown_flush_failed", exc_info=True)
+        # Nur wecken, nicht warten: swarmq verschickt dieses Signal mit einer
+        # Zeitgrenze von zehn Sekunden, und die Gnadenfrist des Supervisors
+        # laeuft dabei bereits. Ein Netz-Roundtrip hier wuerde bei
+        # unerreichbarem Valkey jedes Herunterfahren um zehn Sekunden
+        # verlaengern und den Handler danach mitten im Schreiben abbrechen.
+        buffer.nudge()
 
     handler.__qualname__ = "dashboard_worker_shutdown"
     return handler

@@ -113,3 +113,39 @@ async def test_stapel_erzeugt_je_element_ein_ereignis(
     einreihungen = [e for e in gelesen if e.type == ENQUEUE_EVENT]
     assert len(einreihungen) == 5
     assert sorted(e.payload["args"][0] for e in einreihungen) == [0, 1, 2, 3, 4]
+
+
+# === Befund 1 aus der Codepruefung Stufe A ==============================
+#
+# 4. Eine reine Anwendung schreibt OHNE Handverdrahtung in den Strom.
+#    Die drei Tests oben setzen _key und _client selbst und rufen flush_once()
+#    von Hand -- genau der fehlende Lebenszyklus war damit verdeckt.
+
+
+@pytest.mark.usefixtures("stream_env")
+async def test_reine_anwendung_schreibt_ohne_handverdrahtung(
+    app: SwarmQ, stream_url: str
+) -> None:
+    """Die dokumentierte eine Zeile muss genuegen (R3a, Abnahme U4)."""
+    import asyncio
+
+    install(app)                       # nichts sonst
+    for i in range(3):
+        await app.schedule("sqd_render_pdf", 900 + i)
+
+    c = ValkeyStreamClient(stream_url)
+    await c.connect()
+    try:
+        deadline = asyncio.get_running_loop().time() + 5.0
+        while asyncio.get_running_loop().time() < deadline:
+            if await c.length("sqd:events") >= 3:
+                break
+            await asyncio.sleep(0.1)
+        n = await c.length("sqd:events")
+        assert n >= 3, f"nur {n} von 3 Einreihungen erreichten den Strom"
+        gelesen = [decode(r) for r in await c.read_all("sqd:events")]
+        assert all(e.origin is Origin.ENQUEUE for e in gelesen)
+    finally:
+        await c.delete("sqd:events")
+        await app.hook_buffer.stop()   # type: ignore[attr-defined]
+        await c.close()

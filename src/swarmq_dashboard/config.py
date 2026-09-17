@@ -20,7 +20,7 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 #: Aufbewahrung des Verzeichnisses und des Stroms (KD7).
 DEFAULT_RETENTION_DAYS = 7
@@ -67,14 +67,36 @@ def _number[T: (int, float)](source: Mapping[str, str], name: str, default: T, c
 
 
 def _with_db(url: str, db: int) -> str:
-    """Dieselbe Valkey-Adresse mit einem anderen Datenbankindex."""
+    """Dieselbe Valkey-Adresse mit einem anderen Datenbankindex.
+
+    Bei einer Unix-Socket-Adresse traegt der Pfad den Socket, nicht den Index --
+    dort wandert die Datenbank in die Abfrage. Wer den Pfad ueberschreibt,
+    wirft den Socketpfad weg, und der Fehler faellt erst beim Verbinden auf.
+    """
     parts = urlsplit(url)
+    if parts.scheme in ("unix", "valkeys+unix", "redis+unix"):
+        abfrage = {k: v for k, v in parse_qsl(parts.query)}
+        abfrage["db"] = str(db)
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(abfrage), parts.fragment))
     return urlunsplit((parts.scheme, parts.netloc, f"/{db}", parts.query, parts.fragment))
 
 
+def _db_identity(url: str) -> tuple[str, str, str]:
+    """Wirt, Socketpfad und Datenbankindex -- ohne Zugangsdaten.
+
+    Zugangsdaten im Wirt-Teil machten frueher aus derselben Datenbank zwei
+    verschiedene, und ein fehlender Index wurde nicht als 0 gelesen. Genau
+    dann blieb der FLUSHDB-Hinweis aus, den KTD9 verlangt.
+    """
+    p = urlsplit(url)
+    wirt = f"{(p.hostname or '').lower()}:{p.port or ''}"
+    if p.scheme in ("unix", "valkeys+unix", "redis+unix"):
+        return (wirt, p.path, dict(parse_qsl(p.query)).get("db", "0"))
+    return (wirt, "", p.path.strip("/") or "0")
+
+
 def _same_db(a: str, b: str) -> bool:
-    pa, pb = urlsplit(a), urlsplit(b)
-    return (pa.netloc, pa.path.strip("/") or "0") == (pb.netloc, pb.path.strip("/") or "0")
+    return _db_identity(a) == _db_identity(b)
 
 
 @dataclass(frozen=True, slots=True)

@@ -81,6 +81,9 @@ class EventBuffer:
         self._counters = Counters()
         self._drop_from: float | None = None
         self._drop_to: float | None = None
+        self._span_dropped = 0
+        self._write_lock = asyncio.Lock()
+        self._wake = asyncio.Event()
         self._source = ""
         self._task: asyncio.Task[None] | None = None
         self._stop = asyncio.Event()
@@ -112,6 +115,42 @@ class EventBuffer:
         """Momentaufnahme des Puffers. Nur fuer Tests und die Zustandsanzeige."""
         return list(self._queue)
 
+    def _account_loss(self, events: list[Event]) -> None:
+        """Verlorene Ereignisse buchen. Einzige Stelle, die ``dropped`` erhoeht.
+
+        Verluste entstehen an drei Stellen: beim Ueberlauf in ``record``, beim
+        Zuruecklegen nach einem Schreibfehler, und beim Abbruch eines
+        Schreibvorgangs. Frueher zaehlte nur die erste -- die anderen beiden
+        verschwanden lautlos, und die Lueckenmeldung fiel zu klein aus (R4a).
+        """
+        if not events:
+            return
+        self._counters.dropped += len(events)
+        self._span_dropped += len(events)
+        for ev in events:
+            self._drop_from = ev.ts if self._drop_from is None else min(self._drop_from, ev.ts)
+            self._drop_to = ev.ts if self._drop_to is None else max(self._drop_to, ev.ts)
+
+    def _push_back(self, events: list[Event]) -> None:
+        """Ereignisse an den Kopf zuruecklegen und Verdraengtes buchen.
+
+        ``extendleft`` auf einem gedeckelten ``deque`` verdraengt am anderen
+        Ende -- also die **neuesten** Ereignisse, und lautlos. Beides ist
+        falsch: verloren werden soll das Aelteste, und gezaehlt werden muss
+        jeder Verlust (R4a).
+        """
+        if not events:
+            return
+        frei = (self._queue.maxlen or (len(self._queue) + len(events))) - len(self._queue)
+        if frei >= len(events):
+            self._queue.extendleft(reversed(events))
+            return
+        passt = events[len(events) - frei :] if frei > 0 else []
+        zuviel = events[: len(events) - frei] if frei > 0 else events
+        if passt:
+            self._queue.extendleft(reversed(passt))
+        self._account_loss(zuviel)
+
     def record(self, event: Event) -> None:
         """Ereignis annehmen. Synchron, in O(1), wartet auf nichts, wirft nie.
 
@@ -121,11 +160,7 @@ class EventBuffer:
         """
         try:
             if self._queue.maxlen is not None and len(self._queue) == self._queue.maxlen:
-                verworfen = self._queue[0]
-                self._counters.dropped += 1
-                ts = verworfen.ts
-                self._drop_from = ts if self._drop_from is None else min(self._drop_from, ts)
-                self._drop_to = ts if self._drop_to is None else max(self._drop_to, ts)
+                self._account_loss([self._queue[0]])
             self._queue.append(event)
             self._counters.buffered += 1
             if not self._source:
@@ -147,26 +182,39 @@ class EventBuffer:
             origin=Origin.PICKUP,
             payload={
                 "worker_id": self._source,
-                "count": self._counters.dropped,
+                "count": self._span_dropped,
                 "from_ts": self._drop_from,
                 "to_ts": self._drop_to,
             },
         )
 
     async def flush_once(self) -> int:
-        """Einen Durchlauf schreiben. Gibt die Zahl geschriebener Ereignisse zurueck."""
+        """Einen Durchlauf schreiben. Gibt die Zahl geschriebener Ereignisse zurueck.
+
+        Serialisiert: zwei gleichzeitige Durchlaeufe wuerden disjunkte Stapel
+        entnehmen und in beliebiger Reihenfolge landen -- die Stromreihenfolge
+        traegt aber die Statusableitung des Verzeichnisses.
+        """
+        async with self._write_lock:
+            return await self._flush_locked()
+
+    async def _flush_locked(self) -> int:
         if not self._queue and self._drop_from is None:
             return 0
         stapel: list[Event] = []
         while self._queue and len(stapel) < self._batch:
             stapel.append(self._queue.popleft())
         verlust = self._lost_event()
-        if verlust is not None:
-            stapel.append(verlust)
-        if not stapel:
+        nutzlast = [*stapel, verlust] if verlust is not None else stapel
+        if not nutzlast:
             return 0
         try:
-            await self._client.xadd_batch(self._key, [encode(e) for e in stapel], self._maxlen)
+            await self._client.xadd_batch(self._key, [encode(e) for e in nutzlast], self._maxlen)
+        except asyncio.CancelledError:
+            # Abbruch mitten im Schreiben: der Stapel darf nicht verschwinden.
+            # swarmq bricht Lebenszyklus-Handler nach ihrer Zeitgrenze ab.
+            self._push_back(stapel)
+            raise
         except Exception as exc:
             self._counters.failed += 1
             # Ohne Nutzlast: die Ereignisse tragen Argumente im Klartext (R7),
@@ -174,14 +222,15 @@ class EventBuffer:
             # Trimmung aus R9.
             logger.warning(
                 "stream_write_failed kind=%s count=%d reason=%r",
-                self._key, len(stapel), exc,
+                self._key, len(nutzlast), exc,
             )
-            self._queue.extendleft(reversed([e for e in stapel if e.type != LOST_EVENT]))
+            self._push_back(stapel)
             return 0
         if verlust is not None:
             self._drop_from = self._drop_to = None
-        self._counters.flushed += len(stapel)
-        return len(stapel)
+            self._span_dropped = 0
+        self._counters.flushed += len(nutzlast)
+        return len(nutzlast)
 
     async def _loop(self) -> None:
         delay = self._interval
@@ -194,22 +243,60 @@ class EventBuffer:
             except Exception:
                 logger.warning("flush_loop_error", exc_info=True)
                 delay = min(delay * 2, DEFAULT_RETRY_MAX_S)
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(self._stop.wait(), timeout=max(self._interval, delay))
+            self._wake.clear()
+            warten = [asyncio.create_task(self._stop.wait()), asyncio.create_task(self._wake.wait())]
+            _, offen = await asyncio.wait(
+                warten, timeout=max(self._interval, delay), return_when=asyncio.FIRST_COMPLETED
+            )
+            for aufgabe in offen:
+                aufgabe.cancel()
 
     async def start(self) -> None:
-        """Hintergrund-Flusher starten."""
-        if self._task is None:
+        """Hintergrund-Flusher starten. Idempotent."""
+        if self._task is None or self._task.done():
             self._stop.clear()
             self._task = asyncio.create_task(self._loop())
 
+    async def ensure_started(self) -> None:
+        """Verbinden und den Flusher starten, falls noch nicht geschehen.
+
+        Idempotent und fehlertolerant: scheitert das Verbinden, laeuft der
+        Flusher trotzdem und versucht es bei jedem Durchlauf erneut. Aufrufbar
+        aus jedem asynchronen Pfad -- die einreihende Anwendung hat kein
+        Lebenszyklus-Signal, an dem sie haengen koennte.
+        """
+        if self.running:
+            return
+        try:
+            await self._client.connect()
+        except Exception:
+            logger.warning("dashboard_stream_connect_failed", exc_info=True)
+        await self.start()
+
+    def nudge(self) -> None:
+        """Den Flusher wecken, ohne auf ihn zu warten.
+
+        Fuer Aufrufer im Signalpfad: ein ``await flush_once()`` dort waere ein
+        Netz-Roundtrip in einem Handler mit Zeitgrenze (R4).
+        """
+        self._wake.set()
+
     async def stop(self) -> None:
-        """Flusher beenden und ein letztes Mal leeren."""
+        """Flusher beenden und **vollstaendig** leeren.
+
+        Leert in Stapeln, bis nichts mehr da ist -- ein einziger Stapel liesse
+        bei einem vollen Puffer tausende Ereignisse ungezaehlt liegen.
+        """
         self._stop.set()
+        self._wake.set()
         if self._task is not None:
             self._task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._task
             self._task = None
-        with contextlib.suppress(Exception):
-            await self.flush_once()
+        while self._queue or self._drop_from is not None:
+            try:
+                if await self.flush_once() == 0:
+                    break
+            except Exception:
+                break

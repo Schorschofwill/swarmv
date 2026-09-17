@@ -1103,7 +1103,9 @@ dependencies = [
     { name = "granian" },
     { name = "jinja2" },
     { name = "litestar" },
+    { name = "msgspec" },
     { name = "swarmq" },
+    { name = "valkey" },
 ]
 
 [package.dev-dependencies]
@@ -1122,7 +1124,9 @@ requires-dist = [
     { name = "granian", specifier = ">=2.8,<3" },
     { name = "jinja2", specifier = ">=3.1" },
     { name = "litestar", specifier = ">=2.24,<3" },
+    { name = "msgspec", specifier = ">=0.18" },
     { name = "swarmq", specifier = ">=0.6.2,<0.8" },
+    { name = "valkey", specifier = ">=6" },
 ]
 
 [package.metadata.requires-dev]

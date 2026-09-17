@@ -57,6 +57,12 @@ class _EnqueueMiddleware(Middleware):
                 payload=dict(message),
             )
         )
+        # Eine einreihende Anwendung hat kein Lebenszyklus-Signal, an dem der
+        # Flusher haengen koennte -- anders als der Worker, der WORKER_ONLINE
+        # bekommt. Er startet deshalb hier, beim ersten Einreihen, und zwar
+        # idempotent. Ohne das schrieb der Hook nie etwas nach Valkey: die
+        # Ereignisse liefen in den Puffer und rollten dort still durch.
+        await self._buffer.ensure_started()
 
 
 def install(app: Any, *, source: str | None = None) -> None:
@@ -97,3 +103,15 @@ def _install(app: Any, source: str | None) -> None:
     app.add_middleware(_EnqueueMiddleware(buffer, source or str(app.config.worker_identity)))
     app._sqd_app_hook = True
     logger.info("dashboard_app_hook_aktiv")
+
+
+async def shutdown(app: Any) -> None:
+    """Gepufferte Ereignisse wegschreiben und den Flusher beenden.
+
+    Fuer kurzlebige Anwendungen -- ein Skript, ein Cron-Job, eine Anfrage in
+    einem kurzlebigen Prozess. Ein Dienst, der ohnehin laeuft, braucht das
+    nicht: der Flusher schreibt im Takt weiter.
+    """
+    buffer = getattr(app, "hook_buffer", None)
+    if buffer is not None:
+        await buffer.stop()
