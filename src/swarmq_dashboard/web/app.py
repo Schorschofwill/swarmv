@@ -14,13 +14,21 @@ das ``refresh()`` im Takt nachfuehrt.
 
 from __future__ import annotations
 
+import secrets
 import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
+from argon2 import PasswordHasher
 from litestar import Litestar, get
+from litestar.config.csrf import CSRFConfig
+from litestar.middleware.session.server_side import ServerSideSessionConfig
+from litestar.stores.base import Store
+from litestar.stores.registry import StoreRegistry
 
+from swarmq_dashboard.accounts import AccountStore
 from swarmq_dashboard.broker import BrokerObserver, BrokerUnavailable
 from swarmq_dashboard.config import DashboardConfig
 from swarmq_dashboard.directory.reader import StreamReader
@@ -28,6 +36,35 @@ from swarmq_dashboard.directory.schema import connect
 from swarmq_dashboard.directory.writer import DirectoryWriter
 from swarmq_dashboard.events import TASK_STREAM
 from swarmq_dashboard.stream import StreamUnavailable, ValkeyStreamClient
+from swarmq_dashboard.web.auth import LoginThrottle, SqliteStore, session_guard
+from swarmq_dashboard.web.routes.login import login, login_form, logout
+
+#: Name, unter dem der Sitzungsspeicher registriert wird.
+SESSION_STORE_NAME = "sessions"
+
+
+class UnknownStore(LookupError):
+    """Ein Speicher wurde unter einem Namen verlangt, den niemand angemeldet hat.
+
+    Litestars Registratur legt in diesem Fall **still** einen prozesslokalen
+    Speicher an. Die Sitzungen laegen dann im Arbeitsspeicher statt in der
+    Kontendatei -- und niemand saehe es, bis nach einem Neustart alle
+    abgemeldet sind. Ein Tippfehler im Namen darf den Start scheitern lassen,
+    nicht die Ablage austauschen.
+    """
+
+
+def build_store_registry(accounts_file: Path) -> StoreRegistry:
+    """Die Registratur mit genau einem angemeldeten Speicher."""
+
+    def kein_ersatz(name: str) -> Store:
+        raise UnknownStore(
+            f"kein Speicher unter dem Namen {name!r} angemeldet -- ein stiller "
+            "Rueckfall auf den Arbeitsspeicher wuerde die Sitzungen verlieren"
+        )
+
+    return StoreRegistry({SESSION_STORE_NAME: SqliteStore(accounts_file)},
+                         default_factory=kein_ersatz)
 
 
 def _teil(ok: bool, reason: str | None = None) -> dict[str, Any]:
@@ -42,8 +79,11 @@ class Services:
     Sache, und diese Klasse laesst sich ohne Anwendung pruefen.
     """
 
-    def __init__(self, config: DashboardConfig) -> None:
+    def __init__(self, config: DashboardConfig, *, hasher: PasswordHasher | None = None) -> None:
         self._config = config
+        self._hasher = hasher
+        self.accounts: AccountStore | None = None
+        self.throttle: LoginThrottle | None = None
         self._stream_url = config.stream_url
         self._backend_url = config.backend_url
         self._broker_url = config.broker_url
@@ -71,7 +111,18 @@ class Services:
         macht aus einem Neustartversuch einen endgueltigen Ausfall.
         """
         self._verzeichnis_oeffnen()
+        self._konten_oeffnen()
         await self.refresh()
+
+    def _konten_oeffnen(self) -> None:
+        """Konten und Bremse. Beide in derselben eigenen Datei (KTD8) -- sie
+        haengen an keinem Netzdienst und muessen darum auch dann stehen, wenn
+        sonst nichts erreichbar ist.
+        """
+        if self.accounts is not None:
+            return
+        self.accounts = AccountStore(self._config.accounts_file, hasher=self._hasher)
+        self.throttle = LoginThrottle(self._config.accounts_file)
 
     def _verzeichnis_oeffnen(self) -> None:
         if self.services_directory_writer is not None:
@@ -204,9 +255,9 @@ async def _leise_schliessen(teil: object) -> None:
         pass
 
 
-def create_app(config: DashboardConfig) -> Litestar:
+def create_app(config: DashboardConfig, *, hasher: PasswordHasher | None = None) -> Litestar:
     """Die Anwendung bauen. Der Lebenszyklus haelt die Aussenverbindungen."""
-    services = Services(config)
+    services = Services(config, hasher=hasher)
 
     @asynccontextmanager
     async def lebenszyklus(app: Litestar) -> AsyncGenerator[None]:
@@ -226,4 +277,56 @@ def create_app(config: DashboardConfig) -> Litestar:
         """
         return services.status()
 
-    return Litestar(route_handlers=[zustand], lifespan=[lebenszyklus])
+    # Jedes Merkmal ausdruecklich: der Rahmen setzt ``secure=False`` und eine
+    # lockere Seitenbindung. Ohne ``secure`` geht das Sitzungscookie beim
+    # ersten Aufruf ueber eine mitlesbare Leitung, und ueber diese Leitung
+    # gingen auch sieben Tage Klartext-Argumente (R7, R7a). Der Dienst ist
+    # ausschliesslich ueber TLS erreichbar -- direkt oder hinter einem
+    # vorgelagerten Abschluss.
+    sitzung = ServerSideSessionConfig(
+        store=SESSION_STORE_NAME,
+        max_age=int(config.session_idle_s),
+        renew_on_access=True,
+        secure=True,
+        httponly=True,
+        samesite="strict",
+    )
+    # Das CSRF-Cookie ist absichtlich **nicht** httponly: die Fragmentaufrufe
+    # der Oberflaeche lesen es und schicken es als Kopfzeile zurueck. Sein
+    # Schutz liegt in der Seitenbindung, nicht in der Unlesbarkeit.
+    csrf = CSRFConfig(
+        secret=_csrf_secret(config.accounts_file),
+        cookie_secure=True,
+        cookie_samesite="strict",
+        safe_methods={"GET", "HEAD", "OPTIONS"},
+    )
+    return Litestar(
+        route_handlers=[zustand, login_form, login, logout],
+        lifespan=[lebenszyklus],
+        stores=build_store_registry(config.accounts_file),
+        middleware=[sitzung.middleware],
+        csrf_config=csrf,
+        guards=[session_guard],
+    )
+
+
+def _csrf_secret(accounts_file: Path) -> str:
+    """Das CSRF-Geheimnis, dauerhaft in der Kontendatei.
+
+    Ein bei jedem Start neu gewuerfeltes Geheimnis entwertet jedes offene
+    Formular -- nach einem Neustart scheiterte die naechste Aktion jedes
+    Teammitglieds mit "Merkmal ungueltig", und niemand wuesste warum.
+    """
+    store = AccountStore(accounts_file)
+    try:
+        con = store._con
+        con.execute("create table if not exists meta (key text primary key, value text) without rowid")
+        zeile = con.execute("select value from meta where key='csrf_secret'").fetchone()
+        if zeile is not None:
+            return str(zeile["value"])
+        wert = secrets.token_urlsafe(32)
+        con.execute("insert into meta(key, value) values ('csrf_secret', ?)", (wert,))
+        con.commit()
+        return wert
+    finally:
+        store.close()

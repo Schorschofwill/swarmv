@@ -49,6 +49,29 @@ create table if not exists account (
     created_at    real not null,
     updated_at    real not null
 ) without rowid;
+
+-- Sitzungen und Bremszaehler liegen hier, nicht in Valkey (KTD8): liegt
+-- Valkey, kommt sonst niemand mehr herein -- und das ist genau der Vorfall,
+-- fuer den es das Dashboard gibt.
+create table if not exists session_store (
+    key        text primary key,
+    value      blob not null,
+    expires_at real,
+    renewed_at real not null
+) without rowid;
+
+create index if not exists session_expiry on session_store(expires_at);
+
+create table if not exists login_attempt (
+    -- 'account' oder 'origin'. Beide werden gezaehlt: ohne die Herkunft
+    -- probiert derselbe Rechner einfach das naechste Konto durch, ohne das
+    -- Konto kommt derselbe Angriff von der naechsten Adresse (R22).
+    scope   text not null,
+    key     text not null,
+    count   integer not null default 0,
+    last_at real not null,
+    primary key (scope, key)
+) without rowid;
 """
 
 
@@ -169,6 +192,25 @@ class AccountStore:
             )
             for z in zeilen
         ]
+
+    def state_of(self, name: str) -> Account | None:
+        """Ein Konto mit seinem Zustand, oder ``None``.
+
+        Fuer den Sitzungswaechter: er fragt bei jeder Anfrage nach, ob das
+        Konto noch da und nicht gesperrt ist. Bewusst ohne
+        Ununterscheidbarkeits-Aufwand -- hier ist bereits eine gueltige
+        Sitzung im Spiel, es gibt nichts mehr aufzuzaehlen.
+        """
+        zeile = self._row(_normalisiert(name).strip())
+        if zeile is None:
+            return None
+        return Account(
+            name=str(zeile["name"]),
+            locked=bool(zeile["locked"]),
+            created_at=float(zeile["created_at"]),
+            updated_at=float(zeile["updated_at"]),
+            password_hash=str(zeile["password_hash"]),
+        )
 
     def _row(self, name: str) -> sqlite3.Row | None:
         with self._riegel:

@@ -84,8 +84,21 @@ async def test_zustandsseite_waehrend_ein_dienst_fehlt(
         sock.bind(("127.0.0.1", 0))
         tot = sock.getsockname()[1]
 
-    app = create_app(_config(tmp_path, broker_url, backend_url, f"valkey://127.0.0.1:{tot}/1"))
-    async with AsyncTestClient(app=app) as client:
+    from argon2 import PasswordHasher
+
+    from swarmq_dashboard.accounts import AccountStore
+
+    billig = PasswordHasher(time_cost=2, memory_cost=1024, parallelism=1)
+    config = _config(tmp_path, broker_url, backend_url, f"valkey://127.0.0.1:{tot}/1")
+    konten = AccountStore(config.accounts_file, hasher=billig)
+    konten.create("ops", "ein-langes-passwort")
+    konten.close()
+
+    app = create_app(config, hasher=billig)
+    async with AsyncTestClient(app=app, base_url="https://testserver.local") as client:
+        await client.get("/login")
+        await client.post("/login", data={"account": "ops", "password": "ein-langes-passwort"},
+                          follow_redirects=False)
         antwort = await client.get("/api/status")
         assert antwort.status_code == 200
         k = antwort.json()

@@ -211,10 +211,25 @@ async def test_die_zustandsseite_antwortet_auch_ohne_dienste(tmp_path: Path) -> 
     """Die eine Stelle, die im Vorfall zuerst aufgerufen wird, darf nicht die
     erste sein, die ausfaellt.
     """
+    from argon2 import PasswordHasher
     from litestar.testing import AsyncTestClient
 
-    app = create_app(_config(tmp_path))
-    async with AsyncTestClient(app=app) as client:
+    from swarmq_dashboard.accounts import AccountStore
+
+    billig = PasswordHasher(time_cost=2, memory_cost=1024, parallelism=1)
+    config = _config(tmp_path)
+    konten = AccountStore(config.accounts_file, hasher=billig)
+    konten.create("ops", "ein-langes-passwort")
+    konten.close()
+
+    # Ueber TLS, weil die Cookies ``Secure`` tragen -- dieselbe Bedingung wie
+    # im Betrieb. Und angemeldet: die Zusage ist, dass die Seite **waehrend
+    # eines Ausfalls** antwortet, nicht dass sie ohne Sitzung antwortet (R23).
+    app = create_app(config, hasher=billig)
+    async with AsyncTestClient(app=app, base_url="https://testserver.local") as client:
+        await client.get("/login")
+        await client.post("/login", data={"account": "ops", "password": "ein-langes-passwort"},
+                          follow_redirects=False)
         antwort = await client.get("/api/status")
         assert antwort.status_code == 200
         koerper = antwort.json()
