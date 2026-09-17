@@ -56,6 +56,10 @@ create table if not exists task (
 );
 
 create index if not exists task_last_seen on task(last_seen_at);
+-- Der Blaetterschluessel der Task-Liste. Ohne ihn ist jede Seite ein voller
+-- Durchlauf plus eine Sortierung im Arbeitsspeicher: gemessen bei 60.000
+-- Zeilen 469 ms fuer zwanzig Seiten statt 2 ms.
+create index if not exists task_first_seen on task(first_seen_at desc, task_id desc);
 create index if not exists task_status    on task(status);
 create index if not exists task_name_idx  on task(task_name);
 create index if not exists task_worker    on task(worker_id);

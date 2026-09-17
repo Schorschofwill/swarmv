@@ -36,6 +36,7 @@ Test-Liste (AGENTS.md):
 17. Reiner Leerraum ist kein Filter ueber alles.
 18. Unbrauchbare Seitengroessen werden begrenzt.
 19. Unbrauchbare Anschlussmarken heissen "von vorn".
+20. Die Liste laeuft ueber einen Index, nicht ueber einen vollen Durchlauf.
 """
 
 from __future__ import annotations
@@ -320,3 +321,21 @@ def test_unbrauchbare_anschlussmarken(tmp_path: Path) -> None:
     for marke in ("nan|x", "inf|x", "-inf|x", "keine-zahl|x", ""):
         seite = q.search(Filter(), limit=10, cursor=marke)
         assert len(seite.rows) == 5, f"Marke {marke!r} lieferte {len(seite.rows)} statt 5"
+
+
+def test_die_liste_laeuft_ueber_einen_index(tmp_path: Path) -> None:
+    """Der Blaetterschluessel braucht einen Index.
+
+    Ohne ihn ist jede Seite ein voller Durchlauf durch das Verzeichnis plus
+    eine Sortierung im Arbeitsspeicher -- gemessen bei 60.000 Zeilen 469 ms
+    fuer zwanzig Seiten statt 2 ms. Bei sieben Tagen Tasks bezahlt das jede
+    einzelne Anfrage.
+    """
+    w, _ = _setup(tmp_path)
+    w.apply([(None, _enq(f"t{i}", 100.0 + i)) for i in range(3)])
+    plan = [z[3] for z in w._con.execute(
+        "explain query plan "
+        "select task.* from task order by task.first_seen_at desc, task.task_id desc limit 50"
+    )]
+    assert not any("TEMP B-TREE" in s for s in plan), f"sortiert im Speicher: {plan}"
+    assert any("USING INDEX" in s for s in plan), f"kein Index im Plan: {plan}"
