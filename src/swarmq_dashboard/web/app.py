@@ -14,7 +14,6 @@ das ``refresh()`` im Takt nachfuehrt.
 
 from __future__ import annotations
 
-import secrets
 import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -23,7 +22,6 @@ from typing import Any
 
 from argon2 import PasswordHasher
 from litestar import Litestar, get
-from litestar.config.csrf import CSRFConfig
 from litestar.middleware.session.server_side import ServerSideSessionConfig
 from litestar.stores.base import Store
 from litestar.stores.registry import StoreRegistry
@@ -36,7 +34,12 @@ from swarmq_dashboard.directory.schema import connect
 from swarmq_dashboard.directory.writer import DirectoryWriter
 from swarmq_dashboard.events import TASK_STREAM
 from swarmq_dashboard.stream import StreamUnavailable, ValkeyStreamClient
-from swarmq_dashboard.web.auth import LoginThrottle, SqliteStore, session_guard
+from swarmq_dashboard.web.auth import (
+    LoginThrottle,
+    SqliteStore,
+    csrf_guard,
+    session_guard,
+)
 from swarmq_dashboard.web.routes.login import login, login_form, logout
 
 #: Name, unter dem der Sitzungsspeicher registriert wird.
@@ -55,7 +58,14 @@ class UnknownStore(LookupError):
 
 
 def build_store_registry(accounts_file: Path) -> StoreRegistry:
-    """Die Registratur mit genau einem angemeldeten Speicher."""
+    """Die Registratur mit genau einem angemeldeten Speicher.
+
+    Legt die Kontendatei zuvor an: ``auth._connect`` oeffnet nur, es stellt
+    kein Schema. Frueher ging das nur gut, weil zufaellig eine Zeile darueber
+    den Kontenspeicher anfasste -- wer die beiden Zeilen tauscht, braeche jede
+    Neuinstallation. Die Abhaengigkeit steht jetzt da, wo sie gilt.
+    """
+    AccountStore(accounts_file).close()
 
     def kein_ersatz(name: str) -> Store:
         raise UnknownStore(
@@ -291,42 +301,17 @@ def create_app(config: DashboardConfig, *, hasher: PasswordHasher | None = None)
         httponly=True,
         samesite="strict",
     )
-    # Das CSRF-Cookie ist absichtlich **nicht** httponly: die Fragmentaufrufe
-    # der Oberflaeche lesen es und schicken es als Kopfzeile zurueck. Sein
-    # Schutz liegt in der Seitenbindung, nicht in der Unlesbarkeit.
-    csrf = CSRFConfig(
-        secret=_csrf_secret(config.accounts_file),
-        cookie_secure=True,
-        cookie_samesite="strict",
-        safe_methods={"GET", "HEAD", "OPTIONS"},
-    )
+    # **Kein** ``csrf_config``: die CSRF-Schicht des Rahmens prueft doppeltes
+    # Absenden mit HMAC, also nur, dass Cookie und Kopfzeile dieselbe,
+    # irgendwann von diesem Dienst signierte Zeichenfolge tragen. Ein Bezug
+    # zur Sitzung besteht nicht -- nachgemessen wurde ein Merkmal, das sich
+    # ein nie angemeldeter Klient abholt, in einer fremden angemeldeten
+    # Sitzung angenommen. R23 verlangt aber ein **sitzungsgebundenes**
+    # Merkmal. ``csrf_guard`` liefert das; es steht in der Sitzung selbst.
     return Litestar(
         route_handlers=[zustand, login_form, login, logout],
         lifespan=[lebenszyklus],
         stores=build_store_registry(config.accounts_file),
         middleware=[sitzung.middleware],
-        csrf_config=csrf,
-        guards=[session_guard],
+        guards=[session_guard, csrf_guard],
     )
-
-
-def _csrf_secret(accounts_file: Path) -> str:
-    """Das CSRF-Geheimnis, dauerhaft in der Kontendatei.
-
-    Ein bei jedem Start neu gewuerfeltes Geheimnis entwertet jedes offene
-    Formular -- nach einem Neustart scheiterte die naechste Aktion jedes
-    Teammitglieds mit "Merkmal ungueltig", und niemand wuesste warum.
-    """
-    store = AccountStore(accounts_file)
-    try:
-        con = store._con
-        con.execute("create table if not exists meta (key text primary key, value text) without rowid")
-        zeile = con.execute("select value from meta where key='csrf_secret'").fetchone()
-        if zeile is not None:
-            return str(zeile["value"])
-        wert = secrets.token_urlsafe(32)
-        con.execute("insert into meta(key, value) values ('csrf_secret', ?)", (wert,))
-        con.commit()
-        return wert
-    finally:
-        store.close()

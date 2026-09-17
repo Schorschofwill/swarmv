@@ -10,6 +10,7 @@ Test-Liste (AGENTS.md):
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -41,8 +42,10 @@ def _config(tmp_path: Path, broker: str, backend: str, strom: str) -> DashboardC
 
 
 async def _anmelden(c: AsyncTestClient) -> str:
-    await c.get("/login")
-    await c.post("/login", data={"account": "ops", "password": _PASSWORT},
+    seite = await c.get("/login")
+    merkmal = re.search(r'name=_csrf_token value="([^"]*)"', seite.text).group(1)  # type: ignore[union-attr]
+    await c.post("/login", data={"account": "ops", "password": _PASSWORT,
+                                 "_csrf_token": merkmal},
                  follow_redirects=False)
     return str(c.cookies.get("csrftoken"))
 

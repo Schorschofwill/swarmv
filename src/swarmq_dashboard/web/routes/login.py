@@ -9,15 +9,25 @@ Konto es geht. Sie koennte nur die Herkunft bremsen, und das ist die Haelfte.
 from __future__ import annotations
 
 import asyncio
+import html
+import secrets
 from typing import Annotated, Any
 
 from litestar import Request, Response, get, post
+from litestar.datastructures import Cookie
 from litestar.enums import RequestEncodingType
 from litestar.params import Body
 from litestar.response import Redirect
-from litestar.utils.scope.state import ScopeState
 
-from swarmq_dashboard.web.auth import SESSION_ACCOUNT_KEY, rotate_session_id
+from swarmq_dashboard.web.auth import (
+    CSRF_COOKIE,
+    CSRF_FIELD,
+    SESSION_ACCOUNT_KEY,
+    SESSION_CSRF_KEY,
+    new_csrf_token,
+    normalisierter_kontoname,
+    rotate_session_id,
+)
 
 #: Was die Anmeldung bei einem Fehlschlag sagt. **Ein** Satz fuer alle
 #: Faelle -- unbekanntes Konto, falsches Passwort, gesperrtes Konto: jede
@@ -37,27 +47,57 @@ def _herkunft(request: Request[Any, Any, Any]) -> str:
     return request.client.host if request.client else "unbekannt"
 
 
-@get("/login", opt={"public": True}, sync_to_thread=False)
+@get("/login", opt={"public": True, "no_csrf": True}, sync_to_thread=False)
 def login_form(request: Request[Any, Any, Any]) -> Response[str]:
-    """Die Anmeldeseite. Schlicht, bis U11 das Seitengeruest bringt."""
-    # Der Rahmen legt das Merkmal in den Verbindungszustand, nicht in den
-    # Scope-Schluessel gleichen Namens -- und in den Cookies steht es beim
-    # ersten Aufruf noch nicht, weil es erst beim Senden gesetzt wird.
-    merkmal = ScopeState.from_scope(request.scope).csrf_token or ""
+    """Die Anmeldeseite. Schlicht, bis U11 das Seitengeruest bringt.
+
+    Das Merkmal kommt aus der **Sitzung**, nicht aus dem Cookie des Klienten.
+    Frueher stand hier der Wert aus dem Verbindungszustand -- und der ist bei
+    sicheren Methoden der rohe, ungeprueft uebernommene Cookie-Wert des
+    Klienten. Unmaskiert in ein Attribut geschrieben ergab das eine
+    Skript-Einschleusung auf der einzigen Seite ohne Sitzung, in einem
+    Formular mit Passwortfeld.
+
+    Die Maskierung bleibt trotzdem stehen, obwohl sie nach dieser Korrektur
+    von keiner Mutationsprobe mehr gekippt werden kann: das Merkmal ist jetzt
+    selbst erzeugt und traegt nie ein Anfuehrungszeichen. Sie steht hier fuer
+    den Tag, an dem jemand die Quelle wieder aendert -- so wie
+    ``synchronous=full`` im Kontenspeicher.
+    """
+    # **Ohne** Sitzung: die Anmeldeseite bekommt jeder Unangemeldete zu sehen,
+    # und jede angelegte Sitzung waere eine Zeile in der Kontendatei -- ein
+    # kostenloser Weg, sie zu fuellen. Hier genuegt doppeltes Absenden:
+    # Merkmal in Cookie **und** Formularfeld, beim Abschicken verglichen. Das
+    # schliesst die Anmeldung von einer Fremdseite, ohne etwas zu speichern.
+    # Sitzungsgebunden wird das Merkmal erst nach der Anmeldung (R23).
+    merkmal = new_csrf_token()
     return Response(
         content=(
             "<!doctype html><meta charset=utf-8><title>Anmelden</title>"
             "<form method=post action=/login>"
-            f'<input type=hidden name=_csrf_token value="{merkmal}">'
+            f'<input type=hidden name={CSRF_FIELD} value="{html.escape(merkmal, quote=True)}">'
             "<label>Konto <input name=account autofocus></label>"
             "<label>Passwort <input name=password type=password></label>"
             "<button>Anmelden</button></form>"
         ),
         media_type="text/html",
+        cookies=[_merkmal_cookie(merkmal)],
     )
 
 
-@post("/login", opt={"public": True, "exclude_from_csrf": True})
+def _merkmal_cookie(wert: str) -> Cookie:
+    """Das Merkmal fuer die Oberflaeche lesbar hinterlegen.
+
+    Absichtlich **nicht** ``httponly``: die Fragmentaufrufe holen es und
+    schicken es als Kopfzeile zurueck. Sein Schutz liegt in der Bindung an die
+    Sitzung, nicht in der Unlesbarkeit -- ein untergeschobenes Cookie trifft
+    den Wert in der fremden Sitzung nicht.
+    """
+    return Cookie(key=CSRF_COOKIE, value=wert, path="/", secure=True,
+                  httponly=False, samesite="strict")
+
+
+@post("/login", opt={"public": True, "no_csrf": True})
 async def login(
     request: Request[Any, Any, Any],
     data: Annotated[dict[str, str], Body(media_type=RequestEncodingType.URL_ENCODED)],
@@ -69,23 +109,48 @@ async def login(
     Abbrechen der Verbindung umgehen, waehrend der Server noch wartet.
     """
     services = request.app.state.services
-    konto = (data.get("account") or "").strip()
+    # Derselbe normalisierte Name, den die Kontenpruefung benutzt: sonst
+    # bekaeme dieselbe Anmeldung je Unicode-Schreibweise einen eigenen
+    # Zaehler, und der Kontoteil der Bremse halbierte sich. Und gekuerzt,
+    # damit ein Name mit einer Million Zeichen nicht als Zeilenschluessel in
+    # der Kontendatei landet -- gemessen 0,72 MiB je Sekunde.
+    # Doppeltes Absenden fuer die Anmeldung selbst: ohne Sitzung gibt es
+    # nichts, woran ein Merkmal gebunden werden koennte, aber der Vergleich
+    # von Cookie und Formularfeld schliesst die Anmeldung von einer
+    # Fremdseite -- sonst landet das Opfer unbemerkt im Konto des Angreifers.
+    aus_dem_feld = data.get(CSRF_FIELD) or ""
+    aus_dem_cookie = request.cookies.get(CSRF_COOKIE) or ""
+    if not aus_dem_feld or not secrets.compare_digest(aus_dem_feld, aus_dem_cookie):
+        return Response(content="Das Anmeldeformular ist abgelaufen. Bitte neu laden.",
+                        media_type="text/plain", status_code=403)
+
+    konto = normalisierter_kontoname(data.get("account") or "")
     passwort = data.get("password") or ""
     herkunft = _herkunft(request)
 
+    # **Zuerst zaehlen, dann warten.** Frueher stand das Zaehlen am Ende, und
+    # alle gleichzeitig laufenden Versuche lasen denselben Stand: zehn
+    # gleichzeitige Versuche kosteten 1,02 s statt 10 s. Die Verzoegerung wirkte
+    # je Anfrage statt je Angreifer. Ein Erfolg loescht die Zaehler ohnehin.
+    services.throttle.record_failure(konto, herkunft)
     verzoegerung = services.throttle.delay_for(konto, herkunft)
     if verzoegerung:
         await asyncio.sleep(verzoegerung)
 
-    if konto and services.accounts.verify(konto, passwort):
+    # Kein ``konto and``: die Abkuerzung war messbar billiger (4,8 ms gegen
+    # 48 ms) und damit genau die fruehe Rueckkehr, die ``verify`` sonst
+    # ueberall vermeidet.
+    if services.accounts.verify(konto, passwort):
         services.throttle.record_success(konto, herkunft)
         # Neue Sitzungskennung nach der Anmeldung: sonst behaelt eine vor dem
         # Anmelden untergeschobene Kennung ihre Gueltigkeit (Sitzungsuebernahme).
         await rotate_session_id(request)
-        request.set_session({SESSION_ACCOUNT_KEY: konto})
-        return Redirect("/", status_code=303)
+        merkmal = new_csrf_token()
+        request.set_session({SESSION_ACCOUNT_KEY: konto, SESSION_CSRF_KEY: merkmal})
+        antwort = Redirect("/", status_code=303)
+        antwort.set_cookie(_merkmal_cookie(merkmal))
+        return antwort
 
-    services.throttle.record_failure(konto, herkunft)
     return Response(content=LOGIN_FAILED, media_type="text/plain", status_code=401)
 
 
@@ -93,4 +158,9 @@ async def login(
 async def logout(request: Request[Any, Any, Any]) -> Redirect:
     """Abmelden. Die Sitzung gilt danach sofort nicht mehr."""
     request.clear_session()
-    return Redirect("/login", status_code=303)
+    antwort = Redirect("/login", status_code=303)
+    # Das Merkmal mit fortnehmen: es gehoerte zur Sitzung und hat ohne sie
+    # keinen Sinn -- auf einem geteilten Arbeitsplatz waere es sonst das
+    # Merkmal des Vorgaengers.
+    antwort.delete_cookie(CSRF_COOKIE, path="/")
+    return antwort

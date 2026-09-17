@@ -30,6 +30,7 @@ Test-Liste (AGENTS.md):
 
 from __future__ import annotations
 
+import re
 import socket
 from pathlib import Path
 
@@ -227,8 +228,10 @@ async def test_die_zustandsseite_antwortet_auch_ohne_dienste(tmp_path: Path) -> 
     # eines Ausfalls** antwortet, nicht dass sie ohne Sitzung antwortet (R23).
     app = create_app(config, hasher=billig)
     async with AsyncTestClient(app=app, base_url="https://testserver.local") as client:
-        await client.get("/login")
-        await client.post("/login", data={"account": "ops", "password": "ein-langes-passwort"},
+        seite = await client.get("/login")
+        merkmal = re.search(r'name=_csrf_token value="([^"]*)"', seite.text).group(1)  # type: ignore[union-attr]
+        await client.post("/login", data={"account": "ops", "password": "ein-langes-passwort",
+                                          "_csrf_token": merkmal},
                           follow_redirects=False)
         antwort = await client.get("/api/status")
         assert antwort.status_code == 200

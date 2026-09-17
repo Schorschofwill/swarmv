@@ -33,10 +33,20 @@ Test-Liste (AGENTS.md):
 === ZYKLUS 7: Sitzungsuebernahme ===
 13. Eine vor der Anmeldung untergeschobene Kennung gilt danach nicht.
 14. Die alte Kennung ist danach wertlos, nicht nur ersetzt.
+
+=== ZYKLUS 8: Befunde aus der Pruefung von Stufe C ===
+15. Ein untergeschobenes Cookie kann kein Skript in die Anmeldeseite bringen.
+16. Unangemeldete Anfragen schreiben nicht in die Kontendatei.
+17. Die Sitzung wird nicht bei jeder Anfrage neu geschrieben.
+18. Ein Merkmal aus einer fremden Sitzung gilt nicht.
+19. Die Anmeldung von einer Fremdseite wird abgewiesen.
+20. Abmelden nimmt das Merkmal mit.
+21. Ohne Kontenspeicher wird abgewiesen, nicht durchgelassen.
 """
 
 from __future__ import annotations
 
+import re
 import socket
 import time
 from pathlib import Path
@@ -91,17 +101,27 @@ def _mit_konto(tmp_path: Path) -> DashboardConfig:
     return c
 
 
+def _merkmal_aus(html: str) -> str:
+    """Das Merkmal aus dem Formular ziehen, wie ein Browser es abschickt."""
+    treffer = re.search(r'name=_csrf_token value="([^"]*)"', html)
+    assert treffer, f"das Formular traegt kein Merkmal: {html[:200]}"
+    return treffer.group(1)
+
+
 async def _anmelden(client: AsyncTestClient, konto: str = "ops",
                     passwort: str = _PASSWORT) -> Any:
     """Wie ein Teammitglied: erst die Seite holen, dann abschicken.
 
-    Das Holen ist nicht Zierrat -- dabei setzt der Rahmen das CSRF-Cookie, und
-    ohne es ist jede spaetere schreibende Anfrage abgewiesen. Ein Test, der
+    Das Holen ist nicht Zierrat -- dabei entsteht das Merkmal, in Cookie und
+    Formularfeld, und ohne beides wird die Anmeldung abgewiesen. Ein Test, der
     gleich abschickt, prueft eine Reihenfolge, die es im Browser nicht gibt.
     """
-    await client.get("/login")
+    seite = await client.get("/login")
     return await client.post(
-        "/login", data={"account": konto, "password": passwort}, follow_redirects=False
+        "/login",
+        data={"account": konto, "password": passwort,
+              "_csrf_token": _merkmal_aus(seite.text)},
+        follow_redirects=False,
     )
 
 
@@ -170,7 +190,10 @@ async def test_die_cookies_tragen_ihre_merkmale(tmp_path: Path) -> None:
         # hat -- ein spaeterer Aufruf liefert keine ``Set-Cookie``-Zeile mehr.
         erster = await c.get("/login")
         antwort = await c.post(
-            "/login", data={"account": "ops", "password": _PASSWORT}, follow_redirects=False
+            "/login",
+            data={"account": "ops", "password": _PASSWORT,
+                  "_csrf_token": _merkmal_aus(erster.text)},
+            follow_redirects=False,
         )
         gesetzt = list(erster.headers.get_list("set-cookie"))
         gesetzt += list(antwort.headers.get_list("set-cookie"))
@@ -297,8 +320,7 @@ async def test_untergeschobene_kennung_gilt_nach_der_anmeldung_nicht(tmp_path: P
         await c.get("/login")
         untergeschoben = "a" * 64
         c.cookies.set("session", untergeschoben, domain="testserver.local")
-        await c.post("/login", data={"account": "ops", "password": _PASSWORT},
-                     follow_redirects=False)
+        await _anmelden(c)
         danach = str(c.cookies.get("session"))
         assert danach != untergeschoben, (
             "die untergeschobene Sitzungskennung gilt weiter -- Sitzungsuebernahme moeglich"
@@ -318,15 +340,13 @@ async def test_die_alte_sitzung_ist_danach_wertlos(tmp_path: Path) -> None:
     app = create_app(config, hasher=_BILLIG)
     async with AsyncTestClient(app=app, base_url=BASIS) as c:
         await c.get("/login")
-        await c.post("/login", data={"account": "ops", "password": _PASSWORT},
-                     follow_redirects=False)
+        await _anmelden(c)
         erste = str(c.cookies.get("session"))
         assert (await c.get("/api/status")).status_code == 200, "Vorbedingung: sie muss gelten"
 
         # Noch einmal anmelden -- dieselbe Lage wie nach einem Passwortwechsel
         # oder einem zweiten Anmelden im selben Browser.
-        await c.post("/login", data={"account": "ops", "password": _PASSWORT},
-                     follow_redirects=False)
+        await _anmelden(c)
         zweite = str(c.cookies.get("session"))
         assert zweite != erste, "die Kennung wurde nicht erneuert"
 
@@ -336,4 +356,152 @@ async def test_die_alte_sitzung_ist_danach_wertlos(tmp_path: Path) -> None:
         assert antwort.status_code in (302, 303, 401), (
             "die alte Sitzung fuehrt weiter zu den Daten -- sie wurde nur ersetzt, "
             "nicht entwertet"
+        )
+
+
+# --- Zyklus 8: Befunde aus der Pruefung von Stufe C ----------------------
+
+
+async def test_ein_cookie_kann_kein_skript_einschleusen(tmp_path: Path) -> None:
+    """Die Anmeldeseite ist die **einzige** Seite ohne Sitzung, und sie traegt
+    ein Passwortfeld.
+
+    Frueher stand dort das Merkmal aus dem Verbindungszustand -- und das ist
+    bei sicheren Methoden der rohe, ungeprueft uebernommene Cookie-Wert des
+    Klienten. Unmaskiert in ein Attribut geschrieben lief damit fremdes
+    Skript auf genau dieser Seite. Der Rahmen dekodiert ausserdem
+    prozentkodierte Cookie-Werte, es braucht also nicht einmal rohe
+    Anfuehrungszeichen.
+    """
+    async with _klient(_mit_konto(tmp_path)) as c:
+        for gift in ('"><script>alert(1)</script>',
+                     '%22%3E%3Cscript%3Ealert(1)%3C/script%3E',
+                     "' onmouseover='alert(1)"):
+            c.cookies.set("csrftoken", gift, domain="testserver.local")
+            text = (await c.get("/login")).text
+            assert "<script>alert(1)</script>" not in text, f"eingeschleust ueber {gift!r}"
+            assert "onmouseover" not in text, f"eingeschleust ueber {gift!r}"
+
+
+async def test_unangemeldete_anfragen_schreiben_nicht_in_die_kontendatei(tmp_path: Path) -> None:
+    """Der Rahmen legt bei jeder Anfrage ``session = {}`` an, und ``{}`` ist
+    nicht ``Empty`` -- also schrieb er auch auf der 401 des Waechters, mit
+    einem Schluessel aus dem Cookie des Klienten. Gemessen: 25 unangemeldete
+    Anfragen, 25 Zeilen, Schluessel bis 2010 Zeichen. Betroffen ist die eine
+    Datei, die laut KTD8 nicht geloescht werden darf.
+    """
+    import sqlite3
+
+    config = _mit_konto(tmp_path)
+    async with _klient(config) as c:
+        for _ in range(10):
+            await c.get("/api/status", follow_redirects=False)
+            c.cookies.clear()
+        c.cookies.set("session", "ANGREIFER-" + "x" * 2000, domain="testserver.local")
+        await c.get("/api/status", follow_redirects=False)
+        c.cookies.clear()
+        for _ in range(5):
+            await c.get("/login")
+
+    con = sqlite3.connect(config.accounts_file)
+    zahl, laenge = con.execute(
+        "select count(*), coalesce(max(length(key)), 0) from session_store"
+    ).fetchone()
+    con.close()
+    assert zahl == 0, f"{zahl} Zeilen aus unangemeldeten Anfragen"
+    assert laenge == 0, f"fremdbestimmter Schluessel mit {laenge} Zeichen gespeichert"
+
+
+async def test_die_sitzung_wird_nicht_bei_jeder_anfrage_neu_geschrieben(tmp_path: Path) -> None:
+    """U17 sagt woertlich "hoechstens einmal je Minute, sonst reihen sich die
+    Schreiber auf". Meine Drossel sass in ``get()`` -- der Rahmen ruft aber auf
+    **jeder** Antwort ``set()``, und das schrieb bedingungslos. Gemessen
+    wanderte ``renewed_at`` in 0,4 s um 0,42 s.
+    """
+    import sqlite3
+
+    config = _mit_konto(tmp_path)
+    async with _klient(config) as c:
+        await _anmelden(c)
+        kennung = str(c.cookies.get("session"))
+        con = sqlite3.connect(config.accounts_file)
+        vorher = con.execute(
+            "select renewed_at from session_store where key=?", (kennung,)
+        ).fetchone()[0]
+        for _ in range(5):
+            await c.get("/api/status")
+        nachher = con.execute(
+            "select renewed_at from session_store where key=?", (kennung,)
+        ).fetchone()[0]
+        con.close()
+    assert nachher == vorher, (
+        f"die Sitzung wurde bei jeder Anfrage neu geschrieben (Versatz {nachher - vorher:.3f} s)"
+    )
+
+
+async def test_ein_merkmal_aus_fremder_sitzung_gilt_nicht(tmp_path: Path) -> None:
+    """R23 verlangt ein **sitzungsgebundenes** Merkmal.
+
+    Das doppelte Absenden des Rahmens prueft nur, dass Cookie und Kopfzeile
+    dieselbe signierte Zeichenfolge tragen -- ohne Bezug zur Sitzung. Gemessen
+    wurde ein Merkmal, das sich ein **nie angemeldeter** Klient mit einem
+    einfachen ``GET /login`` abholt, in einer fremden angemeldeten Sitzung
+    angenommen.
+    """
+    app = create_app(_mit_konto(tmp_path), hasher=_BILLIG)
+    async with AsyncTestClient(app=app, base_url=BASIS) as fremd:
+        await fremd.get("/login")
+        fremdes = str(fremd.cookies.get("csrftoken"))
+
+    async with AsyncTestClient(app=app, base_url=BASIS) as opfer:
+        await _anmelden(opfer)
+        opfer.cookies.set("csrftoken", fremdes, domain="testserver.local")
+        antwort = await opfer.post("/logout", headers={"x-csrftoken": fremdes},
+                                   follow_redirects=False)
+        assert antwort.status_code == 403, (
+            "ein Merkmal aus einer fremden Sitzung wurde angenommen"
+        )
+
+
+async def test_anmeldung_von_einer_fremdseite_wird_abgewiesen(tmp_path: Path) -> None:
+    """Ohne Merkmal landet das Opfer sonst unbemerkt im Konto des Angreifers,
+    und alle seine Handlungen stehen in dessen Audit.
+    """
+    async with _klient(_mit_konto(tmp_path)) as c:
+        antwort = await c.post("/login", data={"account": "ops", "password": _PASSWORT},
+                               follow_redirects=False)
+        assert antwort.status_code == 403, antwort.status_code
+
+
+async def test_abmelden_nimmt_das_merkmal_mit(tmp_path: Path) -> None:
+    """Auf einem geteilten Arbeitsplatz waere es sonst das Merkmal des
+    Vorgaengers.
+    """
+    async with _klient(_mit_konto(tmp_path)) as c:
+        await _anmelden(c)
+        merkmal = str(c.cookies.get("csrftoken"))
+        antwort = await c.post("/logout", headers={"x-csrftoken": merkmal},
+                               follow_redirects=False)
+        gesetzt = " ".join(antwort.headers.get_list("set-cookie"))
+        assert "csrftoken=" in gesetzt and ("Max-Age=0" in gesetzt or "expires=" in gesetzt.lower()), (
+            f"das Merkmal wurde nicht geloescht: {gesetzt}"
+        )
+
+
+async def test_ohne_kontenspeicher_wird_abgewiesen(tmp_path: Path) -> None:
+    """Wer den Kontozustand nicht nachsehen kann, darf ihn nicht raten.
+
+    Frueher stand dort ein ``return`` -- die Sperrpruefung fiel dann ersatzlos
+    weg, und ein gesperrtes Konto kam durch. Die Verzweigung muss im Zweifel
+    **zu**fallen, nicht auf.
+    """
+    app = create_app(_mit_konto(tmp_path), hasher=_BILLIG)
+    async with AsyncTestClient(app=app, base_url=BASIS) as c:
+        await _anmelden(c)
+        assert (await c.get("/api/status")).status_code == 200
+
+        app.state.services.accounts = None      # der Speicher ist fort
+        antwort = await c.get("/api/status", follow_redirects=False)
+        assert antwort.status_code in (302, 303, 401), (
+            "ohne Kontenspeicher wurde die Anfrage durchgelassen"
         )

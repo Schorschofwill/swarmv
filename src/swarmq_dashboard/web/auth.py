@@ -16,20 +16,25 @@ bis zu einer Obergrenze und bleibt dort.
 
 from __future__ import annotations
 
+import re
+import secrets
 import sqlite3
+import threading
 import time
+import unicodedata
 from collections.abc import Callable
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 from litestar.connection import ASGIConnection
-from litestar.exceptions import NotAuthorizedException
+from litestar.exceptions import NotAuthorizedException, PermissionDeniedException
 from litestar.handlers.base import BaseRouteHandler
 from litestar.stores.base import Store
 from litestar.types import Empty
 
-from swarmq_dashboard.accounts import BUSY_TIMEOUT_MS
+from swarmq_dashboard.accounts import BUSY_TIMEOUT_MS, MAX_NAME_LEN
 
 #: Ab dem wievielten Fehlversuch ueberhaupt gebremst wird. Ein Vertipper ist
 #: keine Verdachtslage, und eine Bremse ab dem ersten Versuch traefe fast nur
@@ -48,8 +53,24 @@ DEFAULT_RENEW_EVERY_S = 60.0
 
 #: Unter welchem Schluessel der Kontoname in der Sitzung steht.
 SESSION_ACCOUNT_KEY = "account"
+#: Unter welchem Schluessel das CSRF-Merkmal in der Sitzung steht.
+SESSION_CSRF_KEY = "csrf"
+#: Name des Cookies, ueber das die Oberflaeche das Merkmal liest.
+CSRF_COOKIE = "csrftoken"
+#: Kopfzeile, ueber die Fragmentaufrufe es zurueckschicken.
+CSRF_HEADER = "x-csrftoken"
+#: Formularfeld fuer gewoehnliche Absendungen.
+CSRF_FIELD = "_csrf_token"
+#: Methoden ohne Schreibwirkung -- sie brauchen kein Merkmal.
+SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 Clock = Callable[[], float]
+
+
+#: Wie eine vom Rahmen erzeugte Sitzungskennung aussieht: 32 Bytes als Hex.
+_KENNUNG = re.compile(r"^[0-9a-f]{64}$")
+#: Serialisierte leere Sitzungen -- msgspec und json schreiben dasselbe.
+_LEERE_SITZUNG = (b"{}", b"")
 
 
 def _sekunden(wert: int | timedelta | None) -> float | None:
@@ -84,25 +105,64 @@ class SqliteStore(Store):
         self._con = _connect(Path(path))
         self._clock = clock
         self._renew_every_s = renew_every_s
+        # Wie im Kontenspeicher: die Verbindung ist fadenoffen, also braucht
+        # sie einen Riegel. Ohne ihn brachen unter sechzehn Faden fuenfzehn
+        # mit "bad parameter or other API misuse" ab und der Zaehlerstand war
+        # danach falsch -- eine Bremse, die still nicht zaehlt.
+        self._riegel = threading.Lock()
 
     # -- Litestars Vertrag ------------------------------------------------
 
     async def set(self, key: str, value: str | bytes, expires_in: int | timedelta | None = None) -> None:
-        roh = value.encode() if isinstance(value, str) else value
+        roh_wert = value.encode() if isinstance(value, str) else value
+        if roh_wert in _LEERE_SITZUNG:
+            # Eine leere Sitzung ist keine Zeile wert. Der Rahmen legt bei
+            # **jeder** Anfrage ``scope["session"] = {}`` an, und ``{}`` ist
+            # nicht ``Empty`` -- also schrieb er auch auf der 401 des
+            # Waechters. Gemessen: 25 unangemeldete Anfragen, 25 Zeilen, in
+            # der einen Datei, die laut KTD8 nicht geloescht werden darf.
+            return
+        if not _KENNUNG.match(key):
+            # Nur selbst erzeugte Kennungen. Der Schluessel kommt aus dem
+            # Cookie des Klienten und war damit fremdbestimmt -- gemessen
+            # landeten Schluessel mit zweitausend Zeichen in der Kontendatei,
+            # und zwar von *unangemeldeten* Anfragen. Betroffen ist die eine
+            # Datei, die laut KTD8 nicht geloescht werden darf.
+            return
+        roh = roh_wert
         frist = _sekunden(expires_in)
         jetzt = self._clock()
-        self._con.execute(
-            "insert into session_store(key, value, expires_at, renewed_at) values (?,?,?,?) "
-            "on conflict(key) do update set value=excluded.value, "
-            "expires_at=excluded.expires_at, renewed_at=excluded.renewed_at",
-            (key, roh, None if frist is None else jetzt + frist, jetzt),
-        )
-        self._con.commit()
+        with self._riegel:
+            vorher = self._con.execute(
+                "select value, renewed_at from session_store where key=?", (key,)
+            ).fetchone()
+            if (
+                vorher is not None
+                and bytes(vorher["value"]) == roh
+                and (jetzt - float(vorher["renewed_at"])) < self._renew_every_s
+            ):
+                # Unveraendert und eben erst verlaengert: nichts tun.
+                #
+                # Die Drossel gehoert **hierher**, nicht in ``get``: der Rahmen
+                # ruft auf jeder Antwort ``set`` auf, und diese Zeile schrieb
+                # bedingungslos. Gemessen wanderte ``renewed_at`` in 0,4 s um
+                # 0,42 s -- jede Anfrage war ein Schreibvorgang, entgegen der
+                # ausdruecklichen Zusage in U17 ("hoechstens einmal je Minute,
+                # sonst reihen sich die Schreiber auf").
+                return
+            self._con.execute(
+                "insert into session_store(key, value, expires_at, renewed_at) values (?,?,?,?) "
+                "on conflict(key) do update set value=excluded.value, "
+                "expires_at=excluded.expires_at, renewed_at=excluded.renewed_at",
+                (key, roh, None if frist is None else jetzt + frist, jetzt),
+            )
+            self._con.commit()
 
     async def get(self, key: str, renew_for: int | timedelta | None = None) -> bytes | None:
-        zeile = self._con.execute(
-            "select value, expires_at, renewed_at from session_store where key=?", (key,)
-        ).fetchone()
+        with self._riegel:
+            zeile = self._con.execute(
+                "select value, expires_at, renewed_at from session_store where key=?", (key,)
+            ).fetchone()
         if zeile is None:
             return None
         jetzt = self._clock()
@@ -110,36 +170,41 @@ class SqliteStore(Store):
             # Abgelaufen. Nicht ausliefern und gleich wegraeumen -- eine
             # abgelaufene Sitzung auszuliefern hiesse, die Inaktivitaetsfrist
             # aus R21 unsichtbar nicht einzuhalten.
-            self._con.execute("delete from session_store where key=?", (key,))
-            self._con.commit()
+            with self._riegel:
+                self._con.execute("delete from session_store where key=?", (key,))
+                self._con.commit()
             return None
 
         frist = _sekunden(renew_for)
         if frist is not None and (jetzt - float(zeile["renewed_at"])) >= self._renew_every_s:
             # Verlaengern, aber hoechstens einmal je Frist: sonst ist jede
             # Anfrage ein Schreibvorgang und die Schreiber reihen sich auf.
-            self._con.execute(
-                "update session_store set expires_at=?, renewed_at=? where key=?",
-                (jetzt + frist, jetzt, key),
-            )
-            self._con.commit()
+            with self._riegel:
+                self._con.execute(
+                    "update session_store set expires_at=?, renewed_at=? where key=?",
+                    (jetzt + frist, jetzt, key),
+                )
+                self._con.commit()
         return bytes(zeile["value"])
 
     async def delete(self, key: str) -> None:
-        self._con.execute("delete from session_store where key=?", (key,))
-        self._con.commit()
+        with self._riegel:
+            self._con.execute("delete from session_store where key=?", (key,))
+            self._con.commit()
 
     async def delete_all(self) -> None:
-        self._con.execute("delete from session_store")
-        self._con.commit()
+        with self._riegel:
+            self._con.execute("delete from session_store")
+            self._con.commit()
 
     async def exists(self, key: str) -> bool:
         return await self.get(key) is not None
 
     async def expires_in(self, key: str) -> int | None:
-        zeile = self._con.execute(
-            "select expires_at from session_store where key=?", (key,)
-        ).fetchone()
+        with self._riegel:
+            zeile = self._con.execute(
+                "select expires_at from session_store where key=?", (key,)
+            ).fetchone()
         if zeile is None or zeile["expires_at"] is None:
             return None
         return max(0, int(float(zeile["expires_at"]) - self._clock()))
@@ -153,11 +218,12 @@ class SqliteStore(Store):
         immer stehen bleibt -- der Ablauf allein raeumt nur auf, was jemand
         noch einmal anfasst.
         """
-        cur = self._con.execute(
-            "delete from session_store where expires_at is not null and expires_at <= ?",
-            (self._clock(),),
-        )
-        self._con.commit()
+        with self._riegel:
+            cur = self._con.execute(
+                "delete from session_store where expires_at is not null and expires_at <= ?",
+                (self._clock(),),
+            )
+            self._con.commit()
         return int(cur.rowcount)
 
     def close(self) -> None:
@@ -202,7 +268,14 @@ class LoginThrottle:
             return 0.0
         # Verdopplung je Fehlversuch, gedeckelt. Der Deckel ist der
         # Unterschied zwischen einer Bremse und einer Sperre (R22).
-        return float(min(DELAY_BASE_S * (2 ** (ueber - 1)), MAX_DELAY_S))
+        #
+        # Der **Exponent** wird zuerst gedeckelt, nicht erst das Ergebnis:
+        # ``2 ** 1024`` passt nicht mehr in ein ``float``, und der
+        # ``OverflowError`` traf den Handler vor der Passwortpruefung. Ab 1027
+        # Fehlversuchen war die Anmeldung damit ein HTTP 500 -- auch mit dem
+        # richtigen Passwort, und fuer die ganze Herkunft. Ausgerechnet die
+        # Zeile, die "nie eine Sperre" sichern soll, war die Sperre.
+        return float(min(DELAY_BASE_S * (2 ** min(ueber - 1, 40)), MAX_DELAY_S))
 
     # -- Schreiben -------------------------------------------------------
 
@@ -261,7 +334,10 @@ def session_guard(connection: ASGIConnection[Any, Any, Any, Any], _: BaseRouteHa
     services = getattr(connection.app.state, "services", None)
     speicher = getattr(services, "accounts", None)
     if speicher is None:
-        return
+        # Wer den Kontozustand nicht nachsehen kann, darf ihn nicht raten.
+        # Frueher stand hier ``return`` -- die Pruefung fiel dann ersatzlos
+        # weg, und ein gesperrtes Konto kam durch.
+        raise NotAuthorizedException(detail="der Kontenspeicher ist nicht verfuegbar")
     zeile = speicher.state_of(konto)
     if zeile is None or zeile.locked:
         # Konto geloescht oder gesperrt: die Sitzung endet hier, nicht erst
@@ -286,12 +362,74 @@ async def rotate_session_id(connection: ASGIConnection[Any, Any, Any, Any]) -> N
     Interna -- deshalb gibt es einen Test, der anschlaegt, sobald der Rahmen
     das anders macht, statt dass die Erneuerung still ausfaellt.
     """
-    alt = connection.cookies.get("session")
-    if alt:
-        speicher = connection.app.stores.get("sessions")
-        await speicher.delete(alt)
-        # ``cookies`` und der Verbindungszustand teilen sich dasselbe
-        # Woerterbuch -- die Aenderung erreicht darum auch die Verbindung,
-        # die die Sitzungs-Middleware haelt.
-        connection.cookies.pop("session", None)
+    # Aus der **rohen** Kopfzeile, nicht aus dem Woerterbuch: bei zwei
+    # gleichnamigen Cookies -- ein Wirt-Cookie und eines einer Nachbardomaene
+    # sind zwei verschiedene -- behaelt das Woerterbuch nur das letzte, und
+    # die Erneuerung entwertete dann nur eines von beiden.
+    speicher = connection.app.stores.get("sessions")
+    for kennung in _alle_sitzungskennungen(connection):
+        await speicher.delete(kennung)
+    # ``cookies`` und der Verbindungszustand teilen sich dasselbe Woerterbuch
+    # -- die Aenderung erreicht darum auch die Verbindung, die die
+    # Sitzungs-Middleware haelt.
+    connection.cookies.pop("session", None)
     connection._connection_state.session_id = Empty
+
+
+def _alle_sitzungskennungen(connection: ASGIConnection[Any, Any, Any, Any]) -> set[str]:
+    """Jede ``session``-Kennung aus der rohen Cookie-Kopfzeile."""
+    roh = connection.headers.get("cookie", "")
+    gefunden = set()
+    for stueck in roh.split(";"):
+        name, _, wert = stueck.strip().partition("=")
+        if name == "session" and wert:
+            gefunden.add(unquote(unquote(wert.strip('"'))))
+    return gefunden
+
+
+def normalisierter_kontoname(roh: str) -> str:
+    """Kontoname, wie ihn die Kontenpruefung sieht -- und gekuerzt.
+
+    Zwei Gruende. Erstens normalisiert ``AccountStore.verify`` nach NFC, die
+    Bremse tat es nicht: dieselbe Anmeldung bekam je Schreibweise einen
+    eigenen Zaehler, und der Kontoteil der Bremse halbierte sich. Zweitens
+    wurde der rohe Formularwert als Zeilenschluessel gespeichert -- gemessen
+    fuellte ein Angreifer damit 0,72 MiB je Sekunde in die Kontendatei, die
+    laut KTD8 nicht geloescht werden darf.
+    """
+    return unicodedata.normalize("NFC", roh).strip()[:MAX_NAME_LEN]
+
+
+def new_csrf_token() -> str:
+    """Ein frisches CSRF-Merkmal."""
+    return secrets.token_urlsafe(32)
+
+
+def csrf_guard(connection: ASGIConnection[Any, Any, Any, Any], _: BaseRouteHandler) -> None:
+    """Schreibende Anfragen brauchen ein **sitzungsgebundenes** Merkmal (R23).
+
+    Warum nicht die CSRF-Schicht des Rahmens: sie prueft doppeltes Absenden
+    mit HMAC -- also nur, dass Cookie und Kopfzeile dieselbe, irgendwann von
+    diesem Dienst signierte Zeichenfolge tragen. Ein Bezug zur Sitzung besteht
+    nicht. Nachgemessen wurde ein Merkmal, das sich ein **nie angemeldeter**
+    Klient mit einem einfachen ``GET /login`` abholt, in einer fremden,
+    angemeldeten Sitzung angenommen. R23 verlangt aber ausdruecklich ein
+    sitzungsgebundenes Merkmal.
+
+    Hier steht das Merkmal **in der Sitzung**. Der Vergleich ist damit
+    zugleich doppeltes Absenden und Bindung: wer ein Cookie unterschiebt,
+    kann den Wert in der fremden Sitzung nicht treffen.
+    """
+    # ``scope["method"]`` statt ``connection.method``: die Verbindung kann
+    # auch eine Websocket-Verbindung sein, die keine Methode kennt.
+    methode = str(connection.scope.get("method", "GET")).upper()
+    if methode in SAFE_METHODS or connection.route_handler.opt.get("no_csrf"):
+        return
+    erwartet = connection.session.get(SESSION_CSRF_KEY) if connection.session else None
+    gesendet = connection.headers.get(CSRF_HEADER) or connection.cookies.get(CSRF_COOKIE)
+    if (
+        not isinstance(erwartet, str)
+        or not gesendet
+        or not secrets.compare_digest(erwartet, gesendet)
+    ):
+        raise PermissionDeniedException(detail="CSRF-Merkmal fehlt oder passt nicht zur Sitzung")
