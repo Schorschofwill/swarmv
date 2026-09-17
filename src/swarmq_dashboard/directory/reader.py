@@ -15,6 +15,7 @@ mit demselben Mittel wie ein Verlust-Ereignis der Hooks (R4a).
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any, Protocol
 
@@ -63,6 +64,11 @@ class StreamReader:
         self._behind = False
         self._gap: tuple[str, str] | None = None
         self._dropped = 0
+        #: Haelt die SQLite-Arbeit auf einen Thread zur Zeit fest. Sie laeuft
+        #: in einem Arbeitsthread (siehe ``schema.connect``), und zwei
+        #: gleichzeitige Durchlaeufe haetten dieselbe Verbindung aus zwei
+        #: Threads in der Hand.
+        self._riegel = asyncio.Lock()
         #: Grenze der letzten eigenen Altersbereinigung, in Millisekunden.
         #: Was davor lag, ist abgelaufen und nicht verloren -- der Unterschied
         #: entscheidet, ob ein Rueckstand gemeldet wird.
@@ -130,17 +136,24 @@ class StreamReader:
     # -- Lesen -----------------------------------------------------------
 
     async def poll_once(self) -> int:
-        """Einen Durchlauf lesen und einarbeiten. Gibt die Zahl der Eintraege zurueck."""
-        vorher = self.position
+        """Einen Durchlauf lesen und einarbeiten. Gibt die Zahl der Eintraege zurueck.
+
+        Der Riegel haelt gleichzeitige Durchlaeufe auseinander: die
+        Datenbankarbeit laeuft in einem Arbeitsthread, und zwei Durchlaeufe
+        haetten sonst dieselbe SQLite-Verbindung aus zwei Threads in der Hand.
+        """
+        async with self._riegel:
+            return await self._poll_once()
+
+    async def _poll_once(self) -> int:
+        vorher = await asyncio.to_thread(lambda: self.position)
         await self._check_behind(vorher)
 
         eintraege = await self._source.read_after(self._key, vorher, self._batch)
         if not eintraege:
             # Nichts mehr zu holen heisst: eingeholt. Auch wenn es nichts
             # aufzubauen gab.
-            self._merken(CAUGHT_UP_KEY, "1")
-            if not vorher:
-                self._set_position("0-0")
+            await asyncio.to_thread(self._eingeholt_merken, vorher)
             return 0
 
         ereignisse: list[tuple[str | None, Any]] = []
@@ -157,16 +170,34 @@ class StreamReader:
                 # die Zeitspanne markiert, wie bei jedem anderen Verlust (R4a).
                 self._dropped += 1
                 ausgefallen.append(_as_tuple(sid)[0] / 1000.0)
+        await asyncio.to_thread(
+            self._einarbeiten, ereignisse, ausgefallen, eintraege[-1][0], len(eintraege)
+        )
+        return len(eintraege)
+
+    # -- Der blockierende Teil, je in einem Arbeitsthread ------------------
+
+    def _eingeholt_merken(self, vorher: str) -> None:
+        self._merken(CAUGHT_UP_KEY, "1")
+        if not vorher:
+            self._set_position("0-0")
+
+    def _einarbeiten(
+        self,
+        ereignisse: list[tuple[str | None, Any]],
+        ausgefallen: list[float],
+        letzte: str,
+        zahl: int,
+    ) -> None:
         self.writer.apply(ereignisse)
         # Erst **nach** dem Einarbeiten markieren: die Zeilen dieses Stapels
         # gibt es vorher noch gar nicht, und gerade sie sind die, die den
         # Ausfall ueberspannen koennen.
         for augenblick in ausgefallen:
             self.writer.mark_incomplete(augenblick, augenblick)
-        self._set_position(eintraege[-1][0])
-        if len(eintraege) < self._batch:
+        self._set_position(letzte)
+        if zahl < self._batch:
             self._merken(CAUGHT_UP_KEY, "1")
-        return len(eintraege)
 
     async def _check_behind(self, position: str) -> None:
         """Gemerkten Stand gegen das aelteste noch vorhandene Ereignis halten."""
@@ -206,7 +237,7 @@ class StreamReader:
         self._gap = (position, aeltester)
         von = _as_tuple(position)[0] / 1000.0
         bis = _as_tuple(aeltester)[0] / 1000.0
-        self.writer.mark_incomplete(von, bis)
+        await asyncio.to_thread(self.writer.mark_incomplete, von, bis)
 
     # -- Pflege ----------------------------------------------------------
 
@@ -221,4 +252,7 @@ class StreamReader:
         grenze = jetzt - retention_s
         self._expired_before_ms = int(grenze * 1000)
         await self._source.trim_by_min_id(self._key, self._expired_before_ms)
-        self.writer.expire(older_than=grenze)
+        # Derselbe Riegel wie beim Durchlauf: das Ablaufen dauert auf einem
+        # vollen Verzeichnis Sekunden und laeuft deshalb im Arbeitsthread.
+        async with self._riegel:
+            await asyncio.to_thread(self.writer.expire, older_than=grenze)

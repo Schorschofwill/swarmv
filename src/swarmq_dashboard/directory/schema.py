@@ -119,7 +119,15 @@ def connect(path: str | Path) -> sqlite3.Connection:
     pfad.parent.mkdir(parents=True, exist_ok=True)
     _sichern(pfad)
 
-    con = sqlite3.connect(pfad, isolation_level=None)
+    # ``check_same_thread=False``: die blockierende SQLite-Arbeit laeuft in
+    # einem Arbeitsthread, damit sie den Ereignis-Loop nicht anhaelt (gemessen
+    # sonst 6,4 s je Pflegelauf und ein Neuaufbau von rund sieben Minuten, in
+    # denen Granians einziger Arbeiter keine Anfrage beantwortet). Das ist nur
+    # dann sicher, wenn immer **ein** Thread zur Zeit diese Verbindung in der
+    # Hand hat -- dafuer sorgt der Riegel im Strom-Leser. Eine zweite,
+    # lesende Verbindung fuer den Anfrageweg ist eine eigene Verbindung, kein
+    # geteilter Gebrauch dieser hier.
+    con = sqlite3.connect(pfad, isolation_level=None, check_same_thread=False)
     try:
         con.execute("pragma journal_mode=wal")
         con.execute("pragma synchronous=normal")

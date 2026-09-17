@@ -37,10 +37,18 @@ Test-Liste (AGENTS.md):
 13. Ein unlesbarer Eintrag zaehlt als Luecke statt spurlos zu verschwinden.
 14. Die eigene Altersbereinigung loest keinen Rueckstands-Alarm aus.
 15. Die gemeldete Luecke verschwindet mit dem Rueckstand.
+
+=== ZYKLUS 6: Der Ereignis-Loop bleibt frei ===
+16. Ein Durchlauf blockiert den Ereignis-Loop nicht.
+16a. Dieselbe Zusage ohne Stoppuhr: die Datenbankarbeit laeuft nicht im
+     Thread des Ereignis-Loops.
+17. Die Pflege blockiert ihn ebenso wenig.
+18. Zwei gleichzeitige Durchlaeufe verschraenken sich nicht.
 """
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from swarmq_dashboard.directory.reader import StreamReader
@@ -346,3 +354,141 @@ async def test_luecke_verschwindet_mit_dem_rueckstand(tmp_path: Path) -> None:
     zustand = r.status()
     assert zustand["behind"] is False
     assert zustand["gap"] is None, f"die alte Luecke steht noch: {zustand['gap']}"
+
+
+# --- Zyklus 6: Der Ereignis-Loop bleibt frei ----------------------------
+
+
+async def _groesste_luecke(arbeit: object, takt: float = 0.002) -> tuple[float, float]:
+    """Arbeit fahren und dabei den Herzschlag messen.
+
+    Gibt (groesste Luecke, Gesamtdauer) zurueck. Ein Ereignis-Loop, der
+    blockiert, laesst den Herzschlag genauso lange aussetzen wie die Arbeit
+    dauert -- das Verhaeltnis der beiden Zahlen ist die Aussage, nicht eine
+    absolute Schranke: die haengt an der Maschine.
+    """
+    luecke = 0.0
+    laeuft = True
+    messen = False
+
+    async def herzschlag() -> None:
+        nonlocal luecke
+        vorher = asyncio.get_running_loop().time()
+        while laeuft:
+            await asyncio.sleep(takt)
+            jetzt = asyncio.get_running_loop().time()
+            if messen:
+                luecke = max(luecke, jetzt - vorher)
+            vorher = jetzt
+
+    h = asyncio.ensure_future(herzschlag())
+    # Erst laufen lassen, dann messen. Ohne dieses Warten startet der
+    # Herzschlag ueberhaupt nicht: ``ensure_future`` plant ihn nur ein, und
+    # eine Koroutine, die nie wirklich aussetzt, gibt den Ereignis-Loop nicht
+    # ab. Die Messung stand dann auf null und der Test bewies nichts.
+    await asyncio.sleep(takt * 4)
+    assert not messen
+    messen = True
+
+    beginn = asyncio.get_running_loop().time()
+    await arbeit()  # type: ignore[operator]
+    dauer = asyncio.get_running_loop().time() - beginn
+    laeuft = False
+    await h
+    assert luecke > 0.0, "der Herzschlag hat nicht gemessen -- der Test bewiese nichts"
+    return luecke, dauer
+
+
+async def test_ein_durchlauf_blockiert_den_ereignis_loop_nicht(tmp_path: Path) -> None:
+    """R8, R26: waehrend des Neuaufbaus soll die Kopfzeile sagen, dass gerade
+    neu aufgebaut wird. Blockiert der Leser den Ereignis-Loop, kann sie das
+    nicht -- gemessen lag der Anteil blockierter Zeit bei 100 %, und ein
+    Neuaufbau ueber sieben Tage haette den Dienst rund sieben Minuten lang
+    stumm gestellt.
+    """
+    s = FakeStream()
+    for i in range(4000):
+        s.add(_ev(f"t{i}", 100.0 + i))
+    r = StreamReader(s, DirectoryWriter(connect(tmp_path / "v.sqlite3")), batch=4000)
+
+    luecke, dauer = await _groesste_luecke(r.poll_once)
+    assert dauer > 0.05, f"Vorbedingung: die Arbeit muss spuerbar dauern ({dauer:.3f} s)"
+    # Grosszuegige Schranke mit Absicht: gemessen liegt das Verhaeltnis auch
+    # unter voller Maschinenlast bei 0,01 bis 0,06, waehrend es ohne den
+    # Arbeitsthread gegen 1 geht. Der Zwischenraum traegt die Aussage; enger
+    # gezogen bewiese der Test nicht mehr, sondern haenge nur noch an der
+    # Auslastung der Maschine. Die eigentliche Zusicherung steht im Test
+    # darunter -- sie misst keine Zeit.
+    assert luecke < dauer / 2, (
+        f"der Ereignis-Loop stand {luecke * 1000:.0f} ms still, waehrend die Arbeit "
+        f"{dauer * 1000:.0f} ms dauerte -- er wird blockiert"
+    )
+
+
+async def test_die_datenbankarbeit_laeuft_nicht_im_ereignis_loop(tmp_path: Path) -> None:
+    """Dieselbe Zusage, aber ohne Stoppuhr.
+
+    Eine Zeitmessung als Tor haengt an der Auslastung der Maschine und wird
+    auf einem vollen Bauserver launisch. Die Frage dahinter ist ohnehin keine
+    Frage der Dauer, sondern eine des Ortes: laeuft die blockierende Arbeit im
+    Thread des Ereignis-Loops oder nicht.
+    """
+    import threading
+
+    s = FakeStream()
+    for i in range(50):
+        s.add(_ev(f"t{i}", 100.0 + i))
+    w = DirectoryWriter(connect(tmp_path / "v.sqlite3"))
+    r = StreamReader(s, w, batch=50)
+
+    gesehen: list[int] = []
+    echt = w.apply
+
+    def beobachtet(ereignisse: object) -> int:
+        gesehen.append(threading.get_ident())
+        return echt(ereignisse)  # type: ignore[arg-type]
+
+    w.apply = beobachtet  # type: ignore[method-assign]
+    await r.poll_once()
+
+    assert gesehen, "die Einarbeitung lief gar nicht"
+    assert threading.get_ident() not in gesehen, (
+        "die Datenbankarbeit lief im Thread des Ereignis-Loops"
+    )
+
+
+async def test_die_pflege_blockiert_den_ereignis_loop_nicht(tmp_path: Path) -> None:
+    """Gemessen blockierte ein Pflegelauf auf einem vollen Verzeichnis 6,4 s.
+    Granian faehrt einen Arbeiter -- so lange beantwortet das Dashboard keine
+    einzige Anfrage.
+    """
+    s = FakeStream()
+    for i in range(12000):
+        s.add(_ev(f"t{i}", 1000.0 + i * 0.001))
+    r = StreamReader(s, DirectoryWriter(connect(tmp_path / "v.sqlite3")), batch=12000)
+    await r.poll_once()
+
+    async def pflegen() -> None:
+        await r.maintain(now=9_000.0, retention_s=1_000.0)
+
+    luecke, dauer = await _groesste_luecke(pflegen)
+    assert dauer > 0.03, f"Vorbedingung: die Pflege muss spuerbar dauern ({dauer:.3f} s)"
+    assert luecke < dauer / 2, (
+        f"der Ereignis-Loop stand {luecke * 1000:.0f} ms still bei {dauer * 1000:.0f} ms Arbeit"
+    )
+
+
+async def test_zwei_durchlaeufe_verschraenken_sich_nicht(tmp_path: Path) -> None:
+    """Die Arbeit liegt jetzt in einem Thread. Zwei gleichzeitige Durchlaeufe
+    haetten dann dieselbe SQLite-Verbindung aus zwei Threads in der Hand --
+    das beschaedigt sie. Ein Riegel haelt sie auseinander.
+    """
+    s = FakeStream()
+    for i in range(200):
+        s.add(_ev(f"t{i}", 100.0 + i))
+    r = StreamReader(s, DirectoryWriter(connect(tmp_path / "v.sqlite3")), batch=50)
+
+    ergebnisse = await asyncio.gather(*(r.poll_once() for _ in range(4)))
+    assert sum(ergebnisse) == 200, f"Eintraege doppelt oder gar nicht gelesen: {ergebnisse}"
+    zeilen = r.writer._con.execute("select count(*) from task").fetchone()[0]
+    assert zeilen == 200, f"{zeilen} Zeilen statt 200"
