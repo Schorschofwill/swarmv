@@ -46,6 +46,8 @@ class StreamClient(Protocol):
 
     async def xadd_batch(self, key: str, events: list[bytes], maxlen: int) -> None: ...
 
+    async def connect(self) -> None: ...
+
 
 @dataclass
 class Counters:
@@ -95,6 +97,16 @@ class EventBuffer:
         if self._drop_from is None or self._drop_to is None:
             return None
         return (self._drop_from, self._drop_to)
+
+    @property
+    def running(self) -> bool:
+        """Laeuft der Hintergrund-Flusher noch?"""
+        return self._task is not None and not self._task.done()
+
+    @property
+    def client(self) -> StreamClient:
+        """Der Strom-Client, damit der Hook ihn verbinden kann."""
+        return self._client
 
     def peek(self) -> list[Event]:
         """Momentaufnahme des Puffers. Nur fuer Tests und die Zustandsanzeige."""
