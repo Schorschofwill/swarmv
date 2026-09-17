@@ -139,3 +139,17 @@ async def test_zweimal_installiert_ergibt_kein_doppeltes_ereignis() -> None:
     install(app)
     await app.middleware_chain.run_post_enqueue(_ctx())
     assert len(app.hook_buffer.peek()) == 1, "die Einreihung wurde doppelt gemeldet"  # type: ignore[attr-defined]
+
+
+# 9. Zwei swarmq-Instanzen auf demselben Strom teilen sich einen Puffer
+#    (Unterpunkt aus Befund 4 der Codepruefung).
+
+
+@pytest.mark.usefixtures("env")
+def test_zwei_instanzen_auf_demselben_strom_teilen_den_puffer() -> None:
+    a, b = _app(), _app()
+    install(a)
+    install(b)
+    assert a.hook_buffer is b.hook_buffer, (  # type: ignore[attr-defined]
+        "zwei Puffer auf denselben Strom: getrennte Verlustzaehler, geteilte Lueckenmeldung"
+    )

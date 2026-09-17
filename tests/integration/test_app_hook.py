@@ -16,8 +16,9 @@ from collections.abc import AsyncIterator
 import pytest
 from swarmq import RabbitMQBroker, SwarmQ, Task, TaskInfo, ValkeyBackend
 
+from swarmq_dashboard.events import TASK_STREAM as STREAM
 from swarmq_dashboard.events import Origin, decode
-from swarmq_dashboard.hooks.app import ENQUEUE_EVENT, install
+from swarmq_dashboard.hooks.app import ENQUEUE_EVENT, install, shutdown
 from swarmq_dashboard.stream import ValkeyStreamClient
 
 pytestmark = pytest.mark.integration
@@ -25,7 +26,7 @@ pytestmark = pytest.mark.integration
 
 @pytest.fixture
 async def strom(stream_url: str) -> AsyncIterator[tuple[ValkeyStreamClient, str]]:
-    key = f"sqd:test:app:{uuid.uuid4().hex[:8]}"
+    key = STREAM
     c = ValkeyStreamClient(stream_url)
     await c.connect()
     yield c, key
@@ -60,16 +61,13 @@ async def app(broker_url: str, backend_url: str) -> AsyncIterator[SwarmQ]:
 async def test_einreihen_gelingt_mit_hook(
     app: SwarmQ, strom: tuple[ValkeyStreamClient, str]
 ) -> None:
-    client, key = strom
+    client, _ = strom
     install(app)
-    puffer = app.hook_buffer  # type: ignore[attr-defined]
-    puffer._key, puffer._client = key, client
-
     task_id = await app.schedule("sqd_render_pdf", 812)
     assert task_id, "die Einreihung selbst muss unveraendert gelingen"
 
-    await puffer.flush_once()
-    gelesen = [decode(r) for r in await client.read_all(key)]
+    await shutdown(app)
+    gelesen = [decode(r) for r in await client.read_all(STREAM)]
     einreihungen = [e for e in gelesen if e.type == ENQUEUE_EVENT]
     assert len(einreihungen) == 1
     p = einreihungen[0].payload
@@ -83,15 +81,12 @@ async def test_einreihen_gelingt_mit_hook(
 async def test_task_steht_im_strom_vor_dem_aufgreifen(
     app: SwarmQ, strom: tuple[ValkeyStreamClient, str]
 ) -> None:
-    client, key = strom
+    client, _ = strom
     install(app)
-    puffer = app.hook_buffer  # type: ignore[attr-defined]
-    puffer._key, puffer._client = key, client
-
     await app.schedule("sqd_render_pdf", 813)
-    await puffer.flush_once()
+    await shutdown(app)
 
-    gelesen = [decode(r) for r in await client.read_all(key)]
+    gelesen = [decode(r) for r in await client.read_all(STREAM)]
     # Kein Worker lief: es gibt ausschliesslich die Einreihung, kein Aufgreifen.
     assert [e.type for e in gelesen] == [ENQUEUE_EVENT]
     assert all(e.origin is Origin.ENQUEUE for e in gelesen)
@@ -101,15 +96,12 @@ async def test_task_steht_im_strom_vor_dem_aufgreifen(
 async def test_stapel_erzeugt_je_element_ein_ereignis(
     app: SwarmQ, strom: tuple[ValkeyStreamClient, str]
 ) -> None:
-    client, key = strom
+    client, _ = strom
     install(app)
-    puffer = app.hook_buffer  # type: ignore[attr-defined]
-    puffer._key, puffer._client = key, client
-
     await app.schedule_many([("sqd_render_pdf", (i,), {}) for i in range(5)])
-    await puffer.flush_once()
+    await shutdown(app)
 
-    gelesen = [decode(r) for r in await client.read_all(key)]
+    gelesen = [decode(r) for r in await client.read_all(STREAM)]
     einreihungen = [e for e in gelesen if e.type == ENQUEUE_EVENT]
     assert len(einreihungen) == 5
     assert sorted(e.payload["args"][0] for e in einreihungen) == [0, 1, 2, 3, 4]

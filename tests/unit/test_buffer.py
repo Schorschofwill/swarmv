@@ -295,3 +295,38 @@ async def test_abbruch_waehrend_des_schreibens_verliert_nicht_ungezaehlt() -> No
 
     erhalten = len(puffer.peek()) + puffer.counters.dropped
     assert erhalten == 10, f"nur {erhalten} von 10 Ereignissen erhalten oder gezaehlt"
+
+
+# 16. stop() haengt nicht an einem unerreichbaren Strom (Regression aus Befund 8).
+# 17. Was stop() nicht mehr wegschreiben kann, wird gezaehlt statt verschluckt.
+
+
+async def test_stop_haengt_nicht_an_unerreichbarem_strom() -> None:
+    class Haengend:
+        async def connect(self) -> None: ...
+        async def xadd_batch(self, key: str, events: list[bytes], maxlen: int) -> None:
+            await asyncio.sleep(30)
+
+    puffer = EventBuffer(capacity=100, client=Haengend(), batch=10, flush_interval=0.01)
+    for i in range(50):
+        puffer.record(_ev(i))
+    await puffer.start()
+    await asyncio.sleep(0.05)
+    t0 = time.perf_counter()
+    await asyncio.wait_for(puffer.stop(), timeout=5.0)
+    dauer = time.perf_counter() - t0
+    assert dauer < 3.0, f"stop() brauchte {dauer:.1f}s an einem toten Strom"
+
+
+async def test_stop_zaehlt_was_es_nicht_mehr_loswird() -> None:
+    class Haengend:
+        async def connect(self) -> None: ...
+        async def xadd_batch(self, key: str, events: list[bytes], maxlen: int) -> None:
+            await asyncio.sleep(30)
+
+    puffer = EventBuffer(capacity=100, client=Haengend(), batch=10, flush_interval=0.01)
+    for i in range(50):
+        puffer.record(_ev(i))
+    await asyncio.wait_for(puffer.stop(), timeout=5.0)
+    erhalten = len(puffer.peek()) + puffer.counters.dropped + puffer.counters.flushed
+    assert erhalten >= 50, f"nur {erhalten} von 50 Ereignissen erhalten oder gezaehlt"

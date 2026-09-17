@@ -38,6 +38,19 @@ ENQUEUE_EVENT = "task_enqueue"
 
 DEFAULT_CAPACITY = 10_000
 
+#: Ein Puffer je Strom-Adresse und Prozess. Zwei ``SwarmQ``-Instanzen auf
+#: denselben Strom haetten sonst getrennte Verlustzaehler, und die
+#: Lueckenmeldung aus R4a fiele auf beide aufgeteilt aus.
+_BUFFERS: dict[str, EventBuffer] = {}
+
+
+def _shared_buffer(stream_url: str) -> EventBuffer:
+    puffer = _BUFFERS.get(stream_url)
+    if puffer is None:
+        puffer = EventBuffer(capacity=DEFAULT_CAPACITY, client=ValkeyStreamClient(stream_url))
+        _BUFFERS[stream_url] = puffer
+    return puffer
+
 
 class _EnqueueMiddleware(Middleware):
     """Meldet jede erfolgreiche Einreihung mit ihren Argumenten."""
@@ -94,10 +107,7 @@ def _install(app: Any, source: str | None) -> None:
             app.hook_buffer = None
             app._sqd_app_hook = True
             return
-        buffer = EventBuffer(
-            capacity=DEFAULT_CAPACITY,
-            client=ValkeyStreamClient(hook_cfg.stream_url or ""),
-        )
+        buffer = _shared_buffer(hook_cfg.stream_url or "")
         app.hook_buffer = buffer
 
     app.add_middleware(_EnqueueMiddleware(buffer, source or str(app.config.worker_identity)))

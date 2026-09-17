@@ -20,3 +20,18 @@ def clean_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         if key.startswith(("SWARMQ_", "SQD_")):
             monkeypatch.delenv(key, raising=False)
     yield
+
+
+@pytest.fixture(autouse=True)
+def frischer_puffer_registry() -> Iterator[None]:
+    """Prozessweiten Puffer-Registry zwischen Tests leeren.
+
+    ``hooks.app`` haelt einen Puffer je Strom-Adresse im Modul, damit zwei
+    swarmq-Instanzen im selben Prozess sich einen teilen. Ohne Zuruecksetzen
+    saehe ein Test die Ereignisse seines Vorgaengers.
+    """
+    from swarmq_dashboard.hooks import app as app_hook
+
+    app_hook._BUFFERS.clear()
+    yield
+    app_hook._BUFFERS.clear()

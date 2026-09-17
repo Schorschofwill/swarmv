@@ -39,6 +39,9 @@ DEFAULT_RETRY_MAX_S = 10.0
 #: Alter macht der Dienst (U2 Punkt 5), damit die Aufbewahrungsdauer nicht auf
 #: jedem Worker-Host wohnt.
 DEFAULT_MAXLEN = 1_000_000
+#: Wie lange ``stop`` hoechstens versucht zu leeren. Ohne Frist haengt ein
+#: Herunterfahren an einem unerreichbaren Strom fest.
+DEFAULT_STOP_DEADLINE_S = 2.0
 
 
 class StreamClient(Protocol):
@@ -281,11 +284,14 @@ class EventBuffer:
         """
         self._wake.set()
 
-    async def stop(self) -> None:
-        """Flusher beenden und **vollstaendig** leeren.
+    async def stop(self, *, deadline_s: float = DEFAULT_STOP_DEADLINE_S) -> None:
+        """Flusher beenden und leeren, aber nur bis zur Frist.
 
-        Leert in Stapeln, bis nichts mehr da ist -- ein einziger Stapel liesse
-        bei einem vollen Puffer tausende Ereignisse ungezaehlt liegen.
+        Leert in Stapeln statt in einem -- ein einziger liesse bei vollem
+        Puffer tausende Ereignisse liegen. Die Frist ist trotzdem Pflicht: an
+        einem unerreichbaren Strom wuerde die Schleife sonst nie enden, und ein
+        Herunterfahren haengt daran fest. Was bis dahin nicht hinausgeht, wird
+        **gezaehlt** statt verschluckt, damit R4a die Luecke spaeter ausweist.
         """
         self._stop.set()
         self._wake.set()
@@ -294,9 +300,22 @@ class EventBuffer:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._task
             self._task = None
+
+        ende = time.monotonic() + deadline_s
         while self._queue or self._drop_from is not None:
+            rest = ende - time.monotonic()
+            if rest <= 0:
+                break
             try:
-                if await self.flush_once() == 0:
+                if await asyncio.wait_for(self.flush_once(), timeout=rest) == 0:
                     break
+            except (TimeoutError, asyncio.CancelledError):
+                break
             except Exception:
                 break
+
+        if self._queue:
+            # Nicht mehr losgeworden. Buchen, nicht verschweigen.
+            rest_events = list(self._queue)
+            self._queue.clear()
+            self._account_loss(rest_events)
