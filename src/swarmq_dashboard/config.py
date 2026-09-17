@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 #: Aufbewahrung des Verzeichnisses und des Stroms (KD7).
@@ -37,6 +38,17 @@ DEFAULT_BACKLOG_CAP = 300
 #: Valkey-Datenbankindex des Ereignisstroms (KTD9). Nicht 0 -- die
 #: Integrationsvorrichtung der Bibliothek leert Index 0 bei jedem Testlauf.
 DEFAULT_STREAM_DB = 1
+
+#: Verzeichnis fuer die beiden lokalen Dateien. Bewusst ein eigener Ort und
+#: nicht das Arbeitsverzeichnis: er wird mit 0700 angelegt, und der Betreiber
+#: muss wissen, was er sichern und was er loeschen darf (R7a, KTD8).
+DEFAULT_DATA_DIR = "./sqd-data"
+#: Das Task-Verzeichnis. Darf geloescht werden -- es baut sich aus dem Strom
+#: neu auf (R8).
+DIRECTORY_FILE = "directory.sqlite3"
+#: Konten, Sitzungen und Bremszaehler. Darf **nicht** geloescht werden: sie
+#: stehen in keinem Strom und kaemen nicht wieder (KTD8).
+ACCOUNTS_FILE = "accounts.sqlite3"
 
 #: Alle Schreibweisen, die den Socket im Pfad tragen statt im Wirt.
 _UNIX_SCHEMES = ("unix", "valkey+unix", "valkeys+unix", "redis+unix", "rediss+unix")
@@ -99,6 +111,16 @@ def _db_identity(url: str) -> tuple[str, str, str]:
     if p.scheme in _UNIX_SCHEMES:
         return (wirt, p.path, dict(parse_qsl(p.query, keep_blank_values=True)).get("db", "0"))
     return (wirt, "", p.path.strip("/") or "0")
+
+
+def directory_path(data_dir: str | Path) -> Path:
+    """Pfad der Verzeichnisdatei in einem Datenverzeichnis."""
+    return Path(data_dir) / DIRECTORY_FILE
+
+
+def accounts_path(data_dir: str | Path) -> Path:
+    """Pfad der Kontendatei in einem Datenverzeichnis."""
+    return Path(data_dir) / ACCOUNTS_FILE
 
 
 def _same_db(a: str, b: str) -> bool:

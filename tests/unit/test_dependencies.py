@@ -9,6 +9,7 @@ Test-Liste (AGENTS.md):
 from __future__ import annotations
 
 import ast
+import importlib.metadata
 import pathlib
 import tomllib
 
@@ -35,7 +36,17 @@ def test_jeder_import_steht_in_der_abhaengigkeitsliste() -> None:
         d.split("[")[0].split(">")[0].split("<")[0].split("=")[0].strip()
         for d in daten["project"]["dependencies"]
     }
-    fehlend = sorted(p for p in _importierte_pakete() if p.replace("_", "-") not in erklaert and p not in erklaert)
+    # Der Importname ist nicht der Paketname: ``import argon2`` kommt aus
+    # ``argon2-cffi``, ``import valkey`` aus ``valkey``. Eine Regel mit
+    # Bindestrichen raet das nur -- und raet bei argon2 falsch. Python kennt
+    # die Zuordnung, also wird sie gefragt statt nachgebaut.
+    zuordnung = importlib.metadata.packages_distributions()
+
+    def erklaert_sich(modul: str) -> bool:
+        namen = {modul, modul.replace("_", "-"), *zuordnung.get(modul, ())}
+        return bool(namen & erklaert)
+
+    fehlend = sorted(p for p in _importierte_pakete() if not erklaert_sich(p))
     assert not fehlend, (
         f"importiert, aber nicht erklaert: {fehlend}. "
         "Sie kommen heute nur ueber swarmq mit — ein Release, das sie tauscht, "
