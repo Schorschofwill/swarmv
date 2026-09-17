@@ -29,10 +29,9 @@ from typing import Any
 
 from swarmq import Middleware, Signal
 
-from swarmq_dashboard.buffer import EventBuffer
+from swarmq_dashboard.buffer import EventBuffer, shared_buffer
 from swarmq_dashboard.config import HookConfig
 from swarmq_dashboard.events import Event, Origin
-from swarmq_dashboard.stream import ValkeyStreamClient
 
 logger = logging.getLogger("swarmq_dashboard.hooks.worker")
 
@@ -121,10 +120,7 @@ def _install(app: Any) -> None:
             app.hook_buffer = None
             app._sqd_worker_hook = True
             return
-        buffer = EventBuffer(
-            capacity=DEFAULT_CAPACITY,
-            client=ValkeyStreamClient(hook_cfg.stream_url or ""),
-        )
+        buffer = shared_buffer(hook_cfg.stream_url or "", capacity=DEFAULT_CAPACITY)
         app.hook_buffer = buffer
 
     source = str(app.config.worker_identity)

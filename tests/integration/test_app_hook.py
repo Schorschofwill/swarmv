@@ -26,11 +26,11 @@ pytestmark = pytest.mark.integration
 
 @pytest.fixture
 async def strom(stream_url: str) -> AsyncIterator[tuple[ValkeyStreamClient, str]]:
-    key = STREAM
     c = ValkeyStreamClient(stream_url)
     await c.connect()
-    yield c, key
-    await c.delete(key)
+    await c.delete(STREAM)     # Rueckstand eines Vorgaengers wegraeumen
+    yield c, STREAM
+    await c.delete(STREAM)
     await c.close()
 
 
@@ -130,14 +130,16 @@ async def test_reine_anwendung_schreibt_ohne_handverdrahtung(
     try:
         deadline = asyncio.get_running_loop().time() + 5.0
         while asyncio.get_running_loop().time() < deadline:
-            if await c.length("sqd:events") >= 3:
+            if await c.length(STREAM) >= 3:
                 break
             await asyncio.sleep(0.1)
-        n = await c.length("sqd:events")
+        n = await c.length(STREAM)
         assert n >= 3, f"nur {n} von 3 Einreihungen erreichten den Strom"
-        gelesen = [decode(r) for r in await c.read_all("sqd:events")]
+        gelesen = [decode(r) for r in await c.read_all(STREAM)]
         assert all(e.origin is Origin.ENQUEUE for e in gelesen)
     finally:
-        await c.delete("sqd:events")
-        await app.hook_buffer.stop()   # type: ignore[attr-defined]
+        # Erst den Puffer beenden, dann loeschen -- sonst schreibt stop() noch
+        # in einen Strom, den der Test fuer geleert haelt.
+        await shutdown(app)
+        await c.delete(STREAM)
         await c.close()

@@ -166,3 +166,24 @@ def test_gleiche_datenbank_ohne_ausgeschriebenen_index(monkeypatch: pytest.Monke
     monkeypatch.setenv("SQD_STREAM_URL", "valkey://localhost:6399")
     cfg = DashboardConfig.from_env()
     assert cfg.shares_backend_db is True, "fehlender Index wurde nicht als 0 gelesen"
+
+
+# 13. Der FLUSHDB-Hinweis erkennt dieselbe Datenbank trotz fehlendem Standardport.
+# 14. Auch `valkey+unix` behaelt den Socketpfad.
+
+
+@pytest.mark.usefixtures("clean_env")
+def test_gleiche_datenbank_trotz_fehlendem_standardport(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SWARMQ_BROKER_URL", "amqp://localhost:5699/")
+    monkeypatch.setenv("SWARMQ_BACKEND_URL", "valkey://localhost/0")
+    monkeypatch.setenv("SQD_STREAM_URL", "valkey://localhost:6379/0")
+    cfg = DashboardConfig.from_env()
+    assert cfg.shares_backend_db is True, "der weggelassene Standardport hat den Vergleich ausgehebelt"
+
+
+@pytest.mark.usefixtures("clean_env")
+def test_valkey_unix_behaelt_den_socketpfad(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SWARMQ_BROKER_URL", "amqp://localhost:5699/")
+    monkeypatch.setenv("SWARMQ_BACKEND_URL", "valkey+unix:///run/valkey.sock?db=0")
+    cfg = DashboardConfig.from_env()
+    assert "/run/valkey.sock" in cfg.stream_url, f"Socketpfad verloren: {cfg.stream_url}"

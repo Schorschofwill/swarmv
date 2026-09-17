@@ -29,6 +29,7 @@ Test-Liste (AGENTS.md):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from typing import Any
 
@@ -49,6 +50,8 @@ class _ToterStrom:
     def __init__(self) -> None:
         self.versuche = 0
 
+    async def connect(self) -> None: ...
+
     async def xadd_batch(self, key: str, events: list[bytes], maxlen: int) -> None:
         self.versuche += 1
         raise ConnectionError("Valkey nicht erreichbar")
@@ -60,6 +63,8 @@ class _Strom:
     def __init__(self) -> None:
         self.geschrieben: list[bytes] = []
         self.maxlen_gesehen: list[int] = []
+
+    async def connect(self) -> None: ...
 
     async def xadd_batch(self, key: str, events: list[bytes], maxlen: int) -> None:
         self.geschrieben.extend(events)
@@ -330,3 +335,90 @@ async def test_stop_zaehlt_was_es_nicht_mehr_loswird() -> None:
     await asyncio.wait_for(puffer.stop(), timeout=5.0)
     erhalten = len(puffer.peek()) + puffer.counters.dropped + puffer.counters.flushed
     assert erhalten >= 50, f"nur {erhalten} von 50 Ereignissen erhalten oder gezaehlt"
+
+
+# === Befunde aus der zweiten Codepruefung ===============================
+#
+# 18. Ein Weckruf waehrend eines laufenden Schreibvorgangs geht nicht verloren.
+# 19. stop() ist endgueltig: ein gleichzeitiges Einreihen startet nicht neu.
+# 20. stop() verwirft nichts, was nach dem Abbruch noch hereinkommt.
+# 21. Ein Abbruch von aussen laesst keine verwaisten Warte-Tasks zurueck.
+# 22. Ein Abbruch von aussen wird nicht in einen Erfolg verwandelt.
+
+
+async def test_weckruf_waehrend_des_schreibens_geht_nicht_verloren() -> None:
+    """Befund 1: _wake wurde nach dem Flush geleert, nicht davor."""
+    schreibvorgaenge: list[int] = []
+
+    class Langsam:
+        async def connect(self) -> None: ...
+        async def xadd_batch(self, key: str, events: list[bytes], maxlen: int) -> None:
+            await asyncio.sleep(0.15)
+            schreibvorgaenge.append(len(events))
+
+    puffer = EventBuffer(capacity=100, client=Langsam(), batch=10, flush_interval=5.0)
+    puffer.record(_ev(0))
+    await puffer.start()
+    await asyncio.sleep(0.05)          # der Flusher steckt im Schreiben
+    puffer.record(_ev(1))
+    puffer.nudge()                     # genau jetzt -- das Fenster
+    await asyncio.sleep(0.5)           # reichlich Zeit; stop() ist noch nicht gelaufen
+    vor_stop = len(schreibvorgaenge)
+    await puffer.stop()
+    assert vor_stop >= 2, (
+        f"nur {vor_stop} Schreibvorgang vor stop(); der Weckruf wurde verschluckt "
+        f"(nach stop(): {len(schreibvorgaenge)} — das leert ohnehin)"
+    )
+
+
+async def test_stop_ist_endgueltig() -> None:
+    """Befund 2: ensure_started() startete den Flusher mitten im Beenden neu."""
+    strom = _Strom()
+    puffer = EventBuffer(capacity=100, client=strom, flush_interval=0.01)
+    await puffer.start()
+    await puffer.stop()
+    await puffer.ensure_started()
+    assert puffer.running is False, "der Puffer wurde nach stop() wieder gestartet"
+
+
+async def test_stop_verwirft_nichts_was_danach_hereinkommt() -> None:
+    """Befund 2: stop() leerte die Warteschlange des neu gestarteten Puffers."""
+    strom = _Strom()
+    puffer = EventBuffer(capacity=100, client=strom, flush_interval=0.01)
+    await puffer.start()
+    await puffer.stop()
+    puffer.record(_ev(99))
+    assert len(puffer.peek()) == 1, "ein Ereignis nach stop() ging verloren"
+
+
+async def test_abbruch_von_aussen_laesst_keine_warte_tasks_zurueck() -> None:
+    """Befund 7: asyncio.wait bricht die uebergebenen Tasks nicht selbst ab."""
+    strom = _Strom()
+    puffer = EventBuffer(capacity=10, client=strom, flush_interval=30.0)
+    await puffer.start()
+    await asyncio.sleep(0.02)
+    puffer._task.cancel()              # type: ignore[union-attr]
+    with contextlib.suppress(asyncio.CancelledError):
+        await puffer._task             # type: ignore[arg-type]
+    # Nicht ueber all_tasks pruefen -- abgebrochene Tasks sind einen Tick
+    # spaeter fertig. Die Warteliste des Events ist der harte Beleg.
+    warteliste = len(getattr(puffer._stop, "_waiters", [])) + len(getattr(puffer._wake, "_waiters", []))
+    assert warteliste == 0, f"{warteliste} Eintraege blieben in den Wartelisten der Events stehen"
+
+
+async def test_abbruch_von_aussen_wird_nicht_zu_erfolg() -> None:
+    """Befund 6: CancelledError des Aufrufers wurde als normales Ende behandelt."""
+
+    class Haengend:
+        async def connect(self) -> None: ...
+        async def xadd_batch(self, key: str, events: list[bytes], maxlen: int) -> None:
+            await asyncio.sleep(30)
+
+    puffer = EventBuffer(capacity=100, client=Haengend(), batch=10)
+    for i in range(20):
+        puffer.record(_ev(i))
+    aufgabe = asyncio.create_task(puffer.stop(deadline_s=30))
+    await asyncio.sleep(0.05)
+    aufgabe.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await aufgabe

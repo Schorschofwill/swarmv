@@ -267,3 +267,39 @@ def _ev_worker() -> object:
 
     return Event(type="task_started", ts=1.0, source="phx-w1:0",
                  origin=Origin.PICKUP, payload={"task_id": "x"})
+
+
+# 15. Der Herunterfahr-Weckruf bringt die gepufferten Ereignisse wirklich hinaus.
+#     (Der aeltere Test dazu war wertlos: er lief ohne Flusher, also konnte
+#     gar nichts blockieren, und er prueft nur die Dauer.)
+
+
+@pytest.mark.usefixtures("env")
+async def test_herunterfahr_weckruf_bringt_ereignisse_hinaus() -> None:
+    geschrieben: list[int] = []
+
+    class Langsam:
+        async def connect(self) -> None: ...
+        async def xadd_batch(self, key: str, events: list[bytes], maxlen: int) -> None:
+            await asyncio.sleep(0.1)
+            geschrieben.append(len(events))
+
+    app = _app()
+    setup(app)
+    puffer = app.hook_buffer  # type: ignore[attr-defined]
+    puffer._client = Langsam()
+    puffer._interval = 5.0
+    await puffer.start()
+    await asyncio.sleep(0.02)
+
+    puffer.record(_ev_worker())
+    import time as _t
+    t0 = _t.perf_counter()
+    await app._signal_dispatcher.dispatch(Signal.WORKER_SHUTDOWN, worker_id="phx-w1:0")
+    dauer = _t.perf_counter() - t0
+    assert dauer < 0.2, f"der Handler wartete {dauer:.2f}s"
+
+    await asyncio.sleep(0.4)
+    vor_stop = len(geschrieben)
+    await puffer.stop()
+    assert vor_stop >= 1, "der Weckruf hat nichts ausgeloest; die Ereignisse blieben liegen"

@@ -26,10 +26,9 @@ from typing import Any
 
 from swarmq import Middleware
 
-from swarmq_dashboard.buffer import EventBuffer
+from swarmq_dashboard.buffer import EventBuffer, close_shared, shared_buffer
 from swarmq_dashboard.config import HookConfig
 from swarmq_dashboard.events import Event, Origin
-from swarmq_dashboard.stream import ValkeyStreamClient
 
 logger = logging.getLogger("swarmq_dashboard.hooks.app")
 
@@ -37,20 +36,6 @@ logger = logging.getLogger("swarmq_dashboard.hooks.app")
 ENQUEUE_EVENT = "task_enqueue"
 
 DEFAULT_CAPACITY = 10_000
-
-#: Ein Puffer je Strom-Adresse und Prozess. Zwei ``SwarmQ``-Instanzen auf
-#: denselben Strom haetten sonst getrennte Verlustzaehler, und die
-#: Lueckenmeldung aus R4a fiele auf beide aufgeteilt aus.
-_BUFFERS: dict[str, EventBuffer] = {}
-
-
-def _shared_buffer(stream_url: str) -> EventBuffer:
-    puffer = _BUFFERS.get(stream_url)
-    if puffer is None:
-        puffer = EventBuffer(capacity=DEFAULT_CAPACITY, client=ValkeyStreamClient(stream_url))
-        _BUFFERS[stream_url] = puffer
-    return puffer
-
 
 class _EnqueueMiddleware(Middleware):
     """Meldet jede erfolgreiche Einreihung mit ihren Argumenten."""
@@ -107,7 +92,7 @@ def _install(app: Any, source: str | None) -> None:
             app.hook_buffer = None
             app._sqd_app_hook = True
             return
-        buffer = _shared_buffer(hook_cfg.stream_url or "")
+        buffer = shared_buffer(hook_cfg.stream_url or "", capacity=DEFAULT_CAPACITY)
         app.hook_buffer = buffer
 
     app.add_middleware(_EnqueueMiddleware(buffer, source or str(app.config.worker_identity)))
@@ -123,5 +108,19 @@ async def shutdown(app: Any) -> None:
     nicht: der Flusher schreibt im Takt weiter.
     """
     buffer = getattr(app, "hook_buffer", None)
-    if buffer is not None:
-        await buffer.stop()
+    if buffer is None:
+        return
+    # Ueber den Registry beenden, nicht am Objekt: der Puffer ist prozessweit
+    # geteilt, und er muss aus dem Registry verschwinden, sonst haelt ein
+    # beendeter Puffer die Valkey-Verbindung offen.
+    for adresse, vorhanden in list(_registry_items()):
+        if vorhanden is buffer:
+            await close_shared(adresse)
+            return
+    await buffer.stop()
+
+
+def _registry_items() -> Any:
+    from swarmq_dashboard.buffer import _BUFFERS
+
+    return _BUFFERS.items()

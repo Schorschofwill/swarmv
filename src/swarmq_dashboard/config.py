@@ -38,6 +38,12 @@ DEFAULT_BACKLOG_CAP = 300
 #: Integrationsvorrichtung der Bibliothek leert Index 0 bei jedem Testlauf.
 DEFAULT_STREAM_DB = 1
 
+#: Alle Schreibweisen, die den Socket im Pfad tragen statt im Wirt.
+_UNIX_SCHEMES = ("unix", "valkey+unix", "valkeys+unix", "redis+unix", "rediss+unix")
+#: Vorgabeport, wenn die Adresse keinen nennt -- sonst gilt "localhost" als
+#: andere Datenbank als "localhost:6379" und der FLUSHDB-Hinweis bleibt aus.
+_DEFAULT_PORT = 6379
+
 _SHARED_DB_WARNING = (
     "Ereignisstrom und Backend liegen auf demselben Valkey-Datenbankindex. "
     "Die Integrationstests von swarmq fuehren dort ein FLUSHDB aus und wuerden "
@@ -74,8 +80,8 @@ def _with_db(url: str, db: int) -> str:
     wirft den Socketpfad weg, und der Fehler faellt erst beim Verbinden auf.
     """
     parts = urlsplit(url)
-    if parts.scheme in ("unix", "valkeys+unix", "redis+unix"):
-        abfrage = {k: v for k, v in parse_qsl(parts.query)}
+    if parts.scheme in _UNIX_SCHEMES:
+        abfrage = dict(parse_qsl(parts.query, keep_blank_values=True))
         abfrage["db"] = str(db)
         return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(abfrage), parts.fragment))
     return urlunsplit((parts.scheme, parts.netloc, f"/{db}", parts.query, parts.fragment))
@@ -89,9 +95,9 @@ def _db_identity(url: str) -> tuple[str, str, str]:
     dann blieb der FLUSHDB-Hinweis aus, den KTD9 verlangt.
     """
     p = urlsplit(url)
-    wirt = f"{(p.hostname or '').lower()}:{p.port or ''}"
-    if p.scheme in ("unix", "valkeys+unix", "redis+unix"):
-        return (wirt, p.path, dict(parse_qsl(p.query)).get("db", "0"))
+    wirt = f"{(p.hostname or '').lower()}:{p.port or _DEFAULT_PORT}"
+    if p.scheme in _UNIX_SCHEMES:
+        return (wirt, p.path, dict(parse_qsl(p.query, keep_blank_values=True)).get("db", "0"))
     return (wirt, "", p.path.strip("/") or "0")
 
 

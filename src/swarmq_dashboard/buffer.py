@@ -85,6 +85,7 @@ class EventBuffer:
         self._drop_from: float | None = None
         self._drop_to: float | None = None
         self._span_dropped = 0
+        self._closed = False
         self._write_lock = asyncio.Lock()
         self._wake = asyncio.Event()
         self._source = ""
@@ -212,6 +213,7 @@ class EventBuffer:
         if not nutzlast:
             return 0
         try:
+            await self._client.connect()
             await self._client.xadd_batch(self._key, [encode(e) for e in nutzlast], self._maxlen)
         except asyncio.CancelledError:
             # Abbruch mitten im Schreiben: der Stapel darf nicht verschwinden.
@@ -236,45 +238,33 @@ class EventBuffer:
         return len(nutzlast)
 
     async def _loop(self) -> None:
+        """Schreibschleife. Wartet auf den Takt oder einen Weckruf.
+
+        Der Weckruf wird **vor** dem Schreiben abgeraeumt, nicht danach: ein
+        ``nudge`` waehrend eines laufenden Schreibvorgangs waere sonst
+        verloren, und die Schleife parkte bis zum naechsten Takt. Der
+        Herunterfahr-Handler des Workers tut nichts anderes als nudgen -- er
+        haengt also genau an diesem Fenster.
+        """
         delay = self._interval
         while not self._stop.is_set():
+            self._wake.clear()
             try:
-                geschrieben = await self.flush_once()
+                geschrieben = await self._flush_locked_guarded()
                 delay = self._interval if geschrieben or not self._queue else min(delay * 2, DEFAULT_RETRY_MAX_S)
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.warning("flush_loop_error", exc_info=True)
                 delay = min(delay * 2, DEFAULT_RETRY_MAX_S)
-            self._wake.clear()
-            warten = [asyncio.create_task(self._stop.wait()), asyncio.create_task(self._wake.wait())]
-            _, offen = await asyncio.wait(
-                warten, timeout=max(self._interval, delay), return_when=asyncio.FIRST_COMPLETED
-            )
-            for aufgabe in offen:
-                aufgabe.cancel()
+            if self._stop.is_set() or self._wake.is_set():
+                continue
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._wake.wait(), timeout=max(self._interval, delay))
 
-    async def start(self) -> None:
-        """Hintergrund-Flusher starten. Idempotent."""
-        if self._task is None or self._task.done():
-            self._stop.clear()
-            self._task = asyncio.create_task(self._loop())
-
-    async def ensure_started(self) -> None:
-        """Verbinden und den Flusher starten, falls noch nicht geschehen.
-
-        Idempotent und fehlertolerant: scheitert das Verbinden, laeuft der
-        Flusher trotzdem und versucht es bei jedem Durchlauf erneut. Aufrufbar
-        aus jedem asynchronen Pfad -- die einreihende Anwendung hat kein
-        Lebenszyklus-Signal, an dem sie haengen koennte.
-        """
-        if self.running:
-            return
-        try:
-            await self._client.connect()
-        except Exception:
-            logger.warning("dashboard_stream_connect_failed", exc_info=True)
-        await self.start()
+    async def _flush_locked_guarded(self) -> int:
+        async with self._write_lock:
+            return await self._flush_locked()
 
     def nudge(self) -> None:
         """Den Flusher wecken, ohne auf ihn zu warten.
@@ -284,22 +274,55 @@ class EventBuffer:
         """
         self._wake.set()
 
-    async def stop(self, *, deadline_s: float = DEFAULT_STOP_DEADLINE_S) -> None:
-        """Flusher beenden und leeren, aber nur bis zur Frist.
+    async def start(self) -> None:
+        """Hintergrund-Flusher starten. Idempotent, und nach ``stop`` wirkungslos."""
+        if self._closed:
+            return
+        if self._task is None or self._task.done():
+            self._stop.clear()
+            self._task = asyncio.create_task(self._loop())
 
-        Leert in Stapeln statt in einem -- ein einziger liesse bei vollem
-        Puffer tausende Ereignisse liegen. Die Frist ist trotzdem Pflicht: an
-        einem unerreichbaren Strom wuerde die Schleife sonst nie enden, und ein
-        Herunterfahren haengt daran fest. Was bis dahin nicht hinausgeht, wird
-        **gezaehlt** statt verschluckt, damit R4a die Luecke spaeter ausweist.
+    async def ensure_started(self) -> None:
+        """Verbinden und den Flusher starten, falls noch nicht geschehen.
+
+        Idempotent. Nach ``stop`` wirkungslos: ein gleichzeitiges Einreihen
+        darf ein laufendes Beenden nicht aufheben.
+
+        Scheitert das Verbinden, laeuft der Flusher trotzdem und versucht es
+        bei jedem Durchlauf erneut -- dafuer ruft ``_flush_locked`` den
+        Verbindungsaufbau selbst nach, wenn der Client nicht bereit ist.
+
+        Aufrufbar aus jedem asynchronen Pfad -- die einreihende Anwendung hat
+        kein Lebenszyklus-Signal, an dem sie haengen koennte.
         """
+        if self._closed or self.running:
+            return
+        try:
+            await self._client.connect()
+        except Exception:
+            logger.warning("dashboard_stream_connect_failed", exc_info=True)
+        await self.start()
+
+    async def stop(self, *, deadline_s: float = DEFAULT_STOP_DEADLINE_S) -> None:
+        """Endgueltig beenden und bis zur Frist leeren.
+
+        Endgueltig heisst: danach startet ``ensure_started`` nicht wieder. Ohne
+        das startete ein gleichzeitiges Einreihen den Flusher mitten im
+        Beenden neu, und der Rest-Abwurf traf dann die Warteschlange des
+        neuen Laufs.
+
+        Was bis zur Frist nicht hinausgeht, wird gezaehlt statt verschluckt --
+        an einem unerreichbaren Strom haengt hier sonst ein Herunterfahren
+        fest (R4a).
+        """
+        self._closed = True
         self._stop.set()
         self._wake.set()
         if self._task is not None:
-            self._task.cancel()
+            aufgabe, self._task = self._task, None
+            aufgabe.cancel()
             with contextlib.suppress(asyncio.CancelledError):
-                await self._task
-            self._task = None
+                await aufgabe
 
         ende = time.monotonic() + deadline_s
         while self._queue or self._drop_from is not None:
@@ -309,13 +332,51 @@ class EventBuffer:
             try:
                 if await asyncio.wait_for(self.flush_once(), timeout=rest) == 0:
                     break
-            except (TimeoutError, asyncio.CancelledError):
+            except TimeoutError:
                 break
+            except asyncio.CancelledError:
+                # Der Aufrufer wird abgeraeumt. Rest buchen, dann weiterreichen
+                # -- ein Abbruch darf nicht als geordnetes Ende durchgehen.
+                self._account_loss(list(self._queue))
+                self._queue.clear()
+                raise
             except Exception:
                 break
 
         if self._queue:
-            # Nicht mehr losgeworden. Buchen, nicht verschweigen.
             rest_events = list(self._queue)
             self._queue.clear()
             self._account_loss(rest_events)
+
+
+#: Ein Puffer je Strom-Adresse und Prozess. Zwei ``SwarmQ``-Instanzen auf
+#: denselben Strom haetten sonst getrennte Verlustzaehler, und die
+#: Lueckenmeldung aus R4a fiele auf beide aufgeteilt aus.
+_BUFFERS: dict[str, EventBuffer] = {}
+
+
+def shared_buffer(stream_url: str, *, capacity: int) -> EventBuffer:
+    """Den Puffer dieser Strom-Adresse holen oder anlegen."""
+    from swarmq_dashboard.stream import ValkeyStreamClient
+
+    puffer = _BUFFERS.get(stream_url)
+    if puffer is None or puffer._closed:
+        puffer = EventBuffer(capacity=capacity, client=ValkeyStreamClient(stream_url))
+        _BUFFERS[stream_url] = puffer
+    return puffer
+
+
+async def close_shared(stream_url: str) -> None:
+    """Den geteilten Puffer dieser Adresse beenden und aus dem Registry nehmen."""
+    puffer = _BUFFERS.pop(stream_url, None)
+    if puffer is not None:
+        await puffer.stop()
+        with contextlib.suppress(Exception):
+            schliessen = getattr(puffer.client, "close", None)
+            if schliessen is not None:
+                await schliessen()
+
+
+def reset_shared() -> None:
+    """Registry leeren. Fuer Tests -- prozessweiter Zustand braucht Isolierung."""
+    _BUFFERS.clear()
