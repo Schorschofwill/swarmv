@@ -239,7 +239,7 @@ async def test_die_zustandsseite_antwortet_auch_ohne_dienste(tmp_path: Path) -> 
     app = create_app(config, hasher=billig)
     async with AsyncTestClient(app=app, base_url="https://testserver.local") as client:
         seite = await client.get("/login")
-        merkmal = re.search(r'name=_csrf_token value="([^"]*)"', seite.text).group(1)  # type: ignore[union-attr]
+        merkmal = re.search(r'name="?_csrf_token"?\s+value="([^"]*)"', seite.text).group(1)  # type: ignore[union-attr]
         await client.post("/login", data={"account": "ops", "password": "ein-langes-passwort",
                                           "_csrf_token": merkmal},
                           follow_redirects=False)

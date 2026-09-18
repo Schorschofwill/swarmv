@@ -1,0 +1,30 @@
+{#- Anmeldeseite. Die einzige Seite ohne Sitzung -- und die einzige, auf der
+    ein Passwortfeld steht. Das Merkmal kommt aus dem Handler, nie aus dem
+    Cookie des Klienten. -#}
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Anmelden · swarmq</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="anmeldung">
+  <main class="anmeldung-karte card">
+    <h1 class="anmeldung-titel">swarmq</h1>
+    {%- if fehler %}
+    <p class="chip chip--fehler"><span class="dot dot--fehler"></span> {{ fehler }}</p>
+    {%- endif %}
+    <form method="post" action="/login">
+      <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
+      <label class="feld">Konto
+        <input name="account" autocomplete="username" autofocus required>
+      </label>
+      <label class="feld">Passwort
+        <input name="password" type="password" autocomplete="current-password" required>
+      </label>
+      <button class="btn btn--haupt">Anmelden</button>
+    </form>
+  </main>
+</body>
+</html>

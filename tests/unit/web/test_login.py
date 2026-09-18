@@ -130,7 +130,7 @@ def _mit_konto(tmp_path: Path) -> DashboardConfig:
 
 def _merkmal_aus(html: str) -> str:
     """Das Merkmal aus dem Formular ziehen, wie ein Browser es abschickt."""
-    treffer = re.search(r'name=_csrf_token value="([^"]*)"', html)
+    treffer = re.search(r'name="?_csrf_token"?\s+value="([^"]*)"', html)
     assert treffer, f"das Formular traegt kein Merkmal: {html[:200]}"
     return treffer.group(1)
 

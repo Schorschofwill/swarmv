@@ -44,6 +44,7 @@ from swarmq_dashboard.web.auth import (
     session_guard,
 )
 from swarmq_dashboard.web.routes.login import login, login_form, logout
+from swarmq_dashboard.web.templates import statische_dateien, template_config
 
 #: Name, unter dem der Sitzungsspeicher registriert wird.
 SESSION_STORE_NAME = "sessions"
@@ -492,7 +493,8 @@ def create_app(
     # Sitzung angenommen. R23 verlangt aber ein **sitzungsgebundenes**
     # Merkmal. ``csrf_guard`` liefert das; es steht in der Sitzung selbst.
     return Litestar(
-        route_handlers=[zustand, login_form, login, logout],
+        route_handlers=[zustand, login_form, login, logout, statische_dateien()],
+        template_config=template_config(),
         lifespan=[lebenszyklus],
         stores=build_store_registry(weiche),
         middleware=[sitzung.middleware],

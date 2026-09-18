@@ -1,0 +1,12 @@
+{#- Ein Bereich ohne Daten nennt die Ursache (R33).
+
+    Eine leere Tabelle liest sich wie "nichts los" -- auch dann, wenn in
+    Wahrheit der Broker fehlt oder das Verzeichnis gerade neu aufgebaut wird.
+    Genau diese stille Falschaussage schliesst das vierte Erfolgskriterium
+    aus. -#}
+<div class="leer">
+  <p class="leer-titel">{{ titel }}</p>
+  {%- if ursache %}
+  <p class="leer-ursache muted">{{ ursache }}</p>
+  {%- endif %}
+</div>

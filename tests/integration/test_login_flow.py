@@ -48,7 +48,7 @@ def _config(tmp_path: Path, broker: str, backend: str, strom: str) -> DashboardC
 
 async def _anmelden(c: AsyncTestClient) -> str:
     seite = await c.get("/login")
-    merkmal = re.search(r'name=_csrf_token value="([^"]*)"', seite.text).group(1)  # type: ignore[union-attr]
+    merkmal = re.search(r'name="?_csrf_token"?\s+value="([^"]*)"', seite.text).group(1)  # type: ignore[union-attr]
     await c.post("/login", data={"account": "ops", "password": _PASSWORT,
                                  "_csrf_token": merkmal},
                  follow_redirects=False)
@@ -141,7 +141,7 @@ async def test_an_und_abmeldung_stehen_im_audit(
     config = _config(tmp_path, broker_url, backend_url, stream_url)
     async with AsyncTestClient(app=create_app(config, hasher=_BILLIG), base_url=BASIS) as c:
         seite = await c.get("/login")
-        merkmal = re.search(r'name=_csrf_token value="([^"]*)"', seite.text).group(1)  # type: ignore[union-attr]
+        merkmal = re.search(r'name="?_csrf_token"?\s+value="([^"]*)"', seite.text).group(1)  # type: ignore[union-attr]
         await c.post("/login", data={"account": "ops", "password": "falsch",
                                      "_csrf_token": merkmal}, follow_redirects=False)
         gueltig = await _anmelden(c)
@@ -168,7 +168,7 @@ async def test_das_audit_traegt_nie_das_passwort(
     async with AsyncTestClient(app=create_app(config, hasher=_BILLIG), base_url=BASIS) as c:
         for passwort in (geheim, _PASSWORT):
             seite = await c.get("/login")
-            merkmal = re.search(r'name=_csrf_token value="([^"]*)"', seite.text).group(1)  # type: ignore[union-attr]
+            merkmal = re.search(r'name="?_csrf_token"?\s+value="([^"]*)"', seite.text).group(1)  # type: ignore[union-attr]
             await c.post("/login", data={"account": "ops", "password": passwort,
                                          "_csrf_token": merkmal}, follow_redirects=False)
 

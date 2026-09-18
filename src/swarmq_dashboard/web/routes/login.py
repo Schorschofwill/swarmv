@@ -9,7 +9,6 @@ Konto es geht. Sie koennte nur die Herkunft bremsen, und das ist die Haelfte.
 from __future__ import annotations
 
 import asyncio
-import html
 from typing import Annotated, Any
 
 from litestar import Request, Response, get, post
@@ -28,6 +27,7 @@ from swarmq_dashboard.web.auth import (
     normalisierter_kontoname,
     rotate_session_id,
 )
+from swarmq_dashboard.web.templates import render
 
 #: Was die Anmeldung bei einem Fehlschlag sagt. **Ein** Satz fuer alle
 #: Faelle -- unbekanntes Konto, falsches Passwort, gesperrtes Konto: jede
@@ -77,14 +77,11 @@ def login_form(request: Request[Any, Any, Any]) -> Response[str]:
     vorhanden = request.session.get(SESSION_CSRF_KEY) if request.session else None
     merkmal = vorhanden if isinstance(vorhanden, str) and vorhanden else new_csrf_token()
     return Response(
-        content=(
-            "<!doctype html><meta charset=utf-8><title>Anmelden</title>"
-            "<form method=post action=/login>"
-            f'<input type=hidden name={CSRF_FIELD} value="{html.escape(merkmal, quote=True)}">'
-            "<label>Konto <input name=account autofocus></label>"
-            "<label>Passwort <input name=password type=password></label>"
-            "<button>Anmelden</button></form>"
-        ),
+        # Die Vorlage maskiert von sich aus (Jinja mit autoescape). Die
+        # fruehere Fassung setzte die Zeichenkette von Hand zusammen -- und
+        # genau dort ist einmal fremdes Skript hineingeraten.
+        content=render("anmeldung.html", csrf_token=merkmal,
+                       fehler=request.query_params.get("fehler")),
         media_type="text/html",
         cookies=[_merkmal_cookie(merkmal)],
     )

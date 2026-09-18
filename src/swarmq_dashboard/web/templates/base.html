@@ -1,0 +1,64 @@
+{#- Grundvorlage: linke Navigation, Kopfzeile mit den drei Zustaenden,
+    Konto-Fussbereich. Die sichtbare Wahrheit ist docs/mockup/Main.html.
+
+    Nichts wird von aussen geholt (KTD7) -- weder Schrift noch Skript. -#}
+<!doctype html>
+<html lang="de" data-theme="{{ theme|default('light') }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block titel %}swarmq{% endblock %} · Dashboard</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/htmx.min.js" defer></script>
+  <script src="/static/idiomorph-ext.min.js" defer></script>
+</head>
+<body hx-ext="morph">
+<div class="shell">
+
+  <nav class="nav">
+    <div class="nav-brand">swarmq</div>
+    {%- for b in bereiche %}
+    <a class="navlink{% if b.slug == aktiv %} navlink--aktiv{% endif %}" href="{{ b.pfad }}">
+      {{ b.titel }}
+    </a>
+    {%- endfor %}
+    <div class="nav-fuss">
+      <span class="mono">{{ account }}</span>
+      <form method="post" action="/logout">
+        <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
+        <button class="btn btn--leise">Abmelden</button>
+      </form>
+    </div>
+  </nav>
+
+  <main class="main">
+    <header class="kopf">
+      {#- Jede Marke ist Punkt UND Wort: Farbe allein traegt nie die Aussage.
+          Ein Bildschirmfoto im Ticket verliert seine Farben, und rund jeder
+          zwoelfte Mann sieht Rot und Gruen nicht auseinander. -#}
+      {{ marke("Broker", status.broker) }}
+      {{ marke("Backend", status.backend) }}
+      {{ marke("Strom", status.stream, strom=True) }}
+      {%- if status.directory.rebuilding %}
+      <span class="chip chip--wartet"><span class="dot dot--wartet"></span> Neuaufbau laeuft</span>
+      {%- endif %}
+      {%- if status.directory.behind %}
+      <span class="chip chip--wartet"><span class="dot dot--wartet"></span> Luecke im Strom</span>
+      {%- endif %}
+      {%- if status.directory.erasure_pending %}
+      <span class="chip chip--wartet"><span class="dot dot--wartet"></span> Loeschung offen</span>
+      {%- endif %}
+      {%- if status.audit.lost %}
+      <span class="chip chip--wartet"><span class="dot dot--wartet"></span>
+        {{ status.audit.lost }} Audit-Eintraege verloren</span>
+      {%- endif %}
+    </header>
+
+    <div class="inhalt">
+      {% block inhalt %}{% endblock %}
+    </div>
+  </main>
+
+</div>
+</body>
+</html>

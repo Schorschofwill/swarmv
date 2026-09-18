@@ -25,6 +25,10 @@ dependencies = [
     "litestar>=2.24,<3",
     "granian>=2.8,<3",
     "jinja2>=3.1",
+    # Kommt heute ueber jinja2 mit. Steht trotzdem hier: die Vorlagen-Schicht
+    # importiert Markup selbst, um die Kopfzeilen-Marken als HTML
+    # durchzureichen (web/templates/__init__.py).
+    "markupsafe>=2.1",
     "argon2-cffi>=25.1",
 ]
 
