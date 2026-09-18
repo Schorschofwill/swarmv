@@ -32,6 +32,11 @@ Test-Liste (AGENTS.md):
 8. Leeren verlangt Queue-Name und Zahl als Bestaetigung.
 9. Eine falsche Bestaetigung loescht nichts.
 10. Laesst sich die Zahl nicht pruefen, wird nicht geloescht.
+
+=== ZYKLUS 5: Der Riegel deckt alle drei Handlungen ===
+11. Leeren waehrend einer Sichtung wird abgewiesen.
+12. Wiedereinreihen ebenso, einzeln wie im Stapel.
+13. Eine andere Queue bleibt dabei frei.
 """
 
 from __future__ import annotations
@@ -206,3 +211,64 @@ async def test_ohne_pruefbare_zahl_wird_nicht_geloescht() -> None:
     e = await DlqService(admin).purge("reports", bestaetigung="reports", erwartet=7)
     assert e.error and "nicht pruefen" in e.error
     assert admin.aufrufe == [], "es wurde geloescht"
+
+
+# --- Zyklus 5: Der Riegel deckt alle drei Handlungen --------------------
+
+
+async def test_leeren_waehrend_einer_sichtung_wird_abgewiesen() -> None:
+    """R28a, R30. Der Riegel deckte nur das Sichten.
+
+    Die Sichtung liest Nachrichten und reiht jede sofort neu ein; ein
+    gleichzeitiges Leeren loescht die Queue dazwischen. Das eine Teammitglied
+    sieht dann eine Liste mit Nachrichten, die es nicht mehr gibt, das andere
+    bekommt "N endgueltig entfernt" gemeldet, waehrend die Sichtung weitere
+    zurueckschreibt. Wie viel wirklich vernichtet wurde, sagt danach niemand
+    mehr.
+
+    Die Klasse verspricht "je Queue serialisiert" -- serialisiert war nur
+    das Sichten.
+    """
+    admin = FakeAdmin(nachrichten=3)
+    s = DlqService(admin)
+    riegel = s._lock("reports")
+    await riegel.acquire()
+    try:
+        e = await s.purge("reports", bestaetigung="reports", erwartet=3)
+        assert e.error and "gesichtet" in e.error, (
+            f"das Leeren lief mitten in der Sichtung: {e}"
+        )
+        assert admin.aufrufe == [], "es wurde geloescht"
+    finally:
+        riegel.release()
+
+
+async def test_wiedereinreihen_waehrend_einer_sichtung_wird_abgewiesen() -> None:
+    """Zwei gleichzeitige Durchlaeufe zaehlen dieselben Nachrichten; die
+    Berichte "x von y" aus R29 stimmen dann fuer keinen von beiden."""
+    admin = FakeAdmin()
+    s = DlqService(admin)
+    riegel = s._lock("reports")
+    await riegel.acquire()
+    try:
+        for ergebnis in (await s.requeue("reports", "t-1"),
+                         await s.requeue_all("reports")):
+            assert ergebnis.error, f"lief mitten in der Sichtung: {ergebnis}"
+        assert admin.aufrufe == []
+    finally:
+        riegel.release()
+
+
+async def test_eine_andere_queue_bleibt_dabei_frei() -> None:
+    """Ein Riegel je Queue, nicht einer fuer alles -- auch fuer die
+    wirkenden Handlungen."""
+    admin = FakeAdmin(nachrichten=3)
+    s = DlqService(admin)
+    riegel = s._lock("reports")
+    await riegel.acquire()
+    try:
+        e = await s.purge("mails", bestaetigung="mails", erwartet=3)
+        assert e.error is None, e.error
+        assert admin.aufrufe == ["purge:mails"]
+    finally:
+        riegel.release()

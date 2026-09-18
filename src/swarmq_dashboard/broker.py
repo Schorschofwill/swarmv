@@ -27,6 +27,7 @@ Beide in die Tiefe gerechnet beantworteten die Frage "staut es sich?" falsch.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import re
 from dataclasses import dataclass, field
 
@@ -105,7 +106,33 @@ class BrokerObserver:
         self._connection: aio_pika.abc.AbstractRobustConnection | None = None
 
     async def connect(self) -> None:
-        """Verbindung aufbauen. Idempotent."""
+        """Verbindung aufbauen **und pruefen**. Idempotent.
+
+        ``is_closed`` allein genuegt nicht: ``RobustConnection`` heilt sich
+        selbst und meldet sich waehrend eines Wiederaufbaus nicht als
+        geschlossen. Genau diese Luege hat hier schon einmal ein Kanalleck
+        verursacht; hier verursachte sie eine gruene Kopfzeile ueber einem
+        Broker, der nicht mehr da war -- waehrend in derselben Antwort jede
+        Queue-Zeile einen Fehlgrund trug.
+
+        Geprueft wird mit einem Kanal, nicht mit einem Feld: das ist der
+        billigste Vorgang, der wirklich mit dem Broker spricht.
+        """
+        if self._connection is not None and not self._connection.is_closed:
+            try:
+                kanal = await asyncio.wait_for(self._connection.channel(),
+                                               timeout=CONNECT_TIMEOUT_S)
+            except Exception as exc:
+                # Schliessen, nicht bloss vergessen: eine fallengelassene
+                # Verbindung meldet sich beim Aufraeumen als "close was never
+                # awaited" und haelt bis dahin ihren Socket.
+                tot, self._connection = self._connection, None
+                with contextlib.suppress(Exception):
+                    await tot.close()
+                raise BrokerUnavailable(str(exc)) from exc
+            with contextlib.suppress(Exception):
+                await kanal.close()
+            return
         if self._connection is None or self._connection.is_closed:
             try:
                 self._connection = await asyncio.wait_for(

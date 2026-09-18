@@ -84,7 +84,17 @@ class MoveResult:
 
 
 class DlqService:
-    """Sichten, Wiedereinreihen und Leeren -- je Queue serialisiert."""
+    """Sichten, Wiedereinreihen und Leeren -- je Queue serialisiert.
+
+    "Serialisiert" gilt fuer **alle drei**. In einer ersten Fassung hielt nur
+    das Sichten den Riegel, und das war der gefaehrlichste Zuschnitt: die
+    Sichtung liest Nachrichten und reiht jede sofort neu ein, ein
+    gleichzeitiges Leeren loescht die Queue dazwischen. Das eine Teammitglied
+    sieht dann eine Liste mit Nachrichten, die es nicht mehr gibt, das andere
+    bekommt "N endgueltig entfernt" gemeldet, waehrend die Sichtung weitere
+    zurueckschreibt -- und wie viel wirklich vernichtet wurde, sagt danach
+    niemand mehr.
+    """
 
     def __init__(self, admin: DlqAdmin) -> None:
         self._admin = admin
@@ -124,6 +134,12 @@ class DlqService:
 
     async def requeue(self, queue: str, task_id: str) -> MoveResult:
         """Eine Nachricht zurueck in die Arbeits-Queue (R29)."""
+        if (belegt := self._belegt(queue)) is not None:
+            return belegt
+        async with self._lock(queue):
+            return await self._requeue(queue, task_id)
+
+    async def _requeue(self, queue: str, task_id: str) -> MoveResult:
         try:
             gefunden, gelesen = await self._admin.retry_dead_letter(queue, task_id)
         except Exception as exc:
@@ -132,6 +148,12 @@ class DlqService:
 
     async def requeue_all(self, queue: str) -> MoveResult:
         """Alles zurueck in die Arbeits-Queue (R29)."""
+        if (belegt := self._belegt(queue)) is not None:
+            return belegt
+        async with self._lock(queue):
+            return await self._requeue_all(queue)
+
+    async def _requeue_all(self, queue: str) -> MoveResult:
         try:
             bewegt, gelesen = await self._admin.retry_all_dead_letters(queue)
         except Exception as exc:
@@ -152,6 +174,12 @@ class DlqService:
                 queue=queue,
                 error=f"Zur Bestaetigung den Queue-Namen {queue!r} eingeben.",
             )
+        if (belegt := self._belegt(queue)) is not None:
+            return belegt
+        async with self._lock(queue):
+            return await self._purge(queue, erwartet=erwartet)
+
+    async def _purge(self, queue: str, *, erwartet: int) -> MoveResult:
         try:
             jetzt = await self._aktuelle_tiefe(queue)
         except Exception as exc:
@@ -167,6 +195,23 @@ class DlqService:
         except Exception as exc:
             return MoveResult(queue=queue, error=str(exc))
         return MoveResult(queue=queue, moved=entfernt, scanned=entfernt)
+
+    def _belegt(self, queue: str) -> MoveResult | None:
+        """Laeuft auf dieser Queue schon etwas? Dann als Auskunft abweisen.
+
+        Abweisen statt warten, aus demselben Grund wie beim Sichten: wer vor
+        einer haengenden Seite sitzt, loest irgendwann neu aus und hat dann
+        zwei Durchlaeufe. Und **nicht** werfen -- das Leeren ist kein Fehler,
+        es ist nur gerade nicht an der Reihe.
+        """
+        if not self._lock(queue).locked():
+            return None
+        return MoveResult(
+            queue=queue,
+            error=f"Die Queue {queue} wird gerade gesichtet oder bearbeitet. "
+            "Zwei Durchlaeufe gleichzeitig wuerden dieselben Nachrichten doppelt "
+            "anfassen -- bitte den laufenden abwarten.",
+        )
 
     async def _aktuelle_tiefe(self, queue: str) -> int:
         """Die Tiefe zum Zeitpunkt der Bestaetigung.

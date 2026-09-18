@@ -271,7 +271,27 @@ class DirectoryQueries:
         ).fetchall()
         return zeilen
 
-    def reach(self) -> float | None:
-        """Zeitpunkt des aeltesten Eintrags -- wie weit die Ansicht zurueckreicht (R8)."""
+    def reach(self, *, retention_start: float | None = None) -> float | None:
+        """Wie weit die Suche wirklich zurueckreicht (R8).
+
+        Nicht einfach der aelteste Eintrag. Geloescht wird nach
+        ``last_seen_at``, gemessen wurde bisher ``min(first_seen_at)`` -- eine
+        einzige langlebige Zeile (Dauerlaeufer, Workflow,
+        Wiederholungskette) zog die gemeldete Reichweite beliebig weit
+        zurueck, waehrend alles dazwischen laengst geraeumt war. Die Seite
+        sagte dann "die Suche reicht zurueck bis vor 30 Tagen" und antwortete
+        auf eine Suche in Tag 15 mit "keine Treffer". R8 nennt diesen Fehler
+        woertlich vorweg.
+
+        Mit ``retention_start`` wird an der Aufbewahrungsgrenze abgeschnitten.
+        Die Zahl kann dadurch **zu vorsichtig** sein -- eine noch lebende
+        Zeile von davor ist ja da --, und das ist die richtige Richtung: sie
+        verspricht nie mehr Abdeckung, als es gibt.
+        """
         wert = self._con.execute("select min(first_seen_at) from task").fetchone()[0]
-        return float(wert) if wert is not None else None
+        if wert is None:
+            return None
+        aeltester = float(wert)
+        if retention_start is None:
+            return aeltester
+        return max(aeltester, retention_start)

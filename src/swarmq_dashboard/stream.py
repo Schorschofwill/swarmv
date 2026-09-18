@@ -15,6 +15,7 @@ Anbindung ist ehrlicher als ein fremder Verbindungspool.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Awaitable, Callable
 from typing import Any, TypeVar
 
@@ -70,7 +71,23 @@ class ValkeyStreamClient:
         Strom sei erreichbar (R26, R33). Der Fehler erschien erst beim ersten
         echten Aufruf, an einer Stelle, an der ihn niemand mehr erwartete.
         """
+        # **Auch** wenn schon ein Klient steht. Frueher kehrte die Methode
+        # hier still zurueck: einmal erreichbar hiess fuer immer erreichbar.
+        # Der Dienst reicht seinen vorhandenen Klienten in jedem Takt hierher
+        # -- faellt Valkey danach weg, meldete ``/api/status`` weiter "ok",
+        # waehrend jeder Zugriff scheiterte. Das ist die Stelle, an der im
+        # Vorfall zuerst nachgesehen wird, und sie war die letzte, die es
+        # bemerkte.
         if self._client is not None:
+            try:
+                await asyncio.wait_for(self._client.ping(),
+                                       timeout=self._connect_timeout_s)
+            except Exception as exc:
+                alt = self._client
+                self._client = None
+                with contextlib.suppress(Exception):
+                    await alt.aclose()
+                raise StreamUnavailable(str(exc)) from exc
             return
         try:
             client = self._bauen()

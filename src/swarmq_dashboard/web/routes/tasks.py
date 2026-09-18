@@ -18,6 +18,7 @@ nicht ist:
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from litestar import Request, get, post
@@ -76,6 +77,12 @@ def _lesbar(ts: float | None) -> str:
     return zeitpunkt(ts)
 
 
+def _aufbewahrungsgrenze(request: Request[Any, Any, Any]) -> float:
+    """Der aelteste Zeitpunkt, fuer den die Aufbewahrung noch einsteht."""
+    config = request.app.state.services._config
+    return time.time() - float(config.retention_days) * 86400.0
+
+
 def _abfragen(request: Request[Any, Any, Any]) -> DirectoryQueries:
     services = request.app.state.services
     schreiber = services.services_directory_writer
@@ -118,7 +125,10 @@ async def liste(request: Request[Any, Any, Any]) -> Template:
     f = _filter_aus(request)
     seite = q.search(f, cursor=request.query_params.get("cursor"))
     status = request.app.state.services.status()
-    reichweite = q.reach()
+    # An der Aufbewahrungsgrenze abgeschnitten (R8). Ohne das zog eine
+    # einzige langlebige Zeile die gemeldete Reichweite beliebig weit
+    # zurueck, waehrend alles dazwischen laengst geraeumt war.
+    reichweite = q.reach(retention_start=_aufbewahrungsgrenze(request))
     leer = leerzustand(f, status, reichweite)
     return Template(
         "tasks/liste.html",

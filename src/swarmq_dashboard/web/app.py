@@ -651,7 +651,8 @@ class Services:
             # Absturz -- ausgerechnet in dem Fall, in dem ohnehin schon etwas
             # fehlt.
             return {"ok": False, "reason": self._gruende["directory"],
-                    "rebuilding": True, "behind": False, "gaps": 0}
+                    "rebuilding": True, "behind": False, "gaps": 0,
+                    "dropped": 0, "rejected": 0}
         bericht = self.reader.status()
         bericht["ok"] = True
         bericht["reason"] = None

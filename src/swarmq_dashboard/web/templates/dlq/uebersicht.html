@@ -45,18 +45,30 @@
             <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
             <button class="btn btn-sm">Alle wieder einreihen</button>
           </form>
-          {#- R30: der Knopf wiederholt Queue **und** Zahl. Beides steht auch
-              in den versteckten Feldern, damit der Dienst gegen genau das
-              pruefen kann, was hier zu lesen war. -#}
+          {#- R30, AE12: der Knopf wiederholt Queue **und** Zahl -- und
+              nennt die Queue, die wirklich geleert wird. "in reports" waere
+              falsch: geleert wird ``reports.XQ``, und wer den Satz liest,
+              muesste glauben, dass gleich wartende Nachrichten aus der
+              Arbeits-Queue verschwinden.
+
+              Ist die Tiefe unbekannt, steht dort **keine Null**: die Null
+              neben der Zerstoer-Handlung ist die beruhigendste
+              Falschaussage der Seite. Der Knopf ist dann gesperrt, weil
+              eine Bestaetigung ohne pruefbare Zahl ohnehin nicht traegt. -#}
           <form method="post" action="/dlq/{{ z.queue }}/purge">
             <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
             <input type="hidden" name="bestaetigung" value="{{ z.queue }}">
-            <input type="hidden" name="erwartet"
-                   value="{{ z.stats.dead_letter if z.stats and not z.stats.error else 0 }}">
+            {%- if z.stats and not z.stats.error %}
+            <input type="hidden" name="erwartet" value="{{ z.stats.dead_letter }}">
             <button class="btn btn-destructive">
-              {{ z.stats.dead_letter if z.stats and not z.stats.error else 0 }}
-              Nachrichten in {{ z.queue }} endgueltig loeschen
+              {{ z.stats.dead_letter }} Nachrichten in {{ z.queue }}.XQ endgueltig loeschen
             </button>
+            {%- else %}
+            <button class="btn btn-destructive" disabled
+                    title="Solange die Tiefe unbekannt ist, laesst sich nicht bestaetigen, wie viel vernichtet wuerde">
+              {{ z.queue }}.XQ leeren -- Zahl unbekannt
+            </button>
+            {%- endif %}
           </form>
         </td>
       </tr>
@@ -73,7 +85,7 @@
 
 {%- if gesichtet %}
 <section class="card">
-  <h2 class="card-section">Sichtung von {{ gesichtet.queue }}</h2>
+  <h2 class="card-section">Sichtung von {{ gesichtet.queue }}.XQ</h2>
   {%- if gesichtet.error %}
   <p class="tag is-fail"><span class="tag-dot"></span> {{ gesichtet.error }}</p>
   {%- else %}
