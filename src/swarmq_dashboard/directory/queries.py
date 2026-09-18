@@ -46,7 +46,7 @@ _STEUERZEICHEN = re.compile(r"[\x00-\x1f\x7f]")
 
 _TOO_SHORT = (
     f"Suchbegriffe brauchen mindestens {MIN_FRAGMENT} Zeichen -- "
-    "kuerzer kann der Trigramm-Index nichts finden."
+    "kürzer kann der Trigramm-Index nichts finden."
 )
 
 
@@ -68,8 +68,8 @@ def _luecken_hinweis(luecken: list[sqlite3.Row]) -> str:
     zahl = (f"In {len(luecken)} Zeitspannen zwischen" if len(luecken) > 1
             else "In der Zeitspanne von")
     return (f"{zahl} {_lesbar(von)} und {_lesbar(bis)} sind Ereignisse "
-            "verlorengegangen. Dort gelaufene Tasks koennen in dieser Liste "
-            "fehlen -- eine leere oder kurze Liste heisst fuer diesen Zeitraum "
+            "verlorengegangen. Dort gelaufene Tasks können in dieser Liste "
+            "fehlen -- eine leere oder kurze Liste heisst für diesen Zeitraum "
             "nicht, dass nichts passiert ist.")
 
 

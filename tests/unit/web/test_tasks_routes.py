@@ -244,7 +244,7 @@ async def test_herkunft_aufgreifen_ohne_geratenen_zeitpunkt(tmp_path: Path) -> N
         #    der Zeichenkette: sie steht auch im ``title`` der Zelle, und eine
         #    Zusicherung darauf hielt den Hinweis nicht.
         sichtbar = re.search(
-            r'<p class="notice">\s*Scheduler-Ausloesungen', antwort.text
+            r'<p class="notice">\s*Scheduler-Auslösungen', antwort.text
         )
         assert sichtbar, "der stehende Hinweis aus R31 steht nicht sichtbar auf der Seite"
     finally:
@@ -533,5 +533,70 @@ async def test_die_liste_benennt_eine_geschnittene_luecke(tmp_path: Path) -> Non
         assert "2023-11-14 22:16:40" in hinweis, (
             f"die Spanne wird nicht genannt: {hinweis!r}"
         )
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+# --- Zyklus 7: Der Zeitraumfilter und die Beschriftungen (R10, AE2) -----
+
+
+async def test_die_filterleiste_hat_einen_zeitraum(tmp_path: Path) -> None:
+    """Covers AE2. R10 verlangt den Zeitraum ausdruecklich.
+
+    Die Route las ``since``/``until`` schon aus der Adresszeile, und
+    ``Filter`` kennt sie -- aber die Leiste bot kein Feld dafuer. Damit war
+    "ein Teammitglied filtert auf die letzten zehn Tage" ueber die
+    Oberflaeche schlicht nicht ausfuehrbar.
+    """
+    config = _config(tmp_path)
+    _verzeichnis_fuellen(config)
+    c = await _angemeldet(config)
+    try:
+        leiste = (await c.get("/tasks")).text
+        leiste = leiste[leiste.find('<form class="filters"'):]
+        leiste = leiste[:leiste.find("</form>")]
+        assert 'name="seit"' in leiste, f"kein Zeitraumfeld: {leiste}"
+        assert "10" in leiste, "die zehn Tage aus AE2 sind nicht waehlbar"
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+async def test_der_zeitraum_wirkt(tmp_path: Path) -> None:
+    """Ein Feld, das nichts einschraenkt, waere schlimmer als keins."""
+    config = _config(tmp_path)
+    _verzeichnis_fuellen(config)
+    c = await _angemeldet(config)
+    try:
+        # Alles im Verzeichnis liegt 2023 -- "letzte 10 Tage" trifft nichts.
+        eng = await c.get("/tasks?seit=10")
+        assert "a41f" not in eng.text, "der Zeitraum schraenkt nicht ein"
+        weit = await c.get("/tasks")
+        assert "a41f" in weit.text
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+async def test_jedes_filterfeld_traegt_eine_beschriftung(tmp_path: Path) -> None:
+    """Ein Platzhalter ist kein Name: er verschwindet beim Tippen, und ein
+    Vorleseprogramm nennt ihn nicht. Vorher hatte die Seite fuenf Eingaben
+    und **null** ``<label>``."""
+    config = _config(tmp_path)
+    _verzeichnis_fuellen(config)
+    c = await _angemeldet(config)
+    try:
+        text = (await c.get("/tasks")).text
+        leiste = text[text.find('<form class="filters"'):]
+        leiste = leiste[:leiste.find("</form>")]
+        # ``for`` verweist auf die **id**, nicht auf den Namen -- genau das
+        # ist die Verbindung, die ein Vorleseprogramm herstellt.
+        eingaben = re.findall(r'<(?:input|select)[^>]*\sid="([^"]+)"', leiste)
+        ohne_id = re.findall(r'<(?:input|select)(?![^>]*\sid=)[^>]*name="([^"]+)"', leiste)
+        beschriftet = re.findall(r'<label[^>]*for="([^"]+)"', leiste)
+        assert eingaben, "die Leiste hat keine Felder"
+        assert not ohne_id, f"Felder ohne id koennen keine Beschriftung haben: {ohne_id}"
+        for kennung in eingaben:
+            assert kennung in beschriftet, (
+                f"das Feld {kennung!r} hat keine Beschriftung: {beschriftet}"
+            )
     finally:
         await c.__aexit__(None, None, None)

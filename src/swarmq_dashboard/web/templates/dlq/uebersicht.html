@@ -61,7 +61,7 @@
             {%- if z.stats and not z.stats.error %}
             <input type="hidden" name="erwartet" value="{{ z.stats.dead_letter }}">
             <button class="btn btn-destructive">
-              {{ z.stats.dead_letter }} Nachrichten in {{ z.queue }}.XQ endgueltig loeschen
+              {{ z.stats.dead_letter }} Nachrichten in {{ z.queue }}.XQ endgültig löschen
             </button>
             {%- else %}
             <button class="btn btn-destructive" disabled
@@ -91,7 +91,7 @@
   {%- else %}
   <p class="muted">{{ gesichtet.gelesen }} Nachrichten gelesen und wieder eingereiht.</p>
   <table>
-    <thead><tr><th>Kennung</th><th>Name</th><th>Queue</th><th>Groesse</th><th></th></tr></thead>
+    <thead><tr><th>Kennung</th><th>Name</th><th>Queue</th><th>Größe</th><th></th></tr></thead>
     <tbody>
       {%- for e in gesichtet.entries %}
       <tr>

@@ -269,7 +269,7 @@ def test_die_kopfzeile_nennt_die_zahl_der_luecken() -> None:
     # Die Marke selbst, nicht die Seite: "2" steht sonst schon im Datum
     # 2023-11-14, und die Zahl durfte aus der Marke verschwinden, ohne dass
     # etwas kippte.
-    marke = re.search(r'<span class="tag is-wait"><span class="tag-dot"></span>\s*([^<]*Luecke[^<]*)', html)
+    marke = re.search(r'<span class="tag is-wait"><span class="tag-dot"></span>\s*([^<]*Lücke[^<]*)', html)
     assert marke, "die Kopfzeile schweigt ueber die Luecken"
     assert marke.group(1).strip().startswith("2 "), (
         f"die Zahl der Luecken fehlt in der Marke: {marke.group(1)!r}"
@@ -279,5 +279,70 @@ def test_die_kopfzeile_nennt_die_zahl_der_luecken() -> None:
     verzeichnis3 = {**verzeichnis, "gaps": 3}
     html3 = render("base.html", status=_zustand(directory=verzeichnis3),
                    account="ops", aktiv="tasks")
-    marke3 = re.search(r'<span class="tag is-wait"><span class="tag-dot"></span>\s*([^<]*Luecke[^<]*)', html3)
+    marke3 = re.search(r'<span class="tag is-wait"><span class="tag-dot"></span>\s*([^<]*Lücke[^<]*)', html3)
     assert marke3 and marke3.group(1).strip().startswith("3 ")
+
+
+def test_jede_seite_hat_genau_eine_h1() -> None:
+    """Bedienbarkeit mit Vorleseprogramm.
+
+    Gezaehlt im gerenderten HTML hatte keine Seite eine ``h1``; die
+    Ueberschriftenfolge begann bei ``h2``, und die Tasks-Liste -- die
+    meistgenutzte Seite -- hatte gar keine Ueberschrift. Wer per
+    Ueberschriftenliste navigiert, findet so nicht, wo er ist.
+    """
+    html = render("base.html", status=_zustand(), account="ops", aktiv="worker")
+    assert html.count("<h1") == 1, f"{html.count('<h1')} h1-Elemente statt einer"
+    titel = re.search(r"<h1[^>]*>([^<]*)", html)
+    assert titel and titel.group(1).strip() == "Worker", (
+        f"die h1 nennt nicht den Bereich: {titel.group(1) if titel else None!r}"
+    )
+
+
+def test_der_sichtbare_text_schreibt_umlaute() -> None:
+    """Die freigegebene Gestaltung schreibt durchgehend Umlaute.
+
+    Die Vorlagen schrieben "Luecke", "verzoegert", "endgueltig",
+    "unvollstaendig" -- die Oberflaeche las sich wie ein Rohentwurf, und ein
+    Vorleseprogramm spricht "loeschen" falsch aus. Bezeichner bleiben
+    englisch und ASCII; das hier betrifft nur, was ein Mensch liest.
+    """
+    verzeichnis = {"ok": True, "reason": None, "rebuilding": True, "behind": True,
+                   "gaps": 2, "rejected": 1, "dropped": 1, "erasure_pending": True,
+                   "oldest_entry": 1_700_000_000.0}
+    html = render("base.html",
+                  status=_zustand(directory=verzeichnis,
+                                  stream={"ok": True, "reason": None, "stale": True,
+                                          "last_event_at": None, "retention_days": 7}),
+                  account="ops", aktiv="tasks")
+    # Nur der sichtbare Text, ohne Auszeichnung und ohne Attribute.
+    sichtbar = re.sub(r"<[^>]*>", " ", html)
+    for falsch in ("Luecke", "verzoegert", "unvollstaendig", "laeuft", "Loeschung"):
+        assert falsch not in sichtbar, (
+            f"{falsch!r} steht im sichtbaren Text -- die Gestaltung schreibt Umlaute"
+        )
+
+
+def test_eine_unbekannte_variable_wirft_statt_zu_schweigen() -> None:
+    """Sonst rendert eine Vorlage still Leerraum, wo eine Aussage stehen soll.
+
+    Genau das ist passiert: ein Umbau verschob einen Variablennamen, und der
+    stehende Unvollstaendigkeits-Hinweis der Dead-Letter-Seite verschwand --
+    ohne Fehler, ohne roten Test. Die Seite behauptete damit
+    Vollstaendigkeit, weil eine Vorlage schwieg.
+
+    Geprueft wird die Umgebung, die die **Anwendung** benutzt, nicht die der
+    Hilfsfunktion ``render``: nur in der ersten ist der Fehler aufgetreten.
+    """
+    from litestar.plugins.jinja import JinjaTemplateEngine
+
+    from swarmq_dashboard.web.templates import TEMPLATE_DIR, template_config
+
+    config = template_config()
+    engine = JinjaTemplateEngine(directory=TEMPLATE_DIR)
+    assert config.engine_callback is not None
+    config.engine_callback(engine)
+
+    vorlage = engine.engine.from_string("[{{ gibtesnicht }}]")
+    with pytest.raises(Exception, match="(?i)undefined"):
+        vorlage.render()

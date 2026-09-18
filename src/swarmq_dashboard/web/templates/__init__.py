@@ -17,7 +17,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from jinja2 import Environment, FileSystemLoader, select_autoescape
+from jinja2 import (
+    Environment,
+    FileSystemLoader,
+    StrictUndefined,
+    select_autoescape,
+)
 from litestar.plugins.jinja import JinjaTemplateEngine
 from litestar.router import Router
 from litestar.static_files import create_static_files_router
@@ -51,7 +56,7 @@ BEREICHE = (
 _ERREICHBAR = "erreichbar"
 _NICHT_ERREICHBAR = "nicht erreichbar"
 _AKTUELL = "aktuell"
-_VERZOEGERT = "verzoegert"
+_VERZOEGERT = "verzögert"
 
 
 def zeitpunkt(ts: float | None) -> str:
@@ -132,7 +137,7 @@ def _environment() -> Environment:
     env = Environment(
         loader=FileSystemLoader(TEMPLATE_DIR),
         autoescape=select_autoescape(["html"]),
-        undefined=__import__("jinja2").StrictUndefined,
+        undefined=StrictUndefined,
     )
     env.globals["marke"] = marke
     env.globals["zeitpunkt"] = zeitpunkt
@@ -163,6 +168,14 @@ def template_config() -> TemplateConfig[JinjaTemplateEngine]:
 
 
 def _engine_callback(engine: JinjaTemplateEngine) -> None:
+    # **StrictUndefined**, wie in der eigenen Umgebung oben. Ohne das rendert
+    # Litestars Jinja eine unbekannte Variable still zu Leerraum -- gemessen
+    # verschwand so ein ganzer stehender Hinweis von der Dead-Letter-Seite,
+    # nachdem ein Umbau den Variablennamen verschoben hatte, und kein Test
+    # und kein Fehler wies darauf hin. Eine Vorlage, die schweigt, wo sie
+    # etwas sagen sollte, ist genau die Fehlerklasse, gegen die dieses
+    # Dashboard gebaut ist.
+    engine.engine.undefined = StrictUndefined
     engine.engine.globals["marke"] = marke
     engine.engine.globals["zeitpunkt"] = zeitpunkt
     engine.engine.globals["weiterlink"] = weiterlink

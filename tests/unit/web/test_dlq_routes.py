@@ -249,7 +249,7 @@ async def test_die_verzeichnisliste_sagt_dass_sie_unvollstaendig_sein_kann(tmp_p
     c = await _angemeldet(config, broker=broker, admin=FakeAdmin())
     try:
         text = (await c.get("/dlq")).text
-        assert "unvollst" in text.lower(), "die Liste behauptet Vollstaendigkeit"
+        assert "unvollst" in text.lower(), "die Liste behauptet Vollständigkeit"
         assert "Verzeichnis" in text, "die Herkunft der Liste ist nicht benannt"
     finally:
         await c.__aexit__(None, None, None)
@@ -298,7 +298,7 @@ async def test_sichten_ohne_bestaetigung_ruehrt_nichts_an(tmp_path: Path) -> Non
         antwort = await c.post("/dlq/reports/peek", headers={"x-csrftoken": _merkmal(c)},
                                follow_redirects=False)
         assert antwort.status_code == 200
-        assert "Bestaetigung" in antwort.text, "die Abweisung wird nicht benannt"
+        assert "Bestätigung" in antwort.text, "die Abweisung wird nicht benannt"
         assert admin.aufrufe == [], "ohne Bestaetigung wurde gesichtet"
     finally:
         await c.__aexit__(None, None, None)

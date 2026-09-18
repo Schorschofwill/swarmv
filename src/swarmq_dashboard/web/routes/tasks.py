@@ -33,8 +33,8 @@ from swarmq_dashboard.web.auth import SESSION_ACCOUNT_KEY
 #: wenn gerade eine betroffene Zeile sichtbar ist: die Abwesenheit einer
 #: solchen Zeile ist selbst keine Aussage.
 HERKUNFT_HINWEIS = (
-    "Scheduler-Ausloesungen und verzoegerte Einreihungen kennt das Verzeichnis "
-    "erst beim Aufgreifen -- fuer sie steht kein Einreihungszeitpunkt da."
+    "Scheduler-Auslösungen und verzögerte Einreihungen kennt das Verzeichnis "
+    "erst beim Aufgreifen -- für sie steht kein Einreihungszeitpunkt da."
 )
 
 
@@ -49,7 +49,7 @@ def leerzustand(f: Filter, status: dict[str, Any], reichweite: float | None) -> 
     """
     if status["directory"].get("rebuilding"):
         return ("Das Verzeichnis wird gerade neu aufgebaut",
-                "Die Liste ist noch unvollstaendig. Sobald der Strom eingeholt ist, "
+                "Die Liste ist noch unvollständig. Sobald der Strom eingeholt ist, "
                 "steht hier mehr.")
     if reichweite is None:
         # Gar kein Eintrag. Hier ist der fehlende Strom die wahrscheinliche
@@ -58,7 +58,7 @@ def leerzustand(f: Filter, status: dict[str, Any], reichweite: float | None) -> 
             return ("Keine Ereignisse erreichbar",
                     f"Der Ereignisstrom ist nicht erreichbar: {status['stream']['reason']}")
         return ("Noch kein Task im Verzeichnis",
-                "Es sind bisher keine Ereignisse eingetroffen. Laeuft in den "
+                "Es sind bisher keine Ereignisse eingetroffen. Läuft in den "
                 "Anwendungen und Workern der Hook des Dashboards?")
     if any((f.text, f.status, f.task_name, f.worker_id)):
         # Das Verzeichnis hat Eintraege, nur keinen passenden. Dass der Strom
@@ -66,8 +66,8 @@ def leerzustand(f: Filter, status: dict[str, Any], reichweite: float | None) -> 
         # unwahrscheinlichere Erklaerung und lenkte von der Suche ab.
         return ("Kein Task passt zu dieser Suche",
                 f"Das Verzeichnis reicht bis {_lesbar(reichweite)} zurueck -- "
-                "aelteres steht nicht mehr darin.")
-    return ("Kein Task im gewaehlten Zeitraum",
+                "älteres steht nicht mehr darin.")
+    return ("Kein Task im gewählten Zeitraum",
             f"Das Verzeichnis reicht bis {_lesbar(reichweite)} zurueck.")
 
 
@@ -87,18 +87,32 @@ def _abfragen(request: Request[Any, Any, Any]) -> DirectoryQueries:
     services = request.app.state.services
     schreiber = services.services_directory_writer
     if schreiber is None:
-        raise NotFoundException(detail="das Verzeichnis ist nicht geoeffnet")
+        raise NotFoundException(detail="das Verzeichnis ist nicht geöffnet")
     return DirectoryQueries(schreiber._con)
+
+
+#: Waehlbare Zeitraeume der Leiste, in Tagen. ``0`` heisst "alles, was das
+#: Verzeichnis hat" -- und steht bewusst zuerst: wer nichts waehlt, soll
+#: nicht heimlich eingeschraenkt werden.
+ZEITRAEUME = ((0, "beliebig"), (1, "letzter Tag"), (7, "letzte 7 Tage"),
+              (10, "letzte 10 Tage"), (30, "letzte 30 Tage"))
 
 
 def _filter_aus(request: Request[Any, Any, Any]) -> Filter:
     p = request.query_params
+    # ``seit`` ist die Fassung fuer die Leiste: eine Zahl Tage. ``since`` und
+    # ``until`` bleiben als Zeitstempel erhalten -- sie sind praeziser, und
+    # ein Verweis aus einem Ticket soll weiter gelten.
+    seit = _zahl(p.get("seit"))
+    since = _zahl(p.get("since"))
+    if since is None and seit:
+        since = time.time() - seit * 86400.0
     return Filter(
         text=p.get("q", ""),
         status=p.get("status", ""),
         task_name=p.get("task_name", ""),
         worker_id=p.get("worker_id", ""),
-        since=_zahl(p.get("since")),
+        since=since,
         until=_zahl(p.get("until")),
     )
 
@@ -137,6 +151,8 @@ async def liste(request: Request[Any, Any, Any]) -> Template:
             "hinweis": seite.note,
             "weiter": seite.next_cursor,
             "filter": f,
+            "zeitraeume": ZEITRAEUME,
+            "seit": request.query_params.get("seit", ""),
             "reichweite": reichweite,
             "leer_titel": leer[0],
             "leer_ursache": leer[1],
@@ -160,7 +176,7 @@ async def detail(request: Request[Any, Any, Any], task_id: FromPath[str]) -> Tem
         # Task nie gegeben: er kann schlicht aelter sein als die Aufbewahrung.
         raise NotFoundException(
             detail=f"Kein Task mit der Kennung {task_id!r} im Verzeichnis. "
-            "Er kann aelter sein als die Aufbewahrung."
+            "Er kann älter sein als die Aufbewahrung."
         )
     return Template(
         "tasks/detail.html",
@@ -196,7 +212,7 @@ async def cancel(request: Request[Any, Any, Any], task_id: FromPath[str]) -> Red
     services = request.app.state.services
     schreiber = services.services_directory_writer
     if schreiber is None:
-        raise NotFoundException(detail="das Verzeichnis ist nicht geoeffnet")
+        raise NotFoundException(detail="das Verzeichnis ist nicht geöffnet")
     zeile = schreiber.row(task_id)
     if zeile is None:
         raise NotFoundException(detail=f"Kein Task mit der Kennung {task_id!r}.")

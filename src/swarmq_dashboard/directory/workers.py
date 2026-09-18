@@ -121,6 +121,31 @@ class WorkerRegistry:
             gruppen.setdefault(w.group or KEINE_GRUPPE, []).append(w)
         return gruppen
 
+    def load(self) -> dict[str, tuple[int, int]]:
+        """Je Worker: laufende und erledigte Tasks (R14).
+
+        Beides steht schon im Verzeichnis -- der Kontrollkanal wird dafuer
+        nicht gebraucht. "Belegt" ist die Zahl der laufenden Tasks dieses
+        Workers; die Kapazitaet daneben kommt aus den Stammdaten.
+
+        **Erledigt ist keine Lebenszeit-Zahl.** Sie reicht genau so weit wie
+        das Verzeichnis, und nach einem Ablauf faellt sie. Die Ansicht muss
+        das dazusagen, sonst liest sich "12" als "dieser Worker hat zwoelf
+        Tasks gemacht" -- und der Fall nach dem Ablauf als Ausfall.
+        """
+        zahlen: dict[str, tuple[int, int]] = {}
+        for zeile in self._con.execute(
+            "select worker_id, "
+            "sum(case when status = 'laufend' then 1 else 0 end) as laufend, "
+            "sum(case when status in "
+            "  ('fertig','gescheitert','storniert','dead_letter','abgelaufen','abgewiesen') "
+            "  then 1 else 0 end) as erledigt "
+            "from task where worker_id is not null group by worker_id"
+        ):
+            zahlen[str(zeile["worker_id"])] = (int(zeile["laufend"]),
+                                               int(zeile["erledigt"]))
+        return zahlen
+
     def known_queues(self) -> list[str]:
         """Alle Queues, von denen das Verzeichnis weiss.
 

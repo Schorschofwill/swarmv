@@ -40,9 +40,12 @@
       {#- Links der Bereich, rechts die Zustaende. ``.head-state`` traegt das
           ``margin-left: auto`` -- ohne den Behaelter kleben die Marken links
           und die Kopfzeile verliert ihre Ordnung. -#}
-      <span class="head-title">
+      {#- Eine ``h1`` je Seite, und sie nennt den Bereich. Ohne sie beginnt
+          die Ueberschriftenfolge bei ``h2``, und wer per Ueberschriftenliste
+          navigiert, findet nicht, wo er ist. -#}
+      <h1 class="head-title">
         {%- for b in bereiche %}{% if b.slug == aktiv %}{{ b.titel }}{% endif %}{% endfor -%}
-      </span>
+      </h1>
       <span class="head-state">
       {#- Jede Marke ist Punkt UND Wort: Farbe allein traegt nie die Aussage.
           Ein Bildschirmfoto im Ticket verliert seine Farben, und rund jeder
@@ -51,19 +54,19 @@
       {{ marke("Backend", status.backend) }}
       {{ marke("Strom", status.stream, strom=True) }}
       {%- if status.directory.rebuilding %}
-      <span class="tag is-wait"><span class="tag-dot"></span> Neuaufbau laeuft</span>
+      <span class="tag is-wait"><span class="tag-dot"></span> Neuaufbau läuft</span>
       {%- endif %}
       {#- Die festgehaltene Zahl, nicht der laufende Rueckstand: ``behind``
           ist nach einem Neustart mit eingeholtem Strom wieder falsch, und die
           Luecke von gestern bleibt trotzdem eine (R4a). -#}
       {%- if status.directory.gaps %}
       <span class="tag is-wait"><span class="tag-dot"></span>
-        {{ status.directory.gaps }} Luecke(n) im Strom</span>
+        {{ status.directory.gaps }} Lücke(n) im Strom</span>
       {%- elif status.directory.behind %}
-      <span class="tag is-wait"><span class="tag-dot"></span> Rueckstand im Strom</span>
+      <span class="tag is-wait"><span class="tag-dot"></span> Rückstand im Strom</span>
       {%- endif %}
       {%- if status.directory.erasure_pending %}
-      <span class="tag is-wait"><span class="tag-dot"></span> Loeschung offen</span>
+      <span class="tag is-wait"><span class="tag-dot"></span> Löschung offen</span>
       {%- endif %}
       {#- Verlorene Eintraege. Der Leser zaehlt beides seit je; gerendert
           wurde keins von beiden, und damit war der Verlust erkannt, gezaehlt
@@ -72,7 +75,7 @@
       {%- if status.directory.dropped %}
       <span class="tag is-wait" title="Eintraege aus dem Strom, die diese Fassung nicht lesen konnte">
         <span class="tag-dot"></span>
-        {{ status.directory.dropped }} Eintraege nicht lesbar</span>
+        {{ status.directory.dropped }} Einträge nicht lesbar</span>
       {%- endif %}
       {%- if status.directory.rejected %}
       <span class="tag is-wait" title="Ereignisse, die das Verzeichnis nicht annahm">
@@ -81,7 +84,7 @@
       {%- endif %}
       {%- if status.audit.lost %}
       <span class="tag is-wait"><span class="tag-dot"></span>
-        {{ status.audit.lost }} Audit-Eintraege verloren</span>
+        {{ status.audit.lost }} Audit-Einträge verloren</span>
       {%- endif %}
       </span>
     </header>

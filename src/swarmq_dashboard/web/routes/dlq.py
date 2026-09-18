@@ -45,18 +45,18 @@ DLQ_STATUS = "dead_letter"
 #: im Wortsinn zulaesst und die trotzdem niemand erwartet.
 SICHT_WARNUNG = (
     "Sichten liest die Nachrichten, und jede gelesene wird sofort neu "
-    "eingereiht. Dabei aendert sich ihre Reihenfolge, ihr Zustellzaehler "
+    "eingereiht. Dabei ändert sich ihre Reihenfolge, ihr Zustellzähler "
     "beginnt von vorn, "
-    "und stuerzt das Dashboard mitten im Vorgang ab, sind die schon gelesenen "
+    "und stürzt das Dashboard mitten im Vorgang ab, sind die schon gelesenen "
     "Nachrichten verloren. Die Tiefe oben und die Liste aus dem Verzeichnis "
     "kosten nichts davon -- sichten Sie nur, was dort fehlt."
 )
 
 #: Warum die Verzeichnis-Liste kuerzer sein kann als die Tiefe (R6, R4a).
 UNVOLLSTAENDIG_HINWEIS = (
-    "Diese Liste stammt aus dem Verzeichnis und ist moeglicherweise "
-    "unvollstaendig: Nachrichten von Workern ohne Hook und solche aus einer "
-    "Luecke im Strom fehlen. Massgeblich ist die Tiefe aus der "
+    "Diese Liste stammt aus dem Verzeichnis und ist möglicherweise "
+    "unvollständig: Nachrichten von Workern ohne Hook und solche aus einer "
+    "Lücke im Strom fehlen. Massgeblich ist die Tiefe aus der "
     "Broker-Beobachtung."
 )
 
@@ -64,14 +64,14 @@ UNVOLLSTAENDIG_HINWEIS = (
 def _abfragen(request: Request[Any, Any, Any]) -> DirectoryQueries:
     schreiber = request.app.state.services.services_directory_writer
     if schreiber is None:
-        raise NotFoundException(detail="das Verzeichnis ist nicht geoeffnet")
+        raise NotFoundException(detail="das Verzeichnis ist nicht geöffnet")
     return DirectoryQueries(schreiber._con)
 
 
 def _queues(request: Request[Any, Any, Any]) -> list[str]:
     schreiber = request.app.state.services.services_directory_writer
     if schreiber is None:
-        raise NotFoundException(detail="das Verzeichnis ist nicht geoeffnet")
+        raise NotFoundException(detail="das Verzeichnis ist nicht geöffnet")
     return WorkerRegistry(schreiber._con).known_queues()
 
 
@@ -135,7 +135,7 @@ def _leergrund(status: dict[str, Any]) -> str:
     """
     if status["directory"].get("rebuilding"):
         return ("Das Verzeichnis wird gerade neu aufgebaut -- die Liste ist noch "
-                "unvollstaendig.")
+                "unvollständig.")
     if not status["stream"]["ok"]:
         return f"Der Ereignisstrom ist nicht erreichbar: {status['stream']['reason']}"
     if not status["broker"]["ok"]:
@@ -216,7 +216,7 @@ async def sichten(
     if str(data.get("bestaetigt", "")) != "sichten":
         return await _seite(
             request,
-            meldung="Nicht gesichtet: die Bestaetigung fehlte. " + SICHT_WARNUNG,
+            meldung="Nicht gesichtet: die Bestätigung fehlte. " + SICHT_WARNUNG,
         )
     try:
         ergebnis = await request.app.state.services.dlq.peek(queue)

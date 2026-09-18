@@ -3,11 +3,35 @@
 {% block inhalt %}
 
 <section class="card">
+  {#- Jedes Feld mit Beschriftung, nicht nur mit Platzhalter: der Platzhalter
+      verschwindet beim Tippen, und ein Vorleseprogramm nennt ihn gar nicht. -#}
   <form class="filters" method="get" action="/tasks">
-    <input class="mono" name="q" value="{{ filter.text }}" placeholder="Suche in Name und Argumenten">
-    <input class="mono" name="status" value="{{ filter.status }}" placeholder="Status">
-    <input class="mono" name="task_name" value="{{ filter.task_name }}" placeholder="Task-Name">
-    <input class="mono" name="worker_id" value="{{ filter.worker_id }}" placeholder="Worker">
+    <span class="field">
+      <label class="field-label" for="f-q">Suche</label>
+      <input class="mono search" id="f-q" name="q" value="{{ filter.text }}"
+             placeholder="Name oder Argumente">
+    </span>
+    <span class="field">
+      <label class="field-label" for="f-status">Status</label>
+      <input class="mono" id="f-status" name="status" value="{{ filter.status }}">
+    </span>
+    <span class="field">
+      <label class="field-label" for="f-name">Task-Name</label>
+      <input class="mono" id="f-name" name="task_name" value="{{ filter.task_name }}">
+    </span>
+    <span class="field">
+      <label class="field-label" for="f-worker">Worker</label>
+      <input class="mono" id="f-worker" name="worker_id" value="{{ filter.worker_id }}">
+    </span>
+    <span class="field">
+      <label class="field-label" for="f-seit">Zeitraum</label>
+      <select id="f-seit" name="seit">
+        {%- for tage, wort in zeitraeume %}
+        <option value="{{ tage or '' }}"{% if seit == (tage|string) %} selected{% endif %}>
+          {{ wort }}</option>
+        {%- endfor %}
+      </select>
+    </span>
     <button class="btn">Suchen</button>
   </form>
 </section>
@@ -45,7 +69,7 @@
           {%- if z['incomplete'] %}
           {#- R4a: die Luecke muss sichtbar sein, sonst ist sie keine Meldung. -#}
           <span class="tag is-wait" title="In dieser Zeitspanne fehlen moeglicherweise Ereignisse">
-            <span class="tag-dot"></span> unvollstaendig</span>
+            <span class="tag-dot"></span> unvollständig</span>
           {%- endif %}
         </td>
         <td class="mono">

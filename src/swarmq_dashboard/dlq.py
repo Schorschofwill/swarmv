@@ -120,7 +120,7 @@ class DlqService:
         if riegel.locked():
             raise DlqBusy(
                 f"Die Queue {queue} wird gerade gesichtet. Jede Sichtung reiht die "
-                "Nachrichten neu ein -- zwei gleichzeitig wuerden sie doppelt umreihen."
+                "Nachrichten neu ein -- zwei gleichzeitig würden sie doppelt umreihen."
             )
         async with riegel:
             try:
@@ -188,7 +188,7 @@ class DlqService:
             return MoveResult(
                 queue=queue,
                 error=f"Die Queue enthaelt jetzt {jetzt} Nachrichten, nicht {erwartet} -- "
-                "bitte noch einmal ansehen und neu bestaetigen.",
+                "bitte noch einmal ansehen und neu bestätigen.",
             )
         try:
             entfernt = await self._admin.purge_dead_letters(queue)
@@ -209,7 +209,7 @@ class DlqService:
         return MoveResult(
             queue=queue,
             error=f"Die Queue {queue} wird gerade gesichtet oder bearbeitet. "
-            "Zwei Durchlaeufe gleichzeitig wuerden dieselben Nachrichten doppelt "
+            "Zwei Durchläufe gleichzeitig würden dieselben Nachrichten doppelt "
             "anfassen -- bitte den laufenden abwarten.",
         )
 
@@ -224,7 +224,7 @@ class DlqService:
         tiefe = getattr(self._admin, "dead_letter_depth", None)
         if tiefe is None:
             raise RuntimeError(
-                "Die Zahl der Nachrichten laesst sich nicht pruefen -- es wird nichts geloescht."
+                "Die Zahl der Nachrichten lässt sich nicht prüfen -- es wird nichts gelöscht."
             )
         return int(await tiefe(queue))
 

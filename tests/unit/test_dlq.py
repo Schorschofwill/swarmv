@@ -209,7 +209,7 @@ async def test_ohne_pruefbare_zahl_wird_nicht_geloescht() -> None:
 
     admin = OhneTiefe(nachrichten=7)
     e = await DlqService(admin).purge("reports", bestaetigung="reports", erwartet=7)
-    assert e.error and "nicht pruefen" in e.error
+    assert e.error and "nicht prüfen" in e.error
     assert admin.aufrufe == [], "es wurde geloescht"
 
 

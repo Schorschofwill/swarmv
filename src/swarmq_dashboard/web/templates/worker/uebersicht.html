@@ -9,24 +9,36 @@
 
 {%- if gruppen %}
 {%- for g in gruppen %}
-<section class="card">
+<section class="card" id="gruppe-{{ g.name }}">
   <h2>{{ g.name }}</h2>
   <p class="muted">
     {{ g.verbunden|length }} von {{ g.worker|length }} verbunden
+    {#- Der Rueckstau gehoert an die Gruppe, nicht in eine Tabelle am
+        Seitenende: ohne Kontrollkanal ist er die einzige Antwort auf
+        "staut es sich?" (R14 Satz 2), und die Frage entsteht hier. -#}
+    · {{ g.wartend }} wartende Nachrichten
+    {%- if g.rueckstau_unvollstaendig %} ·
+    <span class="tag is-wait"><span class="tag-dot"></span>
+      unvollständig: {{ g.rueckstau_unvollstaendig|join(', ') }} nicht abgefragt</span>
+    {%- endif %}
     {%- if g.eingeschraenkt %} ·
     <span class="tag is-wait"><span class="tag-dot"></span>
-      eingeschraenkt: fuer mindestens einen Worker gibt es nur das letzte Signal</span>
+      eingeschränkt: fuer mindestens einen Worker gibt es nur das letzte Signal</span>
     {%- endif %}
   </p>
 
   <table>
     <thead><tr>
       <th>Worker</th><th>Slot</th><th>Zustand</th><th>Quelle</th>
-      <th>Zuletzt gesehen</th><th>Nebenlaeufig</th><th></th>
+      <th>Zuletzt gesehen</th><th>Belegt</th>
+      {#- Die Zahl reicht nur so weit wie das Verzeichnis. Ohne diesen Zusatz
+          liest sie sich als Lebenszeit-Zahl, und ihr Fall nach einem Ablauf
+          als Ausfall. -#}
+      <th>Tasks (im Verzeichnis)</th><th>Laufzeit</th><th>Aktion</th>
     </tr></thead>
     <tbody>
       {%- for w in g.worker %}
-      <tr id="worker-{{ w.worker_id }}">
+      <tr id="worker-{{ w.worker_id }}"{% if not w.connected(now=jetzt) %} class="is-gone"{% endif %}>
         <td class="mono">{{ w.worker_id }}</td>
         <td class="mono num">{{ w.slot if w.slot is not none else '--' }}</td>
         <td>
@@ -42,7 +54,9 @@
         <td class="muted">nach {{ quellenname[w.source] }}
           <span class="mono">({{ '%.0f'|format(w.stale_after_s) }} s Frist)</span></td>
         <td class="mono">{{ zeitpunkt(w.last_seen_at) }}</td>
-        <td class="mono num">{{ w.concurrency if w.concurrency is not none else '--' }}</td>
+        <td class="mono num">{{ g.belegt(w) }}</td>
+        <td class="mono num">{{ g.erledigt(w) }}</td>
+        <td class="mono">{{ laufzeit(w.started_at, now=jetzt) }}</td>
         <td>
           {%- if not w.connected(now=jetzt) %}
           <form method="post" action="/worker/{{ w.worker_id }}/remove">

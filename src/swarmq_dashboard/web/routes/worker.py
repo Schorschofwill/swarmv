@@ -21,7 +21,7 @@ ist ausdruecklich eingeschlossen; dann sind **alle** Konsumenten ohne Hook.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from litestar import Request, get, post
@@ -37,13 +37,13 @@ from swarmq_dashboard.web.auth import SESSION_ACCOUNT_KEY
 #: genau einmal auf der Seite -- an jeder Zelle wiederholt waere er Laerm und
 #: verdeckte, was **da** ist.
 OHNE_KONTROLLKANAL = (
-    "Steuerung nicht verfuegbar: die installierte swarmq-Fassung bringt den "
-    "Kontrollkanal noch nicht mit. Spielraum, gemeldete Slot-Kapazitaet und "
+    "Steuerung nicht verfügbar: die installierte swarmq-Fassung bringt den "
+    "Kontrollkanal noch nicht mit. Spielraum, gemeldete Slot-Kapazität und "
     "Sollwerte fehlen darum. Alles andere auf dieser Seite gilt."
 )
 #: Wie die Quellen heissen, wenn die Seite sie nennt (KTD10, R14a).
 QUELLENNAME = {
-    Quelle.SUPERVISOR: "Supervisor-Rueckmeldung",
+    Quelle.SUPERVISOR: "Supervisor-Rückmeldung",
     Quelle.HEARTBEAT: "Lebenszeichen",
     Quelle.SIGNAL: "letzten Signal",
 }
@@ -72,6 +72,26 @@ class QueueZeile:
         return max(0, self.stats.consumers - self.bekannt)
 
 
+def laufzeit(started_at: float | None, *, now: float) -> str:
+    """Wie lange der Worker laeuft (R14).
+
+    ``None`` heisst "unbekannt", nicht "gerade erst": ein Worker, den nur ein
+    gewoehnliches Signal bekannt gemacht hat, hat keine Stammdaten und damit
+    keinen Startzeitpunkt. Eine gerechnete Laufzeit waere dann erfunden.
+    """
+    if started_at is None or started_at <= 0 or now < started_at:
+        return "--"
+    sekunden = int(now - started_at)
+    tage, rest = divmod(sekunden, 86400)
+    stunden, rest = divmod(rest, 3600)
+    minuten = rest // 60
+    if tage:
+        return f"{tage} d {stunden} h"
+    if stunden:
+        return f"{stunden} h {minuten} min"
+    return f"{minuten} min"
+
+
 @dataclass(frozen=True, slots=True)
 class Gruppe:
     """Eine Worker-Gruppe mit ihren Queues."""
@@ -79,6 +99,56 @@ class Gruppe:
     name: str
     worker: list[Worker]
     now: float
+    #: Je Worker: laufende und erledigte Tasks aus dem Verzeichnis.
+    last: dict[str, tuple[int, int]] = field(default_factory=dict)
+    #: Wartende Nachrichten der Queues dieser Gruppe, je Queue.
+    stats: dict[str, QueueStats] = field(default_factory=dict)
+
+    def belegt(self, w: Worker) -> str:
+        """"2 von 4" -- Belegung **und** Kapazitaet.
+
+        Die Kapazitaet allein ("nebenlaeufig 4") beantwortet die Frage aus
+        Fluss F2 nicht: sie lautet "sind alle Slots belegt?", nicht "wie
+        viele gaebe es".
+        """
+        laufend = self.last.get(w.worker_id, (0, 0))[0]
+        if w.concurrency is None:
+            return f"{laufend} von ?"
+        return f"{laufend} von {w.concurrency}"
+
+    def erledigt(self, w: Worker) -> int:
+        return self.last.get(w.worker_id, (0, 0))[1]
+
+    @property
+    def queues(self) -> list[str]:
+        """Die Queues, die diese Gruppe bedient."""
+        gesehen: list[str] = []
+        for w in self.worker:
+            for q in w.queues or []:
+                if q not in gesehen:
+                    gesehen.append(q)
+        return gesehen
+
+    @property
+    def wartend(self) -> int:
+        """Summe der wartenden Nachrichten ihrer Queues (R14 Satz 2).
+
+        Ohne Kontrollkanal ist das die einzige Antwort auf "staut es sich?"
+        -- und sie gehoert an die Gruppe, nicht in eine Tabelle am
+        Seitenende, wo die Frage nicht entsteht.
+        """
+        return sum(self.stats[q].depth for q in self.queues
+                   if q in self.stats and not self.stats[q].error)
+
+    @property
+    def rueckstau_unvollstaendig(self) -> list[str]:
+        """Queues, die nicht abgefragt werden konnten.
+
+        Eine Summe, der eine Queue fehlt, ist keine Summe -- und sie liest
+        sich als eine. Also muss dastehen, welche fehlt.
+        """
+        return [q for q in self.queues
+                if q not in self.stats or self.stats[q].error]
 
     @property
     def verbunden(self) -> list[Worker]:
@@ -93,7 +163,7 @@ class Gruppe:
 def _register(request: Request[Any, Any, Any]) -> WorkerRegistry:
     schreiber = request.app.state.services.services_directory_writer
     if schreiber is None:
-        raise NotFoundException(detail="das Verzeichnis ist nicht geoeffnet")
+        raise NotFoundException(detail="das Verzeichnis ist nicht geöffnet")
     return WorkerRegistry(schreiber._con)
 
 
@@ -111,8 +181,9 @@ async def uebersicht(request: Request[Any, Any, Any]) -> Template:
     gebraucht = register.known_queues()
     stats = await services.queue_stats(gebraucht)
 
+    last = register.load()
     gruppen = [
-        Gruppe(name=name, worker=worker, now=jetzt)
+        Gruppe(name=name, worker=worker, now=jetzt, last=last, stats=stats)
         for name, worker in sorted(gebuendelt.items())
     ]
     # Die Queue-Uebersicht steht **neben** den Gruppen, nicht in ihnen: ohne
@@ -134,6 +205,7 @@ async def uebersicht(request: Request[Any, Any, Any]) -> Template:
             "gruppen": gruppen,
             "queues": queues,
             "quellenname": QUELLENNAME,
+            "laufzeit": laufzeit,
             "ohne_kontrollkanal": OHNE_KONTROLLKANAL,
             "jetzt": jetzt,
             "leer_titel": "Noch kein Worker bekannt",
@@ -150,10 +222,10 @@ def _leergrund(status: dict[str, Any]) -> str:
     """Die wahrscheinliche Ursache, wenn kein Worker bekannt ist (R33)."""
     if status["directory"].get("rebuilding"):
         return ("Das Verzeichnis wird gerade neu aufgebaut -- die Liste ist noch "
-                "unvollstaendig.")
+                "unvollständig.")
     if not status["stream"]["ok"]:
         return f"Der Ereignisstrom ist nicht erreichbar: {status['stream']['reason']}"
-    return ("Es sind bisher keine Worker-Ereignisse eingetroffen. Laeuft in den "
+    return ("Es sind bisher keine Worker-Ereignisse eingetroffen. Läuft in den "
             "Workern der Hook des Dashboards (--configure)?")
 
 

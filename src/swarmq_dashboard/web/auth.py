@@ -362,7 +362,7 @@ def session_guard(connection: ASGIConnection[Any, Any, Any, Any], _: BaseRouteHa
         return
     konto = connection.session.get(SESSION_ACCOUNT_KEY) if connection.session else None
     if not isinstance(konto, str) or not konto:
-        raise NotAuthorizedException(detail="keine gueltige Sitzung")
+        raise NotAuthorizedException(detail="keine gültige Sitzung")
 
     services = getattr(connection.app.state, "services", None)
     speicher = getattr(services, "accounts", None)
@@ -370,7 +370,7 @@ def session_guard(connection: ASGIConnection[Any, Any, Any, Any], _: BaseRouteHa
         # Wer den Kontozustand nicht nachsehen kann, darf ihn nicht raten.
         # Frueher stand hier ``return`` -- die Pruefung fiel dann ersatzlos
         # weg, und ein gesperrtes Konto kam durch.
-        raise NotAuthorizedException(detail="der Kontenspeicher ist nicht verfuegbar")
+        raise NotAuthorizedException(detail="der Kontenspeicher ist nicht verfügbar")
     zeile = speicher.state_of(konto)
     if zeile is None or zeile.locked:
         # Konto geloescht oder gesperrt: die Sitzung endet hier, nicht erst
