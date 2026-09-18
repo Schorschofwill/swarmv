@@ -45,8 +45,9 @@ from swarmq_dashboard.web.auth import (
     csrf_guard,
     session_guard,
 )
+from swarmq_dashboard.web.cancel import Canceller, SwarmQCanceller
 from swarmq_dashboard.web.routes.login import login, login_form, logout
-from swarmq_dashboard.web.routes.tasks import detail, liste
+from swarmq_dashboard.web.routes.tasks import cancel, detail, liste
 from swarmq_dashboard.web.stream import LIVE_CHANNEL, LivePublisher, live
 from swarmq_dashboard.web.templates import statische_dateien, template_config
 
@@ -155,6 +156,7 @@ class Services:
         *,
         hasher: PasswordHasher | None = None,
         throttle_scale: float = 1.0,
+        canceller: Canceller | None = None,
     ) -> None:
         self._config = config
         self._hasher = hasher
@@ -162,6 +164,12 @@ class Services:
         #: sie prueft die Bremse ueber echte Anfragen und bezahlt die
         #: Wartezeit sonst in Sekunden Laufzeit.
         self._throttle_scale = throttle_scale
+        #: Das Stornieren. Es haengt am **Backend** der Bibliothek (Valkey
+        #: Index 0), nicht am Ereignisstrom des Dashboards -- der Merker
+        #: gehoert swarmq, nicht uns.
+        self.canceller: Canceller = canceller or SwarmQCanceller(
+            config.broker_url, config.backend_url
+        )
         #: Der Audit-Strom (R27). Er haengt am Ereignisstrom, nicht an der
         #: Kontendatei -- und er darf fehlen, ohne eine Aktion aufzuhalten.
         self.audit = AuditLog(None)
@@ -459,6 +467,7 @@ def create_app(
     hasher: PasswordHasher | None = None,
     maintenance_every_s: float = DEFAULT_MAINTENANCE_S,
     throttle_scale: float = 1.0,
+    canceller: Canceller | None = None,
 ) -> Litestar:
     """Die Anwendung bauen. Der Lebenszyklus haelt die Aussenverbindungen.
 
@@ -466,7 +475,8 @@ def create_app(
     kein Test, dass der Lebenszyklus den Takt ueberhaupt **startet** -- und
     genau das war der Fehler bei ``refresh()``, das nur von Hand gerufen wurde.
     """
-    services = Services(config, hasher=hasher, throttle_scale=throttle_scale)
+    services = Services(config, hasher=hasher, throttle_scale=throttle_scale,
+                        canceller=canceller)
     # Die Registratur zeigt auf den Speicher des Dienstes, statt einen
     # eigenen zu halten: sonst bliebe eine vierte Verbindung auf die
     # Kontendatei offen, die niemand schliesst und deren abgelaufene Zeilen
@@ -518,7 +528,7 @@ def create_app(
     # Merkmal. ``csrf_guard`` liefert das; es steht in der Sitzung selbst.
     return Litestar(
         route_handlers=[zustand, login_form, login, logout, live, liste, detail,
-                        statische_dateien()],
+                        cancel, statische_dateien()],
         template_config=template_config(),
         lifespan=[lebenszyklus],
         stores=build_store_registry(weiche),

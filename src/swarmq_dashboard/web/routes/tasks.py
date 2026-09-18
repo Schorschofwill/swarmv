@@ -20,10 +20,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from litestar import Request, get
+from litestar import Request, get, post
 from litestar.exceptions import NotFoundException
 from litestar.params import FromPath
-from litestar.response import Template
+from litestar.response import Redirect, Template
 
 from swarmq_dashboard.directory.queries import DirectoryQueries, Filter
 from swarmq_dashboard.web.auth import SESSION_ACCOUNT_KEY
@@ -103,6 +103,14 @@ def _zahl(wert: str | None) -> float | None:
         return None
 
 
+#: Statuswerte, bei denen der Task beendet ist. Eine Stornierung ist dann
+#: gegenstandslos -- und ein Merker, den niemand mehr liest, waere nur eine
+#: Zeile in Valkey, die 24 Stunden lang den naechsten Task derselben Kennung
+#: treffen koennte.
+BEENDET = frozenset({"fertig", "gescheitert", "storniert", "dead_letter",
+                     "abgelaufen", "abgewiesen"})
+
+
 @get("/tasks")
 async def liste(request: Request[Any, Any, Any]) -> Template:
     """Die Task-Liste mit Suche und vier Filtern (R10)."""
@@ -149,6 +157,8 @@ async def detail(request: Request[Any, Any, Any], task_id: FromPath[str]) -> Tem
         context={
             "task": zeile,
             "signale": q.signals(task_id),
+            "hinweis": request.query_params.get("hinweis"),
+            "beendet": BEENDET,
             "herkunft_hinweis": HERKUNFT_HINWEIS,
             "status": request.app.state.services.status(),
             "account": request.session.get(SESSION_ACCOUNT_KEY, ""),
@@ -156,3 +166,49 @@ async def detail(request: Request[Any, Any, Any], task_id: FromPath[str]) -> Tem
             "csrf_token": request.session.get("csrf", ""),
         },
     )
+
+
+@post("/tasks/{task_id:str}/cancel")
+async def cancel(request: Request[Any, Any, Any], task_id: FromPath[str]) -> Redirect:
+    """Eine Stornierung **anfordern** (R12, R12a).
+
+    Drei Faelle, und keiner davon ist ein Absturz:
+
+    * Der Task ist beendet: abgewiesen, begruendet, **ohne** etwas zu
+      schreiben. Ein Merker, den niemand mehr liest, bliebe 24 Stunden in
+      Valkey stehen und koennte den naechsten Task derselben Kennung treffen.
+    * Es lief schon eine Anforderung: das ist eine Auskunft, kein Fehler
+      (AE3a). Sonst meldet das Dashboard einem zweiten Teammitglied eine
+      Stoerung, wo nur jemand schneller war.
+    * Das Backend ist weg: benannt. Die Ansicht darf dann **nicht**
+      behaupten, die Stornierung sei angefordert.
+    """
+    services = request.app.state.services
+    schreiber = services.services_directory_writer
+    if schreiber is None:
+        raise NotFoundException(detail="das Verzeichnis ist nicht geoeffnet")
+    zeile = schreiber.row(task_id)
+    if zeile is None:
+        raise NotFoundException(detail=f"Kein Task mit der Kennung {task_id!r}.")
+
+    konto = str(request.session.get(SESSION_ACCOUNT_KEY, "unbekannt"))
+    if zeile["status"] in BEENDET:
+        await services.audit.record("task_cancel", account=konto, target=task_id,
+                                    outcome="abgelehnt", detail="der Task ist bereits beendet")
+        return Redirect(f"/tasks/{task_id}?hinweis=beendet", status_code=303)
+
+    try:
+        neu = await services.canceller.cancel(task_id)
+    except Exception as exc:
+        await services.audit.record("task_cancel", account=konto, target=task_id,
+                                    outcome="fehlgeschlagen", detail=str(exc)[:200])
+        return Redirect(f"/tasks/{task_id}?hinweis=backend", status_code=303)
+
+    # Erst **nach** dem gelungenen Merker festhalten: sonst zeigte die Ansicht
+    # eine Anforderung, die nie ankam.
+    schreiber.mark_cancel_requested(task_id)
+    await services.audit.record(
+        "task_cancel", account=konto, target=task_id,
+        outcome="ok" if neu else "lief bereits",
+    )
+    return Redirect(f"/tasks/{task_id}", status_code=303)

@@ -2,8 +2,26 @@
 {% block titel %}Task {{ task['task_id'] }}{% endblock %}
 {% block inhalt %}
 
+{#- Die drei Antworten des Stornierens. Keine davon behauptet einen Vollzug:
+    die Bibliothek setzt nur einen Merker, und ob ein Worker ihn bemerkt,
+    weiss erst der Ausgang (R12a). -#}
+{%- if hinweis == "beendet" %}
+<p class="chip chip--neutral"><span class="dot dot--neutral"></span>
+  Der Task ist bereits beendet -- eine Stornierung waere gegenstandslos. Es wurde nichts geschrieben.</p>
+{%- elif hinweis == "backend" %}
+<p class="chip chip--fehler"><span class="dot dot--fehler"></span>
+  Das Backend ist nicht erreichbar -- die Stornierung wurde <strong>nicht</strong> angefordert.</p>
+{%- endif %}
+
 <section class="card">
   <h2 class="mono">{{ task['task_id'] }}</h2>
+  {%- if task['cancel_requested_at'] and task['status'] not in beendet %}
+  {#- "angefordert", nicht "storniert": ein rechnender Task bemerkt die
+      Anforderung moeglicherweise nie (R12a). -#}
+  <p class="chip chip--wartet"><span class="dot dot--wartet"></span>
+    Stornierung angefordert um {{ zeitpunkt(task['cancel_requested_at']) }} --
+    ob der Task sie bemerkt, zeigt erst sein Ausgang.</p>
+  {%- endif %}
   <dl class="felder">
     <dt>Name</dt><dd class="mono">{{ task['task_name'] or '--' }}</dd>
     <dt>Queue</dt><dd class="mono">{{ task['queue'] or '--' }}</dd>
@@ -58,5 +76,14 @@
   <p class="muted">Keine Signale im Verzeichnis.</p>
   {%- endif %}
 </section>
+
+{%- if task['status'] not in beendet %}
+<section class="card">
+  <form method="post" action="/tasks/{{ task['task_id'] }}/cancel">
+    <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
+    <button class="btn">Stornierung anfordern</button>
+  </form>
+</section>
+{%- endif %}
 
 {% endblock %}

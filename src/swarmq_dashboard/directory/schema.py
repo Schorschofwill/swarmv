@@ -50,6 +50,10 @@ create table if not exists task (
     -- Ausgang gewinnt -- nicht die Stromreihenfolge, die wegen der Puffer die
     -- Reihenfolge des Leerens ist, nicht die der Ereignisse.
     outcome_ts    real,
+    -- Wann ein Teammitglied die Stornierung angefordert hat (R12a). Das ist
+    -- **Wissen des Dashboards**, kein Signal: die Bibliothek setzt nur einen
+    -- Merker, und ob ein Worker ihn bemerkt, weiss erst der Ausgang.
+    cancel_requested_at real,
     first_seen_at real not null,
     last_seen_at  real not null,
     incomplete    integer not null default 0
@@ -140,6 +144,7 @@ def connect(path: str | Path) -> sqlite3.Connection:
         con.execute(f"pragma busy_timeout={BUSY_TIMEOUT_MS}")
         con.execute("pragma foreign_keys=on")
         con.executescript(_SCHEMA)
+        _spalten_nachziehen(con)
     except Exception:
         # Sonst bleibt bei jedem Fehlversuch ein Dateizeiger offen. Ein Dienst,
         # der laut Plan auch mit fehlenden Diensten hochfaehrt und es im Takt
@@ -169,3 +174,21 @@ def _sichern(pfad: Path) -> None:
     modus = pfad.stat().st_mode & 0o777
     if modus != 0o600:
         os.chmod(pfad, 0o600)
+
+
+#: Spalten, die spaeter dazugekommen sind. ``create table if not exists`` legt
+#: sie an einer vorhandenen Datei **nicht** an -- und das Verzeichnis ist zwar
+#: aus dem Strom wiederherstellbar (R8), aber es stillschweigend unbrauchbar
+#: zu machen waere trotzdem die falsche Art, eine Fassung zu wechseln.
+_NACHGEREICHT = {
+    "task": (("cancel_requested_at", "real"),),
+}
+
+
+def _spalten_nachziehen(con: sqlite3.Connection) -> None:
+    """Spalten ergaenzen, die in einer aelteren Datei fehlen."""
+    for tabelle, spalten in _NACHGEREICHT.items():
+        vorhanden = {z[1] for z in con.execute(f"pragma table_info({tabelle})")}
+        for name, typ in spalten:
+            if name not in vorhanden:
+                con.execute(f"alter table {tabelle} add column {name} {typ}")

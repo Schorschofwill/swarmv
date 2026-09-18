@@ -38,12 +38,24 @@ Test-Liste (AGENTS.md):
 === ZYKLUS 4: Zugang ===
 11. Liste und Detail brauchen eine Sitzung.
 12. Waehrend eines Neuaufbaus sagt der Leerzustand genau das.
+
+=== ZYKLUS 5: Stornieren (R12, R12a, R27) ===
+13. Covers AE13. Ein wartender Task laesst sich stornieren; die Ansicht sagt
+    "angefordert", nicht "storniert".
+14. Covers AE3. Ein beendeter Task wird abgewiesen, begruendet, ohne zu
+    schreiben.
+15. Covers AE3a. Eine zweite Stornierung ist kein Fehler.
+16. Ein Cancel steht im Audit mit Konto und Ziel.
+17. Ein nicht erreichbares Backend wird benannt, statt eine Anforderung zu
+    behaupten.
+18. Stornieren ohne Sitzung und ohne Merkmal wird abgewiesen.
 """
 
 from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Any
 
 from argon2 import PasswordHasher
 from litestar.testing import AsyncTestClient
@@ -111,14 +123,16 @@ def _verzeichnis_fuellen(config: DashboardConfig) -> None:
     w.close()
 
 
-async def _angemeldet(config: DashboardConfig) -> AsyncTestClient:
-    c = AsyncTestClient(app=create_app(config, hasher=_BILLIG), base_url=BASIS)
+async def _angemeldet(config: DashboardConfig, *, canceller: object | None = None,
+                      mit_app: bool = False) -> Any:
+    app = create_app(config, hasher=_BILLIG, canceller=canceller)
+    c = AsyncTestClient(app=app, base_url=BASIS)
     await c.__aenter__()
     seite = await c.get("/login")
     merkmal = re.search(r'name="?_csrf_token"?\s+value="([^"]*)"', seite.text).group(1)  # type: ignore[union-attr]
     await c.post("/login", data={"account": "ops", "password": _PASSWORT,
                                  "_csrf_token": merkmal}, follow_redirects=False)
-    return c
+    return (c, app) if mit_app else c
 
 
 # --- Zyklus 1 -----------------------------------------------------------
@@ -314,5 +328,176 @@ async def test_waehrend_des_neuaufbaus_sagt_der_leerzustand_das(tmp_path: Path) 
     try:
         antwort = await c.get("/tasks")
         assert "neu aufgebaut" in antwort.text, antwort.text[-400:]
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+# --- Zyklus 5: Stornieren (R12, R12a, R27) ------------------------------
+
+
+class _SpeicherStrom:
+    """Ein Audit-Strom im Arbeitsspeicher, fuer Zusicherungen ohne Valkey."""
+
+    def __init__(self) -> None:
+        self.eintraege: list[tuple[str, bytes]] = []
+
+    async def xadd_batch(self, key: str, events: list[bytes], maxlen: int) -> None:
+        self.eintraege.extend((f"{i}-0", w) for i, w in enumerate(events, len(self.eintraege) + 1))
+
+    async def read_after(self, key: str, last_id: str, count: int) -> list[tuple[str, bytes]]:
+        return self.eintraege[:count]
+
+    async def trim_by_min_id(self, key: str, min_ms: int) -> int:
+        return 0
+
+
+class FakeCancel:
+    """Die Cancel-Funktion der Bibliothek, wie sie sich wirklich verhaelt.
+
+    ``cancel`` meldet **"Merker neu gesetzt"**, nicht "storniert": beim
+    zweiten Aufruf kommt ``False``, und das ist kein Fehler, sondern die
+    Auskunft "es lief schon eine Anforderung". Eine Attrappe, die immer
+    ``True`` sagt, verdeckte genau den Fall aus AE3a.
+    """
+
+    def __init__(self, kaputt: bool = False) -> None:
+        self.gesetzt: set[str] = set()
+        self.aufrufe: list[str] = []
+        self.kaputt = kaputt
+
+    async def cancel(self, task_id: str) -> bool:
+        if self.kaputt:
+            raise RuntimeError("das Backend ist nicht erreichbar")
+        self.aufrufe.append(task_id)
+        neu = task_id not in self.gesetzt
+        self.gesetzt.add(task_id)
+        return neu
+
+
+async def _stornieren(c: AsyncTestClient, task_id: str) -> object:
+    seite = await c.get(f"/tasks/{task_id}")
+    merkmal = str(c.cookies.get("csrftoken"))
+    return await c.post(f"/tasks/{task_id}/cancel", headers={"x-csrftoken": merkmal},
+                        follow_redirects=False), seite
+
+
+async def test_ein_wartender_task_laesst_sich_stornieren(tmp_path: Path) -> None:
+    """Covers AE13, R12a. Die Ansicht wechselt auf "Stornierung angefordert" --
+    **nicht** auf "storniert": ob der Worker die Anforderung bemerkt, weiss
+    erst das Signal.
+    """
+    config = _config(tmp_path)
+    _verzeichnis_fuellen(config)
+    abbruch = FakeCancel()
+    c = await _angemeldet(config, canceller=abbruch)
+    try:
+        antwort, _ = await _stornieren(c, "c33d")
+        assert antwort.status_code == 303, antwort.text[:200]
+        assert abbruch.aufrufe == ["c33d"]
+
+        seite = await c.get("/tasks/c33d")
+        assert "Stornierung angefordert" in seite.text
+        assert ">storniert<" not in seite.text, (
+            "die Ansicht behauptet einen Vollzug, den nur das Signal belegen kann"
+        )
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+async def test_ein_beendeter_task_wird_abgewiesen(tmp_path: Path) -> None:
+    """Covers AE3. Abgewiesen, begruendet -- und **ohne** etwas zu schreiben."""
+    config = _config(tmp_path)
+    _verzeichnis_fuellen(config)
+    abbruch = FakeCancel()
+    c = await _angemeldet(config, canceller=abbruch)
+    try:
+        antwort, _ = await _stornieren(c, "a41f")       # steht auf "fertig"
+        assert antwort.status_code in (303, 409)
+        assert abbruch.aufrufe == [], "es wurde ein Cancel geschrieben"
+
+        # Der Weiterleitung folgen, wie ein Browser es tut -- der Hinweis
+        # steht dahinter, nicht in der Antwort auf die Aktion selbst.
+        seite = await c.get(antwort.headers["location"])
+        assert "bereits beendet" in seite.text or "beendet" in seite.text
+        assert "Stornierung angefordert" not in seite.text
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+async def test_eine_zweite_stornierung_ist_kein_fehler(tmp_path: Path) -> None:
+    """Covers AE3a. Ein bereits gesetzter Merker ist eine Auskunft, kein
+    Fehler -- sonst meldet das Dashboard einem zweiten Teammitglied eine
+    Stoerung, wo nur jemand schneller war.
+    """
+    config = _config(tmp_path)
+    _verzeichnis_fuellen(config)
+    abbruch = FakeCancel()
+    c = await _angemeldet(config, canceller=abbruch)
+    try:
+        erste, _ = await _stornieren(c, "c33d")
+        zweite, _ = await _stornieren(c, "c33d")
+        assert erste.status_code == zweite.status_code == 303
+        assert abbruch.aufrufe == ["c33d", "c33d"]
+
+        seite = await c.get("/tasks/c33d")
+        assert "Stornierung angefordert" in seite.text
+        assert "fehler" not in seite.text.lower() or "Fehler</dt>" not in seite.text
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+async def test_ein_cancel_steht_im_audit(tmp_path: Path) -> None:
+    """Covers R27. "Wer hat das storniert" ist die Begruendung des Audits
+    ueberhaupt.
+    """
+    config = _config(tmp_path)
+    _verzeichnis_fuellen(config)
+    c, app = await _angemeldet(config, canceller=FakeCancel(), mit_app=True)
+    try:
+        # Ein Strom im Speicher: die Einstellung zeigt auf tote Ports, und ohne
+        # Strom ist das Audit leer -- jede Zusicherung darauf hielte trivial.
+        from swarmq_dashboard.audit import AuditLog
+
+        app.state.services.audit = AuditLog(_SpeicherStrom())
+        await _stornieren(c, "c33d")
+        eintraege = [e for e in await app.state.services.audit.read()
+                     if e.action == "task_cancel"]
+        assert eintraege, "der Cancel steht nicht im Audit"
+        assert eintraege[0].account == "ops"
+        assert eintraege[0].target == "c33d"
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+async def test_ein_nicht_erreichbares_backend_wird_benannt(tmp_path: Path) -> None:
+    """Der Merker liegt in Valkey. Ist es weg, darf die Ansicht nicht
+    behaupten, die Stornierung sei angefordert.
+    """
+    config = _config(tmp_path)
+    _verzeichnis_fuellen(config)
+    c = await _angemeldet(config, canceller=FakeCancel(kaputt=True))
+    try:
+        antwort, _ = await _stornieren(c, "c33d")
+        assert antwort.status_code in (303, 503)
+        seite = await c.get(antwort.headers["location"])
+        assert "Stornierung angefordert" not in seite.text, (
+            "die Ansicht behauptet eine Anforderung, die nie ankam"
+        )
+        assert "nicht erreichbar" in seite.text
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+async def test_stornieren_ohne_sitzung_und_ohne_merkmal(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    _verzeichnis_fuellen(config)
+    async with AsyncTestClient(app=create_app(config, hasher=_BILLIG), base_url=BASIS) as c:
+        ohne = await c.post("/tasks/c33d/cancel", follow_redirects=False)
+        assert ohne.status_code in (302, 303, 401), ohne.status_code
+
+    c = await _angemeldet(config, canceller=FakeCancel())
+    try:
+        ohne_merkmal = await c.post("/tasks/c33d/cancel", follow_redirects=False)
+        assert ohne_merkmal.status_code == 403
     finally:
         await c.__aexit__(None, None, None)

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from typing import Any
 
 from swarmq_dashboard.events import Event, Origin
@@ -184,6 +185,21 @@ class DirectoryWriter:
             (task_id, ev.type, ev.ts, stream_id,
              json.dumps(ev.payload, ensure_ascii=False, default=repr)),
         )
+
+    def mark_cancel_requested(self, task_id: str) -> None:
+        """Festhalten, dass jemand die Stornierung angefordert hat (R12a).
+
+        Wissen des Dashboards, kein Signal: die Bibliothek setzt nur einen
+        Merker in Valkey, und ob ein Worker ihn bemerkt, weiss erst der
+        Ausgang. Deshalb steht es in einer eigenen Spalte und nicht im Status
+        -- der gehoert den Signalen.
+        """
+        self._con.execute(
+            "update task set cancel_requested_at=? where task_id=? "
+            "and cancel_requested_at is null",
+            (time.time(), task_id),
+        )
+        self._con.commit()
 
     def mark_incomplete(self, von: float, bis: float, *, in_transaktion: bool = False) -> int:
         """Zeilen in einer Zeitspanne als unvollstaendig markieren (R4a).
