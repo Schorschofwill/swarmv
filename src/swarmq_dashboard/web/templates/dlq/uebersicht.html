@@ -14,8 +14,10 @@
   {% with titel="Keine Queue bekannt", ursache=queues_leer_ursache %}
   {% include "leerzustand.html" %}{% endwith %}
   {%- else %}
+  <div class="card-table">
   <table>
-    <thead><tr><th>Queue</th><th>Dead Letter</th><th>Aktionen</th></tr></thead>
+    <colgroup><col style="width: 220px"><col style="width: 120px"><col></colgroup>
+    <thead><tr><th>Queue</th><th class="right">Dead Letter</th><th>Aktionen</th></tr></thead>
     <tbody>
       {%- for z in queues %}
       <tr>
@@ -75,6 +77,7 @@
       {%- endfor %}
     </tbody>
   </table>
+  </div>
   {%- endif %}
 </section>
 
@@ -87,18 +90,22 @@
 <section class="card">
   <h2 class="card-section">Sichtung von {{ gesichtet.queue }}.XQ</h2>
   {%- if gesichtet.error %}
-  <p class="tag is-fail"><span class="tag-dot"></span> {{ gesichtet.error }}</p>
+  <p class="card-meta"><span class="tag is-fail"><span class="tag-dot"></span> {{ gesichtet.error }}</span></p>
   {%- else %}
-  <p class="muted">{{ gesichtet.gelesen }} Nachrichten gelesen und wieder eingereiht.</p>
+  <p class="card-meta">{{ gesichtet.gelesen }} Nachrichten gelesen und wieder eingereiht.</p>
+  <div class="card-table">
   <table>
-    <thead><tr><th>Kennung</th><th>Name</th><th>Queue</th><th>Größe</th><th></th></tr></thead>
+    <colgroup><col><col style="width: 170px"><col style="width: 120px">
+      <col style="width: 92px"><col style="width: 160px"></colgroup>
+    <thead><tr><th>Kennung</th><th>Name</th><th>Queue</th>
+      <th class="right">Größe</th><th>Aktion</th></tr></thead>
     <tbody>
       {%- for e in gesichtet.entries %}
       <tr>
         <td class="mono">{{ e['task_id'] or '--' }}</td>
         <td class="mono">{{ e['task_name'] or '--' }}</td>
         <td class="mono">{{ e['queue'] or '--' }}</td>
-        <td class="mono">{{ e['body_size'] }} B</td>
+        <td class="mono num right">{{ e['body_size'] }} B</td>
         <td>
           <form method="post" action="/dlq/{{ gesichtet.queue|urlencode }}/requeue">
             <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
@@ -110,6 +117,7 @@
       {%- endfor %}
     </tbody>
   </table>
+  </div>
   {%- endif %}
 </section>
 {%- endif %}
@@ -118,12 +126,16 @@
   <h2 class="card-section">Gescheiterte Tasks aus dem Verzeichnis</h2>
   {#- Stehender Hinweis, auch bei voller Liste: die Abwesenheit einer
       fehlenden Zeile ist selbst keine Aussage. -#}
-  <p class="notice">{{ unvollstaendig_hinweis }}</p>
+  <p class="card-meta">{{ unvollstaendig_hinweis }}</p>
   {%- if hinweis %}
-  <p class="tag is-wait"><span class="tag-dot"></span> {{ hinweis }}</p>
+  <p class="card-meta"><span class="tag is-wait"><span class="tag-dot"></span> {{ hinweis }}</span></p>
   {%- endif %}
   {%- if tasks %}
+  <div class="card-table">
   <table>
+    <colgroup><col style="width: 132px"><col style="width: 150px">
+      <col style="width: 104px"><col style="width: 26%"><col>
+      <col style="width: 156px"></colgroup>
     <thead><tr>
       <th>Kennung</th><th>Name</th><th>Queue</th><th>Argumente</th>
       <th>Fehler</th><th>Zuletzt</th>
@@ -131,11 +143,11 @@
     <tbody>
       {%- for z in tasks %}
       <tr>
-        <td class="mono"><a href="/tasks/{{ z['task_id']|urlencode }}">{{ z['task_id'] }}</a></td>
+        <td class="mono trunc"><a href="/tasks/{{ z['task_id']|urlencode }}">{{ z['task_id'] }}</a></td>
         <td class="mono">{{ z['task_name'] or '--' }}</td>
         <td class="mono">{{ z['queue'] or '--' }}</td>
-        <td class="mono args">{{ z['args_text'] or '--' }}</td>
-        <td class="mono args">{{ z['error'] or '--' }}</td>
+        <td class="mono args trunc">{{ z['args_text'] or '--' }}</td>
+        <td class="mono args trunc">{{ z['error'] or '--' }}</td>
         <td class="mono">{{ zeitpunkt(z['last_seen_at']) }}</td>
       </tr>
       {%- endfor %}

@@ -402,3 +402,142 @@ def test_eine_unbekannte_variable_wirft_statt_zu_schweigen() -> None:
     vorlage = engine.engine.from_string("[{{ gibtesnicht }}]")
     with pytest.raises(Exception, match="(?i)undefined"):
         vorlage.render()
+
+
+#: Bausteine, die eine Karte als unmittelbares Kind haben darf. Jeder bringt
+#: seine eigene Polsterung mit -- die Karte selbst hat keine.
+KARTEN_KINDER = {"card-head", "card-meta", "card-section", "card-body",
+                 "card-table", "card-foot", "empty", "fields", "args", "trail"}
+
+
+def test_keine_nackte_ueberschrift_in_einer_karte() -> None:
+    """Die Karte hat **keine** Polsterung -- das ist Absicht.
+
+    Im Stylesheet tragen ihre Bausteine sie: ``.card-head``,
+    ``.card-section``, ``.card-meta``. Der Reset setzt darum ``h1,h2,h3,p,dd``
+    auf ``margin: 0``. Wer eine Ueberschrift oder einen Absatz **direkt** in
+    eine Karte legt, bekommt sie bündig an der Kante -- genau so sah es im
+    Browser aus, und genau das hat ein Mensch als Erstes bemerkt.
+
+    Geprueft wird die Struktur, nicht das Aussehen: jedes unmittelbare Kind
+    einer Karte muss einer der polsternden Bausteine sein.
+    """
+    import re as _re
+
+    fehler: list[str] = []
+    for datei in sorted(TEMPLATE_DIR.rglob("*.html")):
+        text = datei.read_text(encoding="utf-8")
+        text = _re.sub(r"\{#-?.*?-?#\}", " ", text, flags=_re.S)
+        for stueck in _re.findall(r'<section class="card"[^>]*>(.*?)</section>',
+                                  text, _re.S):
+            # Nur die aeusserste Ebene ansehen.
+            tiefe = 0
+            for treffer in _re.finditer(r"<(/?)(\w+)([^>]*)>", stueck):
+                zu, tag, rest = treffer.groups()
+                if tiefe == 0 and not zu and tag in ("h1", "h2", "h3", "h4", "p",
+                                                     "table", "form", "dl", "pre"):
+                    klassen = set(
+                        (_re.search(r'class="([^"]*)"', rest) or
+                         _re.match("", "")).group(1).split()
+                        if _re.search(r'class="([^"]*)"', rest) else []
+                    )
+                    if not (klassen & KARTEN_KINDER):
+                        fehler.append(f"{datei.name}: <{tag}> ohne polsternden Baustein")
+                if not zu and tag not in ("input", "br", "img", "hr", "meta", "link"):
+                    tiefe += 1
+                elif zu:
+                    tiefe -= 1
+    assert not fehler, (
+        "unmittelbar in einer Karte, ohne eigene Polsterung:\n  "
+        + "\n  ".join(sorted(set(fehler)))
+    )
+
+
+def test_ein_feldpaar_bleibt_zusammen() -> None:
+    """``.fields`` ist ein dreispaltiges Raster.
+
+    In einem Raster wird **jedes** ``dt`` und **jedes** ``dd`` eine eigene
+    Zelle: "Name" landet in Spalte eins, "reports" in Spalte zwei, das
+    naechste Label in Spalte drei. Welches Feld zu welchem Wert gehoert, ist
+    dann nicht mehr erkennbar -- so stand es im Browser.
+
+    Ein Paar muss darum in einem gemeinsamen Behaelter stecken, wie im
+    freigegebenen Mockup.
+    """
+    import re as _re
+
+    text = (TEMPLATE_DIR / "tasks" / "detail.html").read_text(encoding="utf-8")
+    raster = _re.search(r'<dl class="fields">(.*?)</dl>', text, _re.S)
+    assert raster, "die Feldliste fehlt"
+    inhalt = _re.sub(r"\{[#%].*?[#%]\}", " ", raster.group(1), flags=_re.S)
+    # Kein ``dt`` darf unmittelbares Kind der Liste sein.
+    ohne_behaelter = _re.findall(r"^\s*<dt", inhalt, _re.M)
+    assert not ohne_behaelter, (
+        f"{len(ohne_behaelter)} Feldpaare stehen ohne gemeinsamen Behaelter im "
+        "Raster -- Bezeichnung und Wert fallen dann auseinander"
+    )
+
+
+def test_die_tabellenkoepfe_haben_abstand_nach_oben() -> None:
+    """Drei Runden hat dieser eine Wert gekostet.
+
+    ``th`` stand auf ``padding: 0 14px 7px`` -- oben null. Der einzige
+    Abstand kam aus dem Tabellenbehaelter, und der Kopf klebte sichtbar an
+    der Kante. Gesucht habe ich in der Zwischenzeit bei Spaltenbreiten,
+    Zeilenhoehe und Umbruchschutz.
+
+    Die Zusicherung ist stumpf und genau deshalb richtig: sie prueft die
+    Zahl, an der es lag.
+    """
+    import re as _re
+
+    css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+    regel = _re.search(r"\n  th \{(.*?)\}", css, _re.S)
+    assert regel, "keine th-Regel im Stylesheet"
+    polster = _re.search(r"padding:\s*([0-9.]+)px", regel.group(1))
+    assert polster, f"kein padding an th: {regel.group(1)}"
+    assert float(polster.group(1)) >= 10, (
+        f"der Tabellenkopf hat {polster.group(1)}px Abstand nach oben -- "
+        "er klebt dann an der Kante"
+    )
+
+
+async def test_statische_dateien_werden_nachgeprueft() -> None:
+    """Ohne Cache-Anweisung entscheidet der Browser selbst.
+
+    Gefunden, als eine Stylesheet-Aenderung im Browser dreimal hintereinander
+    nicht ankam -- der Dienst lieferte die neue Datei aus, der Browser zeigte
+    die alte aus seinem Speicher. Bei einem Ops-Werkzeug heisst das: nach
+    einem Deploy sieht das Team tagelang das alte Stylesheet und das alte
+    ``live.js``, ohne es zu merken.
+
+    ``no-cache`` heisst nicht "nicht speichern", sondern "vor dem Benutzen
+    nachfragen". Mit ETag kostet das eine Anfrage ohne Koerper -- und eine
+    geaenderte Datei kommt garantiert an.
+    """
+    import tempfile
+    from pathlib import Path as _Path
+
+    from argon2 import PasswordHasher
+    from litestar.testing import AsyncTestClient
+
+    from swarmq_dashboard.config import DashboardConfig
+    from swarmq_dashboard.web.app import create_app
+    d = _Path(tempfile.mkdtemp())
+    config = DashboardConfig(
+        broker_url="amqp://guest:guest@127.0.0.1:1/", backend_url="valkey://127.0.0.1:1/0",
+        stream_url="valkey://127.0.0.1:1/1", retention_days=7, unconfirmed_after_s=15.0,
+        disconnected_after_s=40.0, session_idle_s=1800.0, backlog_cap=300,
+        stream_stale_after_s=120.0, data_dir=d / "sqd-data",
+    )
+    app = create_app(config, hasher=PasswordHasher(time_cost=2, memory_cost=1024,
+                                                   parallelism=1))
+    async with AsyncTestClient(app=app, base_url="https://t.local") as c:
+        for pfad in ("/static/app.css", "/static/live.js"):
+            antwort = await c.get(pfad)
+            assert antwort.status_code == 200, pfad
+            steuerung = antwort.headers.get("cache-control", "")
+            assert "no-cache" in steuerung, (
+                f"{pfad} traegt keine Cache-Anweisung ({steuerung!r}) -- eine "
+                "geaenderte Datei kommt dann nicht zuverlaessig an"
+            )

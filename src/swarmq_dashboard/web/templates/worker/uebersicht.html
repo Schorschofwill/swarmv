@@ -10,8 +10,12 @@
 {%- if gruppen %}
 {%- for g in gruppen %}
 <section class="card" id="gruppe-{{ g.name }}">
-  <h2>{{ g.name }}</h2>
-  <p class="muted">
+  {#- Kopf und Meta-Zeile als eigene Bausteine: die Karte selbst hat keine
+      Polsterung, und eine nackte Ueberschrift darin klebt an der Kante. -#}
+  <div class="card-head">
+    <h2 class="card-name">{{ g.name }}</h2>
+  </div>
+  <p class="card-meta">
     {{ g.verbunden|length }} von {{ g.worker|length }} verbunden
     {#- Der Rueckstau gehoert an die Gruppe, nicht in eine Tabelle am
         Seitenende: ohne Kontrollkanal ist er die einzige Antwort auf
@@ -29,42 +33,51 @@
     <span class="tag is-wait"><span class="tag-dot"></span>
       diese Gruppe kennt keine Queue -- ohne Stammdaten ist kein Rückstau messbar</span>
     {%- endif %}
+    · Tasks nur so weit, wie das Verzeichnis reicht
     {%- if g.eingeschraenkt %} ·
     <span class="tag is-wait"><span class="tag-dot"></span>
       eingeschränkt: für mindestens einen Worker gibt es nur das letzte Signal</span>
     {%- endif %}
   </p>
 
+  <div class="card-table">
   <table>
+    {#- Feste Breiten wie im freigegebenen Mockup. Ohne sie teilt der Browser
+        die Spalten nach Inhalt auf, und die Kopfzeilen werden gequetscht --
+        besonders wenn eine Zelle ganze Saetze traegt. -#}
+    <colgroup>
+      <col style="width: 62px"><col><col style="width: 188px">
+      <col style="width: 86px"><col style="width: 88px">
+      <col style="width: 104px"><col style="width: 156px">
+      <col style="width: 108px">
+    </colgroup>
     <thead><tr>
-      <th>Worker</th><th>Slot</th><th>Zustand</th><th>Quelle</th>
-      <th>Zuletzt gesehen</th><th>Belegt</th>
-      {#- Die Zahl reicht nur so weit wie das Verzeichnis. Ohne diesen Zusatz
-          liest sie sich als Lebenszeit-Zahl, und ihr Fall nach einem Ablauf
-          als Ausfall. -#}
-      <th>Tasks (im Verzeichnis)</th><th>Laufzeit</th><th>Aktion</th>
+      <th class="right">Slot</th><th>Worker</th><th>Verbundenheit</th>
+      <th class="right">Belegt</th><th class="right">Tasks</th>
+      <th class="right">Laufzeit</th><th>Lebenszeichen</th><th>Aktion</th>
     </tr></thead>
     <tbody>
       {%- for w in g.worker %}
       <tr id="worker-{{ w.worker_id }}"{% if not w.connected(now=jetzt) %} class="is-gone"{% endif %}>
+        <td class="mono num right">{{ w.slot if w.slot is not none else '--' }}</td>
         <td class="mono">{{ w.worker_id }}</td>
-        <td class="mono num">{{ w.slot if w.slot is not none else '--' }}</td>
+        {#- Zustand **und** Quelle in einer Zelle (KTD10): "getrennt" heisst je
+            nach Quelle etwas anderes, und das Lebenszeichen schweigt ohne
+            Metrik-Port ohne Fehlermeldung. Als eigene Spalte trug die Quelle
+            ganze Saetze und drueckte die Tabelle auseinander. -#}
         <td>
           {%- if w.connected(now=jetzt) %}
           <span class="tag is-ok"><span class="tag-dot"></span> verbunden</span>
           {%- else %}
           <span class="tag is-fail"><span class="tag-dot"></span> getrennt</span>
           {%- endif %}
+          <div class="dim">nach {{ quellenname[w.source] }}
+            <span class="mono">({{ '%.0f'|format(w.stale_after_s) }} s)</span></div>
         </td>
-        {#- Die Quelle gehoert zur Aussage (KTD10): "getrennt" heisst je nach
-            Quelle etwas anderes, und das Lebenszeichen schweigt ohne
-            Metrik-Port ohne Fehlermeldung. -#}
-        <td class="muted">nach {{ quellenname[w.source] }}
-          <span class="mono">({{ '%.0f'|format(w.stale_after_s) }} s Frist)</span></td>
+        <td class="mono num right">{{ g.belegt(w) }}</td>
+        <td class="mono num right">{{ g.erledigt(w) }}</td>
+        <td class="mono right">{{ laufzeit(w.started_at, now=jetzt) }}</td>
         <td class="mono">{{ zeitpunkt(w.last_seen_at) }}</td>
-        <td class="mono num">{{ g.belegt(w) }}</td>
-        <td class="mono num">{{ g.erledigt(w) }}</td>
-        <td class="mono">{{ laufzeit(w.started_at, now=jetzt) }}</td>
         <td>
           {%- if not w.connected(now=jetzt) %}
           <form method="post" action="/worker/{{ w.worker_id|urlencode }}/remove">
@@ -77,6 +90,7 @@
       {%- endfor %}
     </tbody>
   </table>
+  </div>
 
 </section>
 {%- endfor %}
@@ -86,9 +100,13 @@
 
 {%- if queues %}
 <section class="card">
-  <h2>Queues</h2>
+  <div class="card-head"><h2 class="card-name">Queues</h2></div>
+  <div class="card-table">
   <table>
-    <thead><tr><th>Queue</th><th>Wartend</th><th>Konsumenten</th><th></th></tr></thead>
+    <colgroup><col><col style="width: 110px"><col style="width: 130px">
+      <col style="width: 46%"></colgroup>
+    <thead><tr><th>Queue</th><th class="right">Wartend</th>
+      <th class="right">Konsumenten</th><th>Hinweis</th></tr></thead>
     <tbody>
       {%- for q in queues %}
       <tr>
@@ -113,6 +131,7 @@
       {%- endfor %}
     </tbody>
   </table>
+  </div>
 </section>
 {%- endif %}
 

@@ -23,6 +23,7 @@ from jinja2 import (
     StrictUndefined,
     select_autoescape,
 )
+from litestar.datastructures import CacheControlHeader
 from litestar.plugins.jinja import JinjaTemplateEngine
 from litestar.router import Router
 from litestar.static_files import create_static_files_router
@@ -195,4 +196,12 @@ def statische_dateien() -> Router:
         directories=[STATIC_DIR],
         name="static",
         opt={"public": True, "no_csrf": True},
+        # ``no-cache`` heisst nicht "nicht speichern", sondern "vor dem
+        # Benutzen nachfragen". Ohne diese Anweisung entscheidet der Browser
+        # selbst -- und eine Stylesheet-Aenderung kam dreimal hintereinander
+        # nicht an: der Dienst lieferte die neue Datei aus, der Browser
+        # zeigte die alte. Bei einem Ops-Werkzeug hiesse das, dass ein Team
+        # nach einem Deploy tagelang das alte ``live.js`` faehrt, ohne es zu
+        # merken. Mit ETag kostet die Rueckfrage eine Antwort ohne Koerper.
+        cache_control=CacheControlHeader(no_cache=True),
     )

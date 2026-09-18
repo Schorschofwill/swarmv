@@ -5,6 +5,7 @@
 <section class="card">
   {#- Jedes Feld mit Beschriftung, nicht nur mit Platzhalter: der Platzhalter
       verschwindet beim Tippen, und ein Vorleseprogramm nennt ihn gar nicht. -#}
+  <div class="card-body">
   <form class="filters" method="get" action="/tasks">
     <span class="field">
       <label class="field-label" for="f-q">Suche</label>
@@ -34,6 +35,7 @@
     </span>
     <button class="btn">Suchen</button>
   </form>
+  </div>
 </section>
 
 {#- Zwei stehende Hinweise. Sie stehen auch dann da, wenn gerade keine
@@ -51,10 +53,19 @@
 
 {%- if zeilen %}
 <section class="card">
+  <div class="card-table">
   <table>
+    {#- Reihenfolge und Breiten wie im freigegebenen Mockup: Status zuerst,
+        Argumente als breiteste Spalte. Ohne feste Breiten teilt der Browser
+        nach Inhalt auf, und eine lange Kennung quetscht alles andere. -#}
+    <colgroup>
+      <col style="width: 116px"><col style="width: 132px"><col>
+      <col style="width: 104px"><col style="width: 30%">
+      <col style="width: 118px"><col style="width: 156px">
+    </colgroup>
     <thead><tr>
-      <th>Kennung</th><th>Name</th><th>Queue</th><th>Status</th>
-      <th>Eingereiht</th><th>Worker</th><th>Argumente</th>
+      <th>Status</th><th>Kennung</th><th>Name</th><th>Queue</th>
+      <th>Argumente</th><th>Worker</th><th>Eingereiht</th>
     </tr></thead>
     <tbody id="task-zeilen">
       {%- for z in zeilen %}
@@ -67,30 +78,31 @@
           ersten Lauf gegen einen echten Worker war so jeder Verweis der
           Liste kaputt. -#}
       <tr id="task-{{ z['task_id'] }}">
-        <td class="mono"><a href="/tasks/{{ z['task_id']|urlencode }}">{{ z['task_id'] }}</a></td>
-        <td class="mono">{{ z['task_name'] or '--' }}</td>
-        <td class="mono">{{ z['queue'] or '--' }}</td>
         <td>
           <span class="tag {{ zustandsart(z['status']) }}">
             <span class="tag-dot"></span> {{ z['status'] or 'unbekannt' }}
           </span>
           {%- if z['incomplete'] %}
           {#- R4a: die Luecke muss sichtbar sein, sonst ist sie keine Meldung. -#}
-          <span class="tag is-wait" title="In dieser Zeitspanne fehlen möglicherweise Ereignisse">
-            <span class="tag-dot"></span> unvollständig</span>
+          <div class="dim" title="In dieser Zeitspanne fehlen möglicherweise Ereignisse">
+            unvollständig</div>
           {%- endif %}
         </td>
+        <td class="mono trunc"><a href="/tasks/{{ z['task_id']|urlencode }}">{{ z['task_id'] }}</a></td>
+        <td class="mono">{{ z['task_name'] or '--' }}</td>
+        <td class="mono">{{ z['queue'] or '--' }}</td>
+        <td class="mono args trunc">{{ z['args_text'] or '--' }}</td>
+        <td class="mono trunc">{{ z['worker_id'] or '--' }}</td>
         <td class="mono">
           {%- if z['enqueued_at'] %}{{ zeitpunkt(z['enqueued_at']) }}
-          {%- else %}<span class="muted" title="{{ herkunft_hinweis }}">erst beim Aufgreifen</span>
+          {%- else %}<span class="dim" title="{{ herkunft_hinweis }}">erst beim Aufgreifen</span>
           {%- endif %}
         </td>
-        <td class="mono">{{ z['worker_id'] or '--' }}</td>
-        <td class="mono args">{{ z['args_text'] or '--' }}</td>
       </tr>
       {%- endfor %}
     </tbody>
   </table>
+  </div>
 </section>
 {%- if weiter %}
 <a class="btn btn-sm" href="/tasks?{{ weiterlink(filter, weiter) }}">Weitere</a>

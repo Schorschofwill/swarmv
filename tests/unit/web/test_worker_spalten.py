@@ -176,7 +176,7 @@ async def test_belegte_slots_und_erledigte_tasks(tmp_path: Path) -> None:
         assert "2 von 4" in zeile, f"die Belegung fehlt oder ist falsch: {zeile}"
         # Die **eigene** Zelle, und eine andere Zahl als die Belegung.
         nach = zeile.split("2 von 4</td>")[1]
-        assert re.match(r'\s*<td class="mono num">3</td>', nach), (
+        assert re.match(r'\s*<td class="mono num right">3</td>', nach), (
             f"die Zahl erledigter Tasks fehlt oder ist falsch: {nach[:80]}"
         )
     finally:
@@ -209,9 +209,14 @@ async def test_die_spalte_nennt_ihre_reichweite(tmp_path: Path) -> None:
     c = await _angemeldet(config, broker=FakeBroker(), stream=None)
     try:
         text = (await c.get(f"/?jetzt={JETZT + 10}")).text
-        kopf = text[text.find("<thead>"):text.find("</thead>")]
-        assert "Verzeichnis" in kopf or "Aufbewahrung" in kopf, (
-            f"die Spalte gibt sich als vollstaendig aus: {kopf}"
+        # Der Zusatz steht in der Meta-Zeile der Gruppe, nicht im
+        # Tabellenkopf: "Tasks (im Verzeichnis)" quetschte dort die ganze
+        # Tabelle, und die Aussage ist neben der Erklaerung ohnehin besser
+        # aufgehoben als in einer Versalien-Spalte.
+        teil = text[text.find('id="gruppe-'):]
+        meta = " ".join(teil[:teil.find("<table")].split())
+        assert "Verzeichnis" in meta or "Aufbewahrung" in meta, (
+            f"die Zahl gibt sich als vollstaendig aus: {meta}"
         )
     finally:
         await c.__aexit__(None, None, None)
@@ -227,9 +232,12 @@ async def test_die_laufzeit_steht_da(tmp_path: Path) -> None:
     c = await _angemeldet(config, broker=FakeBroker(), stream=None)
     try:
         zeile = _zeile((await c.get(f"/?jetzt={JETZT + 10}")).text, "phx-w1:0")
-        zellen = re.findall(r'<td class="mono">([^<]*)</td>', zeile)
-        assert zellen[-1].strip() == "3 d 4 h", (
-            f"die Laufzeit fehlt oder die Einheiten stehen verkehrt: {zellen}"
+        # Die Laufzeit-Zelle, nicht "irgendeine mono-Zelle": die
+        # Spaltenreihenfolge folgt jetzt dem Mockup, und ein Test, der von
+        # hinten zaehlt, prueft je nach Umbau etwas anderes.
+        zelle = re.search(r'<td class="mono right">([^<]*)</td>', zeile)
+        assert zelle and zelle.group(1).strip() == "3 d 4 h", (
+            f"die Laufzeit fehlt oder die Einheiten stehen verkehrt: {zeile}"
         )
     finally:
         await c.__aexit__(None, None, None)
@@ -246,9 +254,9 @@ async def test_ohne_startzeitpunkt_kein_geratener_wert(tmp_path: Path) -> None:
         zeile = _zeile((await c.get(f"/?jetzt={JETZT + 10}")).text, "phx-w9:0")
         # Die **Laufzeit-Zelle**, nicht die Zeile: der Strich stand auch in
         # der Slot-Spalte, und "0 min" waere durchgegangen.
-        zellen = re.findall(r'<td class="mono">([^<]*)</td>', zeile)
-        assert zellen and zellen[-1].strip() == "--", (
-            f"eine Laufzeit wurde geraten: {zellen}"
+        zelle = re.search(r'<td class="mono right">([^<]*)</td>', zeile)
+        assert zelle and zelle.group(1).strip() == "--", (
+            f"eine Laufzeit wurde geraten: {zeile}"
         )
     finally:
         await c.__aexit__(None, None, None)

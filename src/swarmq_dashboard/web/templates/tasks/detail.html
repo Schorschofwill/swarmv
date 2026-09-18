@@ -14,44 +14,44 @@
 {%- endif %}
 
 <section class="card">
-  <h2 class="mono">{{ task['task_id'] }}</h2>
+  <div class="card-head"><h2 class="card-name">{{ task['task_id'] }}</h2></div>
   {%- if task['cancel_requested_at'] and task['status'] not in beendet %}
   {#- "angefordert", nicht "storniert": ein rechnender Task bemerkt die
       Anforderung moeglicherweise nie (R12a). -#}
-  <p class="tag is-wait"><span class="tag-dot"></span>
+  <p class="card-meta"><span class="tag is-wait"><span class="tag-dot"></span>
     Stornierung angefordert um {{ zeitpunkt(task['cancel_requested_at']) }} --
-    ob der Task sie bemerkt, zeigt erst sein Ausgang.</p>
+    ob der Task sie bemerkt, zeigt erst sein Ausgang.</span></p>
   {%- endif %}
   <dl class="fields">
-    <dt>Name</dt><dd class="mono">{{ task['task_name'] or '--' }}</dd>
-    <dt>Queue</dt><dd class="mono">{{ task['queue'] or '--' }}</dd>
-    <dt>Status</dt><dd>
+    <div><dt>Name</dt><dd class="mono">{{ task['task_name'] or '--' }}</dd></div>
+    <div><dt>Queue</dt><dd class="mono">{{ task['queue'] or '--' }}</dd></div>
+    <div><dt>Status</dt><dd>
       <span class="tag {{ zustandsart(task['status']) }}">
         <span class="tag-dot"></span> {{ task['status'] or 'unbekannt' }}
       </span>
       {%- if task['incomplete'] %}
       <span class="tag is-wait"><span class="tag-dot"></span> unvollständig</span>
       {%- endif %}
-    </dd>
-    <dt>Eingereiht</dt><dd class="mono">
+    </dd></div>
+    <div><dt>Eingereiht</dt><dd class="mono">
       {%- if task['enqueued_at'] %}{{ zeitpunkt(task['enqueued_at']) }}
       {%- else %}<span class="muted">erst beim Aufgreifen -- {{ herkunft_hinweis }}</span>
-      {%- endif %}</dd>
-    <dt>Gestartet</dt><dd class="mono">{{ zeitpunkt(task['started_at']) }}</dd>
-    <dt>Beendet</dt><dd class="mono">{{ zeitpunkt(task['ended_at']) }}</dd>
-    <dt>Laufzeit</dt><dd class="mono num">
-      {%- if task['duration_ms'] %}{{ '%.0f'|format(task['duration_ms']) }} ms{% else %}--{% endif %}</dd>
-    <dt>Worker</dt><dd class="mono">{{ task['worker_id'] or '--' }}</dd>
-    <dt>Wiederholungen</dt><dd class="mono num">{{ task['retry_count'] }}</dd>
-    <dt>Herkunft</dt><dd class="mono">{{ task['origin'] }}</dd>
+      {%- endif %}</dd></div>
+    <div><dt>Gestartet</dt><dd class="mono">{{ zeitpunkt(task['started_at']) }}</dd></div>
+    <div><dt>Beendet</dt><dd class="mono">{{ zeitpunkt(task['ended_at']) }}</dd></div>
+    <div><dt>Laufzeit</dt><dd class="mono num">
+      {%- if task['duration_ms'] %}{{ '%.0f'|format(task['duration_ms']) }} ms{% else %}--{% endif %}</dd></div>
+    <div><dt>Worker</dt><dd class="mono">{{ task['worker_id'] or '--' }}</dd></div>
+    <div><dt>Wiederholungen</dt><dd class="mono num">{{ task['retry_count'] }}</dd></div>
+    <div><dt>Herkunft</dt><dd class="mono">{{ task['origin'] }}</dd></div>
     {%- if task['error'] %}
-    <dt>Fehler</dt><dd class="mono">{{ task['error'] }}</dd>
+    <div><dt>Fehler</dt><dd class="mono">{{ task['error'] }}</dd></div>
     {%- endif %}
   </dl>
 </section>
 
 <section class="card">
-  <h3>Argumente</h3>
+  <h3 class="card-section">Argumente</h3>
   {#- Klartext, sieben Tage lang (R7, KD11). Bewusst so entschieden: ohne die
       Argumente beantwortet das Dashboard die Frage "welcher Kunde ist
       betroffen?" nicht. -#}
@@ -59,11 +59,12 @@
 </section>
 
 <section class="card">
-  <h3>Signalfolge</h3>
+  <h3 class="card-section">Signalfolge</h3>
   {#- In **Stromreihenfolge**, nicht nach Zeitstempel: Anwendungs- und
       Worker-Host haben getrennte Uhren, und schon Sekunden Versatz liessen
       das Aufgreifen vor der Einreihung erscheinen (R11). -#}
   {%- if signale %}
+  <div class="card-table">
   <table>
     <thead><tr><th>Signal</th><th>Zeitpunkt</th></tr></thead>
     <tbody>
@@ -72,17 +73,20 @@
       {%- endfor %}
     </tbody>
   </table>
+  </div>
   {%- else %}
-  <p class="muted">Keine Signale im Verzeichnis.</p>
+  <p class="card-meta">Keine Signale im Verzeichnis.</p>
   {%- endif %}
 </section>
 
 {%- if task['status'] not in beendet %}
 <section class="card">
+  <div class="card-body">
   <form method="post" action="/tasks/{{ task['task_id']|urlencode }}/cancel">
     <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
     <button class="btn">Stornierung anfordern</button>
   </form>
+  </div>
 </section>
 {%- endif %}
 

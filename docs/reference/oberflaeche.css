@@ -186,6 +186,25 @@
     font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
     color: var(--muted); padding: 12px 16px; border-bottom: 1px solid var(--line-soft);
   }
+  /* Eine Tabelle in einer Karte. Die Karte selbst hat bewusst keine
+     Polsterung -- ihre Bausteine tragen sie --, und ohne diesen Behaelter
+     klebt die Kopfzeile der Tabelle an der Kante. Das Mockup fuehrt genau
+     diese Werte. */
+  .card-table { padding: 10px 2px 4px; }
+
+  /* Karteninhalt, der einfach Platz braucht: ein Formular, ein Absatz, eine
+     Reihe Knoepfe. */
+  .card-body {
+    padding: 13px 16px; display: flex; flex-direction: column; gap: 12px;
+  }
+
+  /* Ein Feldpaar im Raster. ``dt`` und ``dd`` einzeln in ein Raster zu
+     legen macht aus jedem eine eigene Zelle -- die Bezeichnung landet in
+     Spalte eins, ihr Wert in Spalte zwei, und welches zu welchem gehoert,
+     ist nicht mehr erkennbar. Das Paar braucht einen gemeinsamen
+     Behaelter. */
+  .fields > div { min-width: 0; }
+
   .card-foot {
     border-top: 1px solid var(--line-soft); padding: 10px 16px;
     display: flex; align-items: center; gap: 12px; font-size: 12.5px; color: var(--muted);
@@ -196,7 +215,17 @@
   th {
     text-align: left; font-weight: 500; font-size: 10.5px;
     letter-spacing: .07em; text-transform: uppercase;
-    color: var(--muted); padding: 0 14px 7px;
+    /* Oben **nicht** null. Im Mockup steht dort 0, weil die Kopfzeile dort
+       unmittelbar auf eine Meta-Zeile mit eigener Polsterung folgt; in
+       unseren Karten steht sie oft allein, und dann klebt sie an der Kante.
+       Dreimal am falschen Ende gesucht -- Spaltenbreiten, Zeilenhoehe,
+       Umbruchschutz --, bis die Zahl auffiel. */
+    color: var(--muted); padding: 14px 14px 9px;
+    /* Der einzige Zusatz gegenueber dem Mockup: Versalien mit Sperrung
+       stossen ohne Zeilenhoehe an die Zeile darunter. Alles andere loesen
+       die Spaltenbreiten im ``colgroup`` -- ohne sie teilt der Browser nach
+       Inhalt auf, und die Koepfe werden gequetscht. */
+    line-height: 1.45; vertical-align: bottom;
   }
   th.right, td.right { text-align: right; }
   td { padding: 8px 14px; border-top: 1px solid var(--line-soft); font-size: 13px; color: var(--ink); }
