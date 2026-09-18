@@ -79,7 +79,7 @@
 
 {%- if task['status'] not in beendet %}
 <section class="card">
-  <form method="post" action="/tasks/{{ task['task_id'] }}/cancel">
+  <form method="post" action="/tasks/{{ task['task_id']|urlencode }}/cancel">
     <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
     <button class="btn">Stornierung anfordern</button>
   </form>

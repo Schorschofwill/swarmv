@@ -58,8 +58,16 @@
     </tr></thead>
     <tbody id="task-zeilen">
       {%- for z in zeilen %}
+      {#- ``urlencode`` ist hier keine Feinheit: swarmq vergibt die Kennung
+          eines Workflow-Schritts als ``{workflow_id}#{step_path}``, und
+          ``apply()`` mit einer einzelnen Signatur ist ein einschrittiger
+          Workflow -- **jede** so eingereihte Task traegt eine Raute. Roh in
+          der Adresse trennt sie das Fragment ab: der Browser holt die
+          gekuerzte Kennung, und die Detailseite antwortet mit 404. Beim
+          ersten Lauf gegen einen echten Worker war so jeder Verweis der
+          Liste kaputt. -#}
       <tr id="task-{{ z['task_id'] }}">
-        <td class="mono"><a href="/tasks/{{ z['task_id'] }}">{{ z['task_id'] }}</a></td>
+        <td class="mono"><a href="/tasks/{{ z['task_id']|urlencode }}">{{ z['task_id'] }}</a></td>
         <td class="mono">{{ z['task_name'] or '--' }}</td>
         <td class="mono">{{ z['queue'] or '--' }}</td>
         <td>

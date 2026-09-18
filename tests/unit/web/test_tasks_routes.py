@@ -641,3 +641,52 @@ async def test_die_seite_nennt_keine_reichweite_vor_der_aufbewahrung(
         )
     finally:
         await c.__aexit__(None, None, None)
+
+
+# --- Zyklus 8: Kennungen mit Sonderzeichen (aus dem ersten echten Lauf) --
+
+
+async def test_eine_kennung_mit_raute_bleibt_anklickbar(tmp_path: Path) -> None:
+    """Gefunden beim ersten Lauf gegen einen echten Worker.
+
+    swarmq vergibt die Kennung eines Workflow-Schritts als
+    ``{workflow_id}#{step_path}`` -- und ``apply()`` mit einer einzelnen
+    Signatur ist ein einschrittiger Workflow. **Jede** so eingereihte Task
+    traegt also eine Raute, und in einer Adresse trennt die Raute das
+    Fragment ab: der Browser holt ``/tasks/<id>`` ohne den Rest, das
+    Verzeichnis kennt die gekuerzte Kennung nicht, und die Detailseite
+    antwortet mit 404.
+
+    Nachgemessen am laufenden Dienst: **jeder** Verweis der Liste war
+    kaputt. Der Hauptfluss endete an seiner ersten Verzweigung, und keine
+    Attrappe der Testreihe hatte je eine Raute in einer Kennung.
+    """
+    config = _config(tmp_path)
+    kennung = "01a0b4ca-75db-70ef-8e98-8faff0d1db27#"
+    w = DirectoryWriter(connect(config.directory_file))
+    w.apply([("1000-0", Event(type="task_enqueue", ts=1_700_000_000.0, source="app",
+                              origin=Origin.ENQUEUE,
+                              payload={"task_id": kennung, "task_name": "reports.build",
+                                       "queue": "reports", "args": [], "kwargs": {}}))])
+    w._con.execute("insert into progress(key, value) values ('rebuild_done','1') "
+                   "on conflict(key) do nothing")
+    w._con.commit()
+    w.close()
+
+    c = await _angemeldet(config)
+    try:
+        text = (await c.get("/tasks")).text
+        verweis = re.search(r'href="/tasks/([^"]+)"', text)
+        assert verweis, "kein Verweis auf die Detailseite"
+        assert "#" not in verweis.group(1), (
+            f"die Raute steht roh in der Adresse: {verweis.group(1)!r} -- "
+            "der Browser schneidet dort ab"
+        )
+        # Und der Verweis muss wirklich tragen.
+        antwort = await c.get(f"/tasks/{verweis.group(1)}")
+        assert antwort.status_code == 200, (
+            f"der Verweis fuehrt ins Leere: {antwort.status_code}"
+        )
+        assert "reports.build" in antwort.text
+    finally:
+        await c.__aexit__(None, None, None)

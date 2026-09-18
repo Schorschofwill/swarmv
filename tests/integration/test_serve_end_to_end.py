@@ -17,6 +17,8 @@ Test-Liste (AGENTS.md):
 3. Die Anmeldeseite steht ohne Sitzung -- sonst kaeme niemand hinein.
 4. Das Stylesheet wird ausgeliefert, und zwar aus dem Paket (KTD7).
 5. Der Prozess laesst sich wieder beenden.
+6. Eine echte Anmeldung ueber das Netz gelingt -- mit den Cookie-Regeln
+   eines richtigen Klienten.
 """
 
 from __future__ import annotations
@@ -54,8 +56,11 @@ def dienst(tmp_path: Path, broker_url: str, backend_url: str,
         "SQD_DATA_DIR": str(tmp_path / "sqd-data"),
     }
     prozess = subprocess.Popen(
+        # ``--insecure-http`` ist noetig und zugleich Teil der Aussage: ueber
+        # Klartext-HTTP traegt das Dashboard nur mit diesem Schalter, weil
+        # die Cookies sonst ``Secure`` tragen und kein Klient sie schickt.
         [sys.executable, "-m", "swarmq_dashboard.cli", "serve",
-         "--host", "127.0.0.1", "--port", str(port)],
+         "--host", "127.0.0.1", "--port", str(port), "--insecure-http"],
         env=umgebung, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
     )
     basis = f"http://127.0.0.1:{port}"
@@ -115,3 +120,41 @@ def test_das_live_skript_wird_ausgeliefert(dienst: str) -> None:
     antwort = httpx.get(f"{dienst}/static/live.js", timeout=5.0)
     assert antwort.status_code == 200
     assert 'EventSource("/live")' in antwort.text
+
+
+def test_eine_echte_anmeldung_gelingt(dienst: str, tmp_path: Path) -> None:
+    """Der Satz, an dem der erste echte Start scheiterte.
+
+    Ueber Klartext-HTTP schickt kein Klient ein ``Secure``-Cookie -- auch
+    nicht an 127.0.0.1. Der POST kam ohne Sitzung an, und die Anmeldung
+    antwortete "Das Anmeldeformular ist abgelaufen". Keine Attrappe der
+    Testreihe konnte das zeigen: der Testklient spricht die Anwendung
+    unmittelbar an und kennt keine Cookie-Regeln.
+    """
+    import re
+
+    from argon2 import PasswordHasher
+
+    from swarmq_dashboard.accounts import AccountStore
+    from swarmq_dashboard.config import accounts_path
+
+    store = AccountStore(accounts_path(tmp_path / "sqd-data"),
+                         hasher=PasswordHasher(time_cost=2, memory_cost=1024,
+                                               parallelism=1))
+    store.create("ops", "ein-langes-passwort")
+    store.close()
+
+    with httpx.Client(base_url=dienst, timeout=10.0, follow_redirects=False) as c:
+        seite = c.get("/login")
+        merkmal = re.search(r'name="_csrf_token"\s+value="([^"]*)"', seite.text)
+        assert merkmal, seite.text[:300]
+        antwort = c.post("/login", data={"account": "ops",
+                                         "password": "ein-langes-passwort",
+                                         "_csrf_token": merkmal.group(1)})
+        assert antwort.status_code in (302, 303), (
+            f"die Anmeldung scheitert ueber das Netz: {antwort.status_code} "
+            f"{antwort.text[:200]}"
+        )
+        seite = c.get("/tasks")
+        assert seite.status_code == 200, seite.status_code
+        assert "Dead Letter" in seite.text, "die Navigation fehlt"

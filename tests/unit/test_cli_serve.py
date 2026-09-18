@@ -20,9 +20,15 @@ Test-Liste (AGENTS.md):
 3. Adresse und Port kommen aus der Kommandozeile.
 
 === ZYKLUS 2: Was der Betreiber wissen muss ===
-4. Ohne TLS und ohne oertliche Adresse sagt der Befehl, warum die Anmeldung
-   so nicht gehen kann.
+4. Ohne TLS sagt der Befehl, warum die Anmeldung so nicht gehen kann.
 5. Mit Zertifikat und Schluessel reicht er beide durch.
+
+=== ZYKLUS 4: Klartext-HTTP ist eine Sackgasse ===
+7. Ohne TLS wird auch oertlich abgewiesen -- die Cookies tragen
+   'Secure', und niemand kaeme hinein.
+8. Mit --insecure-http laeuft es oertlich, und die Cookies verlieren
+   ihr 'Secure'.
+9. --insecure-http gilt nur oertlich.
 6. Ein Zertifikat ohne Schluessel wird abgewiesen, statt still ohne TLS zu
    starten.
 
@@ -96,8 +102,8 @@ def test_der_befehl_startet_einen_server_mit_einem_arbeiter(tmp_path: Path) -> N
     koennten dieselbe Queue gleichzeitig sichten, ohne dass es jemand merkt.
     """
     aus = io.StringIO()
-    code = main(["--data-dir", str(tmp_path), "serve"], out=aus, server=FakeServer,
-                umgebung=_umgebung(tmp_path))
+    code = main(["--data-dir", str(tmp_path), "serve", "--insecure-http"],
+                out=aus, server=FakeServer, umgebung=_umgebung(tmp_path))
     assert code == 0, aus.getvalue()
     assert FakeServer.letzte.get("serve"), "es wurde kein Server gestartet"
     assert FakeServer.letzte["workers"] == 1, (
@@ -133,15 +139,6 @@ def test_ohne_tls_auf_fremder_adresse_sagt_der_befehl_warum(tmp_path: Path) -> N
     assert code != 0, f"der Start lief durch: {text}"
     assert "secure" in text.lower() or "TLS" in text, text
     assert not FakeServer.letzte.get("serve"), "es wurde trotzdem gestartet"
-
-
-def test_auf_der_oertlichen_adresse_geht_es_ohne_tls(tmp_path: Path) -> None:
-    """Fuer die Entwicklung und hinter einem vorgelagerten Abschluss."""
-    aus = io.StringIO()
-    code = main(["--data-dir", str(tmp_path), "serve", "--host", "127.0.0.1"],
-                out=aus, server=FakeServer, umgebung=_umgebung(tmp_path))
-    assert code == 0, aus.getvalue()
-    assert FakeServer.letzte.get("serve")
 
 
 def test_zertifikat_ohne_schluessel_wird_abgewiesen(tmp_path: Path) -> None:
@@ -189,8 +186,89 @@ def test_eine_unbrauchbare_umgebung_wird_benannt(tmp_path: Path, monkeypatch: An
     monkeypatch.delenv("SWARMQ_BROKER_URL", raising=False)
     monkeypatch.delenv("SWARMQ_BACKEND_URL", raising=False)
     aus = io.StringIO()
-    code = main(["--data-dir", str(tmp_path), "serve"], out=aus, server=FakeServer,
-                umgebung={})
+    code = main(["--data-dir", str(tmp_path), "serve", "--insecure-http"],
+                out=aus, server=FakeServer, umgebung={})
     assert code != 0
     assert "SWARMQ_BROKER_URL" in aus.getvalue(), aus.getvalue()
     assert not FakeServer.letzte.get("serve")
+
+
+# --- Zyklus 4: Klartext-HTTP ist eine Sackgasse -------------------------
+
+
+def test_ohne_tls_wird_auch_oertlich_abgewiesen(tmp_path: Path) -> None:
+    """Gefunden beim **ersten echten Start**, nicht beim Lesen.
+
+    Die Sitzungs- und Merkmalscookies tragen ``Secure``. Kein Klient schickt
+    sie ueber ``http`` -- auch nicht an ``127.0.0.1``. Nachgemessen: die
+    Anmeldung antwortet mit 403 "Das Anmeldeformular ist abgelaufen", weil
+    der POST ohne Cookies ankommt und damit ohne Sitzung.
+
+    Der Befehl liess das bis dahin durch und schrieb sogar eine
+    ``http://``-Adresse hin -- ein Versprechen, das er nicht halten kann.
+    Genau das Bild, vor dem seine eigene Warnung fuer fremde Adressen
+    schuetzt: alles laeuft, nichts geht.
+    """
+    aus = io.StringIO()
+    code = main(["--data-dir", str(tmp_path), "serve", "--host", "127.0.0.1"],
+                out=aus, server=FakeServer, umgebung=_umgebung(tmp_path))
+    assert code != 0, aus.getvalue()
+    assert "--insecure-http" in aus.getvalue(), aus.getvalue()
+    assert not FakeServer.letzte.get("serve")
+
+
+def test_mit_insecure_http_laeuft_es_oertlich(tmp_path: Path) -> None:
+    """Der ausdrueckliche Weg fuer die Entwicklung.
+
+    Er muss ausdruecklich sein: waere er die Vorgabe, liefe irgendwann ein
+    Dashboard ohne TLS im Netz, und niemand haette es entschieden.
+    """
+    aus = io.StringIO()
+    code = main(["--data-dir", str(tmp_path), "serve", "--host", "127.0.0.1",
+                 "--insecure-http"], out=aus, server=FakeServer,
+                umgebung=_umgebung(tmp_path))
+    assert code == 0, aus.getvalue()
+    assert FakeServer.letzte.get("serve")
+    assert "nur fuer die Entwicklung" in aus.getvalue().lower() or \
+        "entwicklung" in aus.getvalue().lower(), aus.getvalue()
+
+
+def test_insecure_http_gilt_nur_oertlich(tmp_path: Path) -> None:
+    """Sonst waere die Ausnahme der bequemste Weg, TLS ganz wegzulassen."""
+    aus = io.StringIO()
+    code = main(["--data-dir", str(tmp_path), "serve", "--host", "0.0.0.0",
+                 "--insecure-http"], out=aus, server=FakeServer,
+                umgebung=_umgebung(tmp_path))
+    assert code != 0, aus.getvalue()
+    assert not FakeServer.letzte.get("serve")
+
+
+def test_die_anwendung_kennt_den_unterschied(tmp_path: Path) -> None:
+    """Der Schalter muss bis zum Cookie durchschlagen -- sonst ist er ein
+    Schild ohne Wirkung."""
+    from litestar.middleware.session.server_side import ServerSideSessionConfig
+
+    from swarmq_dashboard.config import DashboardConfig
+    from swarmq_dashboard.web.app import create_app
+
+    config = DashboardConfig(
+        broker_url="amqp://guest:guest@127.0.0.1:1/", backend_url="valkey://127.0.0.1:1/0",
+        stream_url="valkey://127.0.0.1:1/1", retention_days=7, unconfirmed_after_s=15.0,
+        disconnected_after_s=40.0, session_idle_s=1800.0, backlog_cap=300,
+        stream_stale_after_s=120.0, data_dir=tmp_path / "sqd-data",
+    )
+
+    def sicher(app: Any) -> bool:
+        """Bis zum Cookie durchgereicht -- ueber den Rueckhalt der Sitzung,
+        den Litestar in der Zwischenschicht haelt."""
+        for m in app.middleware:
+            rueckhalt = getattr(m, "kwargs", {}).get("backend")
+            cfg = getattr(rueckhalt, "config", None)
+            if isinstance(cfg, ServerSideSessionConfig):
+                return bool(cfg.secure)
+        raise AssertionError("keine Sitzungseinstellung gefunden")
+
+    assert sicher(create_app(config)) is True, "die Vorgabe ist nicht sicher"
+    assert sicher(create_app(config, secure_cookies=False)) is False, (
+        "der Schalter erreicht das Cookie nicht"
+    )

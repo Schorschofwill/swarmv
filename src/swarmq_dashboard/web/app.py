@@ -15,6 +15,7 @@ das ``refresh()`` im Takt nachfuehrt.
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
@@ -737,6 +738,7 @@ def create_app(
     broker: Any | None = None,
     dlq_admin: Any | None = None,
     stream: Any | None = None,
+    secure_cookies: bool = True,
 ) -> Litestar:
     """Die Anwendung bauen. Der Lebenszyklus haelt die Aussenverbindungen.
 
@@ -755,6 +757,10 @@ def create_app(
 
     @asynccontextmanager
     async def lebenszyklus(app: Litestar) -> AsyncGenerator[None]:
+        # Die Anmelderoute setzt ihr Merkmalscookie selbst und braucht
+        # dieselbe Einstellung wie die Sitzung -- sonst schickt der Klient
+        # ueber ``http`` nur eines von beiden mit.
+        app.state.secure_cookies = secure_cookies
         await services.startup()
         app.state.services = services
         # Der Einlese-Takt ist die Hauptarbeit: ohne ihn liest der Dienst den
@@ -788,7 +794,13 @@ def create_app(
         store=SESSION_STORE_NAME,
         max_age=int(config.session_idle_s),
         renew_on_access=True,
-        secure=True,
+        # ``False`` **nur** fuer die oertliche Entwicklung ueber Klartext-HTTP,
+        # und nur ueber ``serve --insecure-http``. Der Grund ist zwingend:
+        # kein Klient schickt ein ``Secure``-Cookie ueber ``http`` -- auch
+        # nicht an 127.0.0.1 --, und ohne Cookie kommt der POST ohne Sitzung
+        # an. Die Anmeldung antwortet dann mit "Das Anmeldeformular ist
+        # abgelaufen", und niemand kaeme je hinein.
+        secure=secure_cookies,
         httponly=True,
         samesite="strict",
     )
@@ -820,4 +832,7 @@ def aus_der_umgebung() -> Litestar:
     Dienst braucht, muss darum aus der Umgebung kommen und nicht aus
     Argumenten, die diesen Weg nicht ueberleben.
     """
-    return create_app(DashboardConfig.from_env())
+    # ``SQD_INSECURE_HTTP`` setzt ``serve --insecure-http``; der
+    # Arbeitsprozess erfaehrt nur ueber die Umgebung davon.
+    unsicher = os.environ.get("SQD_INSECURE_HTTP", "").strip() == "1"
+    return create_app(DashboardConfig.from_env(), secure_cookies=not unsicher)

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import os
 import sqlite3
 import sys
 from collections.abc import Callable, Mapping, Sequence
@@ -117,6 +118,11 @@ def _build_parser() -> argparse.ArgumentParser:
     dienst.add_argument("--port", type=int, default=8080, help="Port (Vorgabe: 8080)")
     dienst.add_argument("--tls-cert", type=Path, help="Zertifikat im PEM-Format")
     dienst.add_argument("--tls-key", type=Path, help="Schluessel im PEM-Format")
+    dienst.add_argument(
+        "--insecure-http", action="store_true",
+        help="ohne TLS auf 127.0.0.1 lauschen -- nur fuer die Entwicklung. "
+             "Die Sitzungscookies verlieren dabei ihr 'Secure'.",
+    )
 
     audit = unter.add_parser("audit", help="nachsehen, wer was getan hat (R27)")
     audit_aktionen = audit.add_subparsers(dest="aktion", required=True)
@@ -195,17 +201,34 @@ def _serve(args: argparse.Namespace, out: TextIO, server: Any,
               "und still ohne zu starten waere schlimmer, als gar nicht zu starten.",
               file=out)
         return 2
-    if not args.tls_cert and args.host not in OERTLICH:
-        print(
-            f"Auf {args.host} ohne TLS zu lauschen geht nicht auf: das "
-            "Sitzungscookie traegt 'secure', der Browser schickt es ueber eine "
-            "Klartextverbindung nicht mit, und die Anmeldung scheitert ohne "
-            "jede Fehlermeldung.\n"
-            "Entweder --tls-cert und --tls-key angeben, oder hinter einem "
-            "vorgelagerten TLS-Abschluss auf 127.0.0.1 lauschen.",
-            file=out,
-        )
-        return 2
+    if not args.tls_cert:
+        # Ohne TLS ueberhaupt nicht -- auch nicht oertlich. Beim ersten
+        # echten Start nachgemessen: die Cookies tragen 'Secure', kein Klient
+        # schickt sie ueber http, der POST kommt ohne Sitzung an, und die
+        # Anmeldung antwortet "Das Anmeldeformular ist abgelaufen". Ein
+        # Dashboard, in das niemand hineinkommt, ist kein laufendes
+        # Dashboard.
+        if not args.insecure_http:
+            print(
+                f"Auf {args.host} ohne TLS zu lauschen geht nicht auf: die "
+                "Sitzungscookies tragen 'Secure', kein Browser schickt sie "
+                "ueber eine Klartextverbindung mit, und die Anmeldung "
+                "scheitert mit 'Das Anmeldeformular ist abgelaufen'.\n"
+                "Drei Wege: --tls-cert und --tls-key angeben; hinter einem "
+                "vorgelagerten TLS-Abschluss lauschen (der spricht dann https "
+                "nach aussen); oder fuer die Entwicklung auf 127.0.0.1 mit "
+                "--insecure-http starten.",
+                file=out,
+            )
+            return 2
+        if args.host not in OERTLICH:
+            print(
+                f"--insecure-http gilt nur oertlich, nicht auf {args.host}. "
+                "Sonst waere die Ausnahme fuer die Entwicklung der bequemste "
+                "Weg, TLS ganz wegzulassen.",
+                file=out,
+            )
+            return 2
 
     # Die Einstellungen **vor** dem Start pruefen: ein Traceback aus dem
     # Arbeitsprozess sieht aus, als waere das Werkzeug kaputt, dabei fehlt
@@ -217,6 +240,11 @@ def _serve(args: argparse.Namespace, out: TextIO, server: Any,
     except Exception as exc:
         print(f"Die Einstellungen taugen nicht: {exc}", file=out)
         return 2
+
+    if args.insecure_http:
+        # Der Arbeitsprozess erfaehrt nur ueber die Umgebung davon: Granian
+        # bekommt einen Modulpfad und ruft die Fabrik selbst auf.
+        os.environ["SQD_INSECURE_HTTP"] = "1"
 
     if server is None:
         from granian import Granian
@@ -236,6 +264,10 @@ def _serve(args: argparse.Namespace, out: TextIO, server: Any,
     ziel = f"https://{args.host}:{args.port}" if args.tls_cert else \
         f"http://{args.host}:{args.port}"
     print(f"Dashboard laeuft auf {ziel} -- mit einem Arbeiter (KTD5).", file=out)
+    if args.insecure_http:
+        print("ACHTUNG: ohne TLS, und die Sitzungscookies verlieren ihr "
+              "'Secure'. Nur fuer die Entwicklung auf diesem Rechner.",
+              file=out)
     lauf.serve()
     return 0
 

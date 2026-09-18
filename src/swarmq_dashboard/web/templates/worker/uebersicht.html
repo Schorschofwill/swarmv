@@ -67,7 +67,7 @@
         <td class="mono">{{ laufzeit(w.started_at, now=jetzt) }}</td>
         <td>
           {%- if not w.connected(now=jetzt) %}
-          <form method="post" action="/worker/{{ w.worker_id }}/remove">
+          <form method="post" action="/worker/{{ w.worker_id|urlencode }}/remove">
             <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
             <button class="btn btn-sm">Entfernen</button>
           </form>

@@ -35,13 +35,13 @@
           <span class="tag is-wait"><span class="tag-dot"></span>
             wird gerade gesichtet</span>
           {%- else %}
-          <form method="post" action="/dlq/{{ z.queue }}/peek">
+          <form method="post" action="/dlq/{{ z.queue|urlencode }}/peek">
             <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
             <input type="hidden" name="bestaetigt" value="sichten">
             <button class="btn btn-sm">Sichten</button>
           </form>
           {%- endif %}
-          <form method="post" action="/dlq/{{ z.queue }}/requeue-all">
+          <form method="post" action="/dlq/{{ z.queue|urlencode }}/requeue-all">
             <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
             <button class="btn btn-sm">Alle wieder einreihen</button>
           </form>
@@ -55,7 +55,7 @@
               neben der Zerstoer-Handlung ist die beruhigendste
               Falschaussage der Seite. Der Knopf ist dann gesperrt, weil
               eine Bestaetigung ohne pruefbare Zahl ohnehin nicht traegt. -#}
-          <form method="post" action="/dlq/{{ z.queue }}/purge">
+          <form method="post" action="/dlq/{{ z.queue|urlencode }}/purge">
             <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
             <input type="hidden" name="bestaetigung" value="{{ z.queue }}">
             {%- if z.stats and not z.stats.error %}
@@ -100,7 +100,7 @@
         <td class="mono">{{ e['queue'] or '--' }}</td>
         <td class="mono">{{ e['body_size'] }} B</td>
         <td>
-          <form method="post" action="/dlq/{{ gesichtet.queue }}/requeue">
+          <form method="post" action="/dlq/{{ gesichtet.queue|urlencode }}/requeue">
             <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
             <input type="hidden" name="task_id" value="{{ e['task_id'] }}">
             <button class="btn btn-sm">Wieder einreihen</button>
@@ -131,7 +131,7 @@
     <tbody>
       {%- for z in tasks %}
       <tr>
-        <td class="mono"><a href="/tasks/{{ z['task_id'] }}">{{ z['task_id'] }}</a></td>
+        <td class="mono"><a href="/tasks/{{ z['task_id']|urlencode }}">{{ z['task_id'] }}</a></td>
         <td class="mono">{{ z['task_name'] or '--' }}</td>
         <td class="mono">{{ z['queue'] or '--' }}</td>
         <td class="mono args">{{ z['args_text'] or '--' }}</td>

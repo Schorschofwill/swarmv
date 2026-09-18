@@ -56,7 +56,7 @@ SICHT_WARNUNG = (
 UNVOLLSTAENDIG_HINWEIS = (
     "Diese Liste stammt aus dem Verzeichnis und ist möglicherweise "
     "unvollständig: Nachrichten von Workern ohne Hook und solche aus einer "
-    "Lücke im Strom fehlen. Massgeblich ist die Tiefe aus der "
+    "Lücke im Strom fehlen. Maßgeblich ist die Tiefe aus der "
     "Broker-Beobachtung."
 )
 

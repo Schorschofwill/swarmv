@@ -83,19 +83,32 @@ def login_form(request: Request[Any, Any, Any]) -> Response[str]:
         content=render("anmeldung.html", csrf_token=merkmal,
                        fehler=request.query_params.get("fehler")),
         media_type="text/html",
-        cookies=[_merkmal_cookie(merkmal)],
+        cookies=[_merkmal_cookie(merkmal, secure=_sicher(request))],
     )
 
 
-def _merkmal_cookie(wert: str) -> Cookie:
+def _sicher(request: Request[Any, Any, Any]) -> bool:
+    """Ob die Cookies ``Secure`` tragen -- dieselbe Einstellung wie die
+    Sitzung. Vorgabe ist ``True``; nur ``serve --insecure-http`` senkt sie."""
+    return bool(getattr(request.app.state, "secure_cookies", True))
+
+
+def _merkmal_cookie(wert: str, *, secure: bool = True) -> Cookie:
     """Das Merkmal fuer die Oberflaeche lesbar hinterlegen.
 
     Absichtlich **nicht** ``httponly``: die Fragmentaufrufe holen es und
     schicken es als Kopfzeile zurueck. Sein Schutz liegt in der Bindung an die
     Sitzung, nicht in der Unlesbarkeit -- ein untergeschobenes Cookie trifft
     den Wert in der fremden Sitzung nicht.
+
+    ``secure`` folgt derselben Einstellung wie das Sitzungscookie. Beim ersten
+    echten Start fiel auf, warum das zusammengehoert: blieb dieses Cookie
+    ``Secure``, waehrend das Sitzungscookie es nicht mehr war, schickte der
+    Klient ueber ``http`` nur eines von beiden -- und die Anmeldung scheiterte
+    weiter mit "Das Anmeldeformular ist abgelaufen", nur aus dem anderen
+    Grund.
     """
-    return Cookie(key=CSRF_COOKIE, value=wert, path="/", secure=True,
+    return Cookie(key=CSRF_COOKIE, value=wert, path="/", secure=secure,
                   httponly=False, samesite="strict")
 
 
@@ -160,7 +173,7 @@ async def login(
         # dauerhaft und offen.
         await services.audit.record("login", account=konto, target=herkunft)
         antwort = Redirect("/", status_code=303)
-        antwort.set_cookie(_merkmal_cookie(merkmal))
+        antwort.set_cookie(_merkmal_cookie(merkmal, secure=_sicher(request)))
         return antwort
 
     # R22: "der Betreiber sieht Fehlanmeldungen im Audit". Festgehalten wird
