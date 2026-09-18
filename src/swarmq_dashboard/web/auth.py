@@ -29,6 +29,7 @@ from typing import Any
 from urllib.parse import unquote
 
 from litestar.connection import ASGIConnection
+from litestar.enums import ScopeType
 from litestar.exceptions import NotAuthorizedException, PermissionDeniedException
 from litestar.handlers.base import BaseRouteHandler
 from litestar.stores.base import Store
@@ -210,6 +211,16 @@ class SqliteStore(Store):
         return max(0, int(float(zeile["expires_at"]) - self._clock()))
 
     # -- Pflege ------------------------------------------------------------
+
+    def purge_sync(self) -> int:
+        """Wie ``purge``, aber blockierend -- fuer den Aufruf im Arbeitsfaden."""
+        with self._riegel:
+            cur = self._con.execute(
+                "delete from session_store where expires_at is not null and expires_at <= ?",
+                (self._clock(),),
+            )
+            self._con.commit()
+        return int(cur.rowcount)
 
     async def purge(self) -> int:
         """Abgelaufene Zeilen entfernen. Gibt die Zahl zurueck.
@@ -422,6 +433,17 @@ def normalisierter_kontoname(roh: str) -> str:
     return unicodedata.normalize("NFC", roh).strip()[:MAX_NAME_LEN]
 
 
+def gleich(a: str, b: str) -> bool:
+    """Zwei Merkmale zeitgleich vergleichen, ohne an fremder Eingabe zu werfen.
+
+    ``secrets.compare_digest`` lehnt Zeichenketten mit Nicht-ASCII mit einem
+    ``TypeError`` ab. Der schlug bis in den Anmeldepfad durch -- ein
+    Serverfehler, unangemeldet ausloesbar und vor der Bremse, also unbegrenzt
+    wiederholbar. Als Bytes verglichen gibt es diesen Rand nicht.
+    """
+    return secrets.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
+
+
 def new_csrf_token() -> str:
     """Ein frisches CSRF-Merkmal."""
     return secrets.token_urlsafe(32)
@@ -442,16 +464,29 @@ def csrf_guard(connection: ASGIConnection[Any, Any, Any, Any], _: BaseRouteHandl
     zugleich doppeltes Absenden und Bindung: wer ein Cookie unterschiebt,
     kann den Wert in der fremden Sitzung nicht treffen.
     """
-    # ``scope["method"]`` statt ``connection.method``: die Verbindung kann
-    # auch eine Websocket-Verbindung sein, die keine Methode kennt.
-    methode = str(connection.scope.get("method", "GET")).upper()
-    if methode in SAFE_METHODS or connection.route_handler.opt.get("no_csrf"):
+    if connection.route_handler.opt.get("no_csrf"):
         return
+    # Eine Websocket-Verbindung kennt keine Methode -- sie faellt damit **nicht**
+    # auf "GET" und damit durch. R23 nennt den Live-Kanal ausdruecklich, und
+    # U12 zieht ihn ein; still durchzulassen waere die Luecke, die niemand
+    # bemerkt, bis sie da ist.
+    # Vergleich auf den **Wert**: der Scope traegt zur Laufzeit die
+    # Zeichenkette "http", nicht das Aufzaehlungsglied. Ein ``is``-Vergleich
+    # war hier still falsch und liess jede GET-Anfrage ein Merkmal verlangen.
+    if str(connection.scope["type"]) == ScopeType.HTTP.value:
+        methode = str(connection.scope.get("method", "")).upper()
+        if methode in SAFE_METHODS:
+            return
+
     erwartet = connection.session.get(SESSION_CSRF_KEY) if connection.session else None
-    gesendet = connection.headers.get(CSRF_HEADER) or connection.cookies.get(CSRF_COOKIE)
-    if (
-        not isinstance(erwartet, str)
-        or not gesendet
-        or not secrets.compare_digest(erwartet, gesendet)
-    ):
+    # **Nur** die Kopfzeile, nicht das Cookie. Das Merkmal-Cookie traegt nach
+    # der Anmeldung denselben Wert wie die Sitzung, und der Browser schickt es
+    # bei jeder Anfrage von selbst mit -- ein Rueckfall darauf verglich den
+    # Sitzungswert mit einer Kopie seiner selbst. Uebrig bliebe allein die
+    # Seitenbindung, und die traegt nicht gegen eine Nachbardomaene. Der
+    # Aufrufer muss das Merkmal **aktiv** mitschicken; genau darin besteht der
+    # Schutz. (Der Anfragekoerper kommt hier nicht in Frage: ihn im Waechter
+    # zu lesen verbrauchte den Datenstrom, bevor der Handler ihn sieht.)
+    gesendet = connection.headers.get(CSRF_HEADER)
+    if not isinstance(erwartet, str) or not gesendet or not gleich(erwartet, gesendet):
         raise PermissionDeniedException(detail="CSRF-Merkmal fehlt oder passt nicht zur Sitzung")

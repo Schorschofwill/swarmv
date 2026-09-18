@@ -33,6 +33,8 @@ Test-Liste (AGENTS.md):
 15. Ein Takt fuehrt die Erreichbarkeit nach -- im Dienst, nicht nur als Methode.
 16. Derselbe Takt raeumt abgelaufene Zeilen weg.
 17. Der Lebenszyklus startet den Takt -- nicht die Testreihe.
+18. Ein fehlschlagendes refresh() legt das Aufraeumen nicht stille, und der
+    Fehlgrund steht im Bericht.
 """
 
 from __future__ import annotations
@@ -381,3 +383,38 @@ async def test_der_lebenszyklus_startet_den_takt(tmp_path: Path) -> None:
             f"{uebrig} verfallene Zeilen -- der Lebenszyklus startet den Takt nicht"
         )
         assert client is not None
+
+
+async def test_ein_fehlschlagendes_refresh_legt_das_aufraeumen_nicht_still(tmp_path: Path) -> None:
+    """Beide Schritte lagen in einer Kapselung. Ein dauerhaft fehlschlagendes
+    ``refresh()`` liess damit das Aufraeumen nie laufen -- gemessen null
+    Durchlaeufe bei zwoelf Takten. Genau der Ausfall, gegen den diese Aufgabe
+    eingezogen wurde, kaeme zurueck, und zwar unsichtbar.
+    """
+    s = Services(_config(tmp_path))
+    await s.startup()
+    try:
+        assert s.throttle is not None
+        s.throttle._con.execute(
+            "insert into login_attempt(scope,key,count,last_at) values ('account','alt',9,0.0)"
+        )
+        s.throttle._con.commit()
+
+        async def wirft_immer() -> None:
+            raise RuntimeError("der Strom ist weg")
+
+        s.refresh = wirft_immer  # type: ignore[method-assign]
+        aufgabe = s.start_maintenance(every_s=0.05)
+        await asyncio.sleep(0.2)
+        aufgabe.cancel()
+
+        uebrig = s.throttle._con.execute("select count(*) from login_attempt").fetchone()[0]
+        assert uebrig == 0, (
+            f"{uebrig} verfallene Zeilen -- ein fehlschlagendes refresh() hat das "
+            "Aufraeumen mit stillgelegt"
+        )
+        bericht = s.status()["maintenance"]
+        assert bericht["refresh"], "der Fehlgrund des Takts wird verschwiegen"
+        assert bericht["purge"] is None
+    finally:
+        await s.shutdown()

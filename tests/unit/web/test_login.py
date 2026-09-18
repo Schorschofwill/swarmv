@@ -50,6 +50,12 @@ Test-Liste (AGENTS.md):
 25. Der Fehlschlag sagt nicht, woran es lag.
 26. Die Herkunft kommt nicht aus einer frei waehlbaren Kopfzeile.
 27. Die Bremse greift vor der Passwortpruefung.
+
+=== ZYKLUS 10: Befunde des Nachlaufs ueber die Korrekturen ===
+28. Ein Cookie allein ist kein Merkmal -- es muss mitgeschickt werden.
+29. Ein Nicht-ASCII-Merkmal wird abgewiesen, nicht mit 500 quittiert.
+30. Die Anmeldeseite entwertet kein gueltiges Merkmal.
+31. Eine unbrauchbare Kontendatei laesst den Dienst antworten.
 """
 
 from __future__ import annotations
@@ -703,3 +709,99 @@ async def test_die_bremse_greift_vor_der_passwortpruefung(tmp_path: Path) -> Non
             modul.asyncio.sleep = echt_sleep  # type: ignore[assignment]
 
     assert reihenfolge[:2] == ["warten", "pruefung"], f"Reihenfolge: {reihenfolge}"
+
+
+# --- Zyklus 10: Befunde des Nachlaufs ueber die Korrekturen --------------
+
+
+async def test_ein_cookie_allein_ist_kein_merkmal(tmp_path: Path) -> None:
+    """Die doppelte Absendung entartet, wenn das Cookie selbst als Beleg gilt.
+
+    Nach der Anmeldung traegt das Merkmal-Cookie denselben Wert wie die
+    Sitzung -- der Browser schickt es bei jeder Anfrage von selbst mit. Faellt
+    der Waechter darauf zurueck, vergleicht er den Sitzungswert mit einer
+    Kopie seiner selbst, und ein Merkmal, das der Aufrufer **aktiv**
+    mitschicken muss, gibt es nicht mehr. Uebrig bleibt allein die
+    Seitenbindung, und die traegt nicht gegen eine Nachbardomaene.
+
+    Der alte Test loeschte das Cookie und pruefte damit den Fall, den es im
+    Browser gar nicht gibt.
+    """
+    async with _klient(_mit_konto(tmp_path)) as c:
+        await _anmelden(c)
+        assert c.cookies.get("csrftoken"), "Vorbedingung: das Cookie muss da sein"
+        antwort = await c.post("/logout", follow_redirects=False)
+        assert antwort.status_code == 403, (
+            "die Aktion lief ohne mitgeschicktes Merkmal -- nur mit den Cookies"
+        )
+
+
+async def test_ein_nicht_ascii_merkmal_wirft_nicht(tmp_path: Path) -> None:
+    """``secrets.compare_digest`` lehnt Zeichenketten mit Nicht-ASCII mit
+    ``TypeError`` ab. Das ergab einen Serverfehler auf dem Anmeldepfad --
+    unangemeldet ausloesbar, vor der Bremse, also unbegrenzt wiederholbar.
+    """
+    async with _klient(_mit_konto(tmp_path)) as c:
+        await c.get("/login")
+        antwort = await c.post(
+            "/login", data={"account": "ops", "password": "x", "_csrf_token": "ä"},
+            follow_redirects=False,
+        )
+        assert antwort.status_code == 403, f"{antwort.status_code} statt einer Abweisung"
+
+    # Ueber eine Kopfzeile laesst sich Nicht-ASCII gar nicht senden -- HTTP
+    # erlaubt dort nur Latin-1, und httpx weist es schon beim Bauen ab. Der
+    # Vergleich selbst muss den Rand trotzdem aushalten: er bekommt auch
+    # Formularwerte, und dort kommt alles an.
+    from swarmq_dashboard.web.auth import gleich
+
+    assert gleich("ä", "ä") is True
+    assert gleich("ä", "a") is False
+    assert gleich("\U0001f600", "x") is False
+
+
+async def test_die_anmeldeseite_entwertet_kein_gueltiges_merkmal(tmp_path: Path) -> None:
+    """Ein zweiter Tab, ein Lesezeichen oder die Zurueck-Taste genuegte.
+
+    ``login_form`` wuerfelte bei jedem Aufruf ein neues Merkmal und setzte es
+    als Cookie -- auch fuer einen bereits Angemeldeten. Danach passte das
+    Cookie nicht mehr zur Sitzung, und jede Schreibaktion scheiterte mit 403,
+    bis sich das Teammitglied neu anmeldet. Genau der Schaden, vor dem der
+    Docstring des alten CSRF-Geheimnisses gewarnt hat.
+    """
+    async with _klient(_mit_konto(tmp_path)) as c:
+        await _anmelden(c)
+        vorher = str(c.cookies.get("csrftoken"))
+        await c.get("/login", follow_redirects=False)
+        nachher = str(c.cookies.get("csrftoken"))
+        assert nachher == vorher, "die Anmeldeseite hat das gueltige Merkmal ersetzt"
+
+        antwort = await c.post("/logout", headers={"x-csrftoken": nachher},
+                               follow_redirects=False)
+        assert antwort.status_code == 303, (
+            f"nach einem Aufruf der Anmeldeseite scheitert das Schreiben: {antwort.status_code}"
+        )
+
+
+async def test_eine_unbrauchbare_kontendatei_laesst_den_dienst_antworten(tmp_path: Path) -> None:
+    """R33 auf dem ganzen Weg, nicht nur bis ``Services.startup()``.
+
+    Der Wurf war nur von ``startup()`` nach ``create_app()`` gewandert -- und
+    wo er nicht mehr warf, antwortete der Dienst auf **jede** Anfrage mit 500,
+    weil die Sitzungs-Middleware auf jeder Antwort in den Speicher schreibt.
+    Der Zustand war schlechter als vorher: statt eines klaren Fehlers beim
+    Start lief ein Dienst, der nur noch Serverfehler lieferte.
+    """
+    config = _mit_konto(tmp_path)
+    config.accounts_file.write_bytes(b"SQLite format 3\x00" + b"\xff" * 4000)
+
+    app = create_app(config, hasher=_BILLIG)          # darf nicht werfen
+    async with AsyncTestClient(app=app, base_url=BASIS) as c:
+        seite = await c.get("/login")
+        assert seite.status_code == 200, f"die Anmeldeseite antwortet mit {seite.status_code}"
+        zustand = await c.get("/api/status", follow_redirects=False)
+        assert zustand.status_code in (302, 303, 401), (
+            f"/api/status antwortet mit {zustand.status_code} statt einer Abweisung"
+        )
+        assert app.state.services.status()["accounts"]["ok"] is False
+        assert app.state.services.status()["accounts"]["reason"]

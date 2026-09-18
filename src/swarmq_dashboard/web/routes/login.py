@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import html
-import secrets
 from typing import Annotated, Any
 
 from litestar import Request, Response, get, post
@@ -24,6 +23,7 @@ from swarmq_dashboard.web.auth import (
     CSRF_FIELD,
     SESSION_ACCOUNT_KEY,
     SESSION_CSRF_KEY,
+    gleich,
     new_csrf_token,
     normalisierter_kontoname,
     rotate_session_id,
@@ -70,7 +70,12 @@ def login_form(request: Request[Any, Any, Any]) -> Response[str]:
     # Merkmal in Cookie **und** Formularfeld, beim Abschicken verglichen. Das
     # schliesst die Anmeldung von einer Fremdseite, ohne etwas zu speichern.
     # Sitzungsgebunden wird das Merkmal erst nach der Anmeldung (R23).
-    merkmal = new_csrf_token()
+    # Ein bereits gueltiges Merkmal **nicht** ersetzen: die Seite ist
+    # oeffentlich, und ein zweiter Tab, ein Lesezeichen oder die Zurueck-Taste
+    # genuegte, damit das Cookie nicht mehr zur Sitzung passt. Danach scheitert
+    # jede Schreibaktion mit 403, bis sich das Teammitglied neu anmeldet.
+    vorhanden = request.session.get(SESSION_CSRF_KEY) if request.session else None
+    merkmal = vorhanden if isinstance(vorhanden, str) and vorhanden else new_csrf_token()
     return Response(
         content=(
             "<!doctype html><meta charset=utf-8><title>Anmelden</title>"
@@ -120,7 +125,7 @@ async def login(
     # Fremdseite -- sonst landet das Opfer unbemerkt im Konto des Angreifers.
     aus_dem_feld = data.get(CSRF_FIELD) or ""
     aus_dem_cookie = request.cookies.get(CSRF_COOKIE) or ""
-    if not aus_dem_feld or not secrets.compare_digest(aus_dem_feld, aus_dem_cookie):
+    if not aus_dem_feld or not gleich(aus_dem_feld, aus_dem_cookie):
         return Response(content="Das Anmeldeformular ist abgelaufen. Bitte neu laden.",
                         media_type="text/plain", status_code=403)
 

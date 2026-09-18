@@ -18,7 +18,6 @@ import asyncio
 import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
-from pathlib import Path
 from typing import Any
 
 from argon2 import PasswordHasher
@@ -79,40 +78,49 @@ class _SitzungsWeiche(Store):
         self._services = services
 
     @property
-    def _echt(self) -> SqliteStore:
-        speicher = self._services._sitzungsspeicher
-        if speicher is None:
-            raise RuntimeError("der Sitzungsspeicher ist nicht geoeffnet")
-        return speicher
+    def _echt(self) -> SqliteStore | None:
+        # Kein Wurf bei fehlendem Speicher: die Sitzungsschicht schreibt auf
+        # *jeder* Antwort, und ein Wurf hier machte aus einer unbrauchbaren
+        # Kontendatei einen Dienst, der auf jede Anfrage mit 500 antwortet --
+        # auch auf die Anmeldeseite und die Kopfzeile, die den Grund nennen
+        # soll. Ohne Speicher gibt es eben keine Sitzung; der Waechter weist
+        # dann ab, und das ist die richtige Antwort (R33).
+        return self._services._sitzungsspeicher
 
     async def set(self, key: str, value: str | bytes, expires_in: object = None) -> None:
-        await self._echt.set(key, value, expires_in)  # type: ignore[arg-type]
+        if (speicher := self._echt) is not None:
+            await speicher.set(key, value, expires_in)  # type: ignore[arg-type]
 
     async def get(self, key: str, renew_for: object = None) -> bytes | None:
-        return await self._echt.get(key, renew_for)  # type: ignore[arg-type]
+        speicher = self._echt
+        return await speicher.get(key, renew_for) if speicher else None  # type: ignore[arg-type]
 
     async def delete(self, key: str) -> None:
-        await self._echt.delete(key)
+        if (speicher := self._echt) is not None:
+            await speicher.delete(key)
 
     async def delete_all(self) -> None:
-        await self._echt.delete_all()
+        if (speicher := self._echt) is not None:
+            await speicher.delete_all()
 
     async def exists(self, key: str) -> bool:
-        return await self._echt.exists(key)
+        speicher = self._echt
+        return await speicher.exists(key) if speicher else False
 
     async def expires_in(self, key: str) -> int | None:
-        return await self._echt.expires_in(key)
+        speicher = self._echt
+        return await speicher.expires_in(key) if speicher else None
 
 
-def build_store_registry(accounts_file: Path, store: Store | None = None) -> StoreRegistry:
+def build_store_registry(store: Store) -> StoreRegistry:
     """Die Registratur mit genau einem angemeldeten Speicher.
 
-    Legt die Kontendatei zuvor an: ``auth._connect`` oeffnet nur, es stellt
-    kein Schema. Frueher ging das nur gut, weil zufaellig eine Zeile darueber
-    den Kontenspeicher anfasste -- wer die beiden Zeilen tauscht, braeche jede
-    Neuinstallation. Die Abhaengigkeit steht jetzt da, wo sie gilt.
+    Legt **nichts** an: das tut ``Services._konten_oeffnen``, gekapselt. Hier
+    stand einmal ein ``AccountStore(...)``, damit die Datei existiert -- und
+    damit lag der einzige ungekapselte Zugriff ausgerechnet im Bauweg der
+    Anwendung. Eine unbrauchbare Kontendatei liess ``create_app`` werfen; der
+    Wurf war nur von ``startup()`` hierher gewandert.
     """
-    AccountStore(accounts_file).close()
 
     def kein_ersatz(name: str) -> Store:
         raise UnknownStore(
@@ -120,8 +128,7 @@ def build_store_registry(accounts_file: Path, store: Store | None = None) -> Sto
             "Rueckfall auf den Arbeitsspeicher wuerde die Sitzungen verlieren"
         )
 
-    return StoreRegistry({SESSION_STORE_NAME: store or SqliteStore(accounts_file)},
-                         default_factory=kein_ersatz)
+    return StoreRegistry({SESSION_STORE_NAME: store}, default_factory=kein_ersatz)
 
 
 def _teil(ok: bool, reason: str | None = None) -> dict[str, Any]:
@@ -167,6 +174,8 @@ class Services:
         self._gruende: dict[str, str | None] = {
             "directory": "noch nicht geoeffnet",
             "accounts": "noch nicht geoeffnet",
+            "takt_refresh": None,
+            "takt_purge": None,
             "stream": "noch nicht verbunden",
             "backend": "noch nicht verbunden",
             "broker": "noch nicht verbunden",
@@ -307,15 +316,22 @@ class Services:
         async def takt() -> None:
             while True:
                 await asyncio.sleep(every_s)
-                try:
-                    await self.refresh()
-                    await self._aufraeumen()
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    # Ein Fehler im Takt darf den Takt nicht beenden -- sonst
-                    # steht die Anzeige nach der ersten Stoerung fuer immer.
-                    continue
+                # Jeder Schritt einzeln gekapselt: zusammen legte ein dauerhaft
+                # fehlschlagendes ``refresh()`` das Aufraeumen still mit --
+                # gemessen null Aufraeum-Durchlaeufe bei zwoelf Takten. Genau
+                # der Ausfall, gegen den diese Aufgabe eingezogen wurde, kaeme
+                # damit zurueck, und zwar unsichtbar.
+                for schritt, name in ((self.refresh, "refresh"), (self._aufraeumen, "purge")):
+                    try:
+                        await schritt()
+                        self._gruende[f"takt_{name}"] = None
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        # Ein Fehler beendet den Takt nicht -- sonst steht die
+                        # Anzeige nach der ersten Stoerung fuer immer. Er
+                        # verschwindet aber auch nicht: der Bericht nennt ihn.
+                        self._gruende[f"takt_{name}"] = str(exc)
 
         return asyncio.ensure_future(takt())
 
@@ -324,7 +340,9 @@ class Services:
         if self.throttle is not None:
             await asyncio.to_thread(self.throttle.purge)
         if self._sitzungsspeicher is not None:
-            await self._sitzungsspeicher.purge()
+            # Wie der Bremsen-purge in einen Faden: gemessen 0,18 s bei
+            # 200.000 abgelaufenen Zeilen, und Granian faehrt einen Arbeiter.
+            await asyncio.to_thread(self._sitzungsspeicher.purge_sync)
 
     # -- Zustand ---------------------------------------------------------
 
@@ -353,6 +371,12 @@ class Services:
             },
             "directory": self._verzeichnis_bericht(),
             "accounts": _teil(self._gruende["accounts"] is None, self._gruende["accounts"]),
+            # Ein Takt, der still nicht mehr laeuft, waere genau die Art
+            # Ausfall, die dieses Dashboard nicht machen darf.
+            "maintenance": {
+                "refresh": self._gruende["takt_refresh"],
+                "purge": self._gruende["takt_purge"],
+            },
         }
 
     def _verzeichnis_bericht(self) -> dict[str, Any]:
@@ -460,7 +484,7 @@ def create_app(
     return Litestar(
         route_handlers=[zustand, login_form, login, logout],
         lifespan=[lebenszyklus],
-        stores=build_store_registry(config.accounts_file, weiche),
+        stores=build_store_registry(weiche),
         middleware=[sitzung.middleware],
         guards=[session_guard, csrf_guard],
     )
