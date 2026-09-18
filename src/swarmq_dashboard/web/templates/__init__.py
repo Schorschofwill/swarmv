@@ -89,6 +89,45 @@ def marke(name: str, zustand: dict[str, Any], strom: bool = False) -> str:
     )
 
 
+#: Status-Wert -> Zustandsart der Gestaltung. Die Zuordnung steht hier und
+#: nicht in der Vorlage, damit sie an **einer** Stelle liegt: eine Vorlage,
+#: die sie nachbaut, laeuft irgendwann auseinander.
+_ZUSTANDSART = {
+    "fertig": "ok",
+    "laufend": "laeuft",
+    "wartend": "neutral",
+    "wiederholung": "wartet",
+    "storniert": "neutral",
+    "gescheitert": "fehler",
+    "dead_letter": "fehler",
+    "abgelaufen": "fehler",
+    "abgewiesen": "fehler",
+}
+
+
+def zustandsart(status: str | None) -> str:
+    """Die Zustandsart zu einem Task-Status. Unbekanntes ist neutral.
+
+    Neutral und nicht "fehler": ein Status, den diese Fassung nicht kennt, ist
+    keine Stoerung -- er ist eine Aussage, die wir noch nicht einordnen.
+    """
+    return _ZUSTANDSART.get(status or "", "neutral")
+
+
+def weiterlink(f: object, cursor: str) -> str:
+    """Die Adresszeile fuer die naechste Seite, mit allen Filtern."""
+    from urllib.parse import urlencode
+
+    teile = {
+        "q": getattr(f, "text", ""),
+        "status": getattr(f, "status", ""),
+        "task_name": getattr(f, "task_name", ""),
+        "worker_id": getattr(f, "worker_id", ""),
+        "cursor": cursor,
+    }
+    return urlencode({k: v for k, v in teile.items() if v})
+
+
 def _environment() -> Environment:
     env = Environment(
         loader=FileSystemLoader(TEMPLATE_DIR),
@@ -97,6 +136,8 @@ def _environment() -> Environment:
     )
     env.globals["marke"] = marke
     env.globals["zeitpunkt"] = zeitpunkt
+    env.globals["weiterlink"] = weiterlink
+    env.globals["zustandsart"] = zustandsart
     env.globals["bereiche"] = BEREICHE
     return env
 
@@ -124,6 +165,8 @@ def template_config() -> TemplateConfig[JinjaTemplateEngine]:
 def _engine_callback(engine: JinjaTemplateEngine) -> None:
     engine.engine.globals["marke"] = marke
     engine.engine.globals["zeitpunkt"] = zeitpunkt
+    engine.engine.globals["weiterlink"] = weiterlink
+    engine.engine.globals["zustandsart"] = zustandsart
     engine.engine.globals["bereiche"] = BEREICHE
 
 

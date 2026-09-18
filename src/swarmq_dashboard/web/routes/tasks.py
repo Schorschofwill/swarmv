@@ -1,0 +1,158 @@
+"""Tasks-Liste und Detail (U13, F1).
+
+Der Hauptfluss: ein Teammitglied sucht nach einem Fragment aus den Argumenten,
+sieht Status und Argumente, oeffnet den Task und liest die Signalfolge.
+
+Drei stehende Hinweise gehoeren zwingend dazu, und alle drei verhindern
+dieselbe Sorte Irrtum -- eine Seite, die vollstaendig **aussieht**, es aber
+nicht ist:
+
+* **Reichweite** (R8). Ohne sie liest sich "keine Treffer" wie "hat es nie
+  gegeben", auch wenn der Task schlicht aelter ist als die Aufbewahrung.
+* **Herkunft** (R31). Scheduler- und verzoegerte Einreihungen kennt das
+  Verzeichnis erst ab dem Aufgreifen; ein geratener Einreihungszeitpunkt waere
+  eine Falschaussage, ein leeres Feld ohne Erklaerung ein Raetsel.
+* **Luecken** (R4a). Eine Zeitspanne, aus der Ereignisse fehlen, muss
+  erkennbar sein -- sonst liest sich das Fehlende als "nicht gelaufen".
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from litestar import Request, get
+from litestar.exceptions import NotFoundException
+from litestar.params import FromPath
+from litestar.response import Template
+
+from swarmq_dashboard.directory.queries import DirectoryQueries, Filter
+from swarmq_dashboard.web.auth import SESSION_ACCOUNT_KEY
+
+#: Der stehende Hinweis aus R31. Er steht auf **jeder** Listenseite, nicht nur
+#: wenn gerade eine betroffene Zeile sichtbar ist: die Abwesenheit einer
+#: solchen Zeile ist selbst keine Aussage.
+HERKUNFT_HINWEIS = (
+    "Scheduler-Ausloesungen und verzoegerte Einreihungen kennt das Verzeichnis "
+    "erst beim Aufgreifen -- fuer sie steht kein Einreihungszeitpunkt da."
+)
+
+
+def leerzustand(f: Filter, status: dict[str, Any], reichweite: float | None) -> tuple[str, str]:
+    """Titel und **wahrscheinliche Ursache** fuer eine leere Liste (R33).
+
+    "Keine Treffer" allein ist die gefaehrlichste Antwort dieser Seite: sie
+    liest sich wie "es ist nichts passiert", auch wenn in Wahrheit der Strom
+    fehlt, das Verzeichnis gerade neu aufgebaut wird oder der Task schlicht
+    aelter ist als die Aufbewahrung. Die Reihenfolge hier ist die der
+    Wahrscheinlichkeit, und jede Stufe nennt etwas Ueberpruefbares.
+    """
+    if status["directory"].get("rebuilding"):
+        return ("Das Verzeichnis wird gerade neu aufgebaut",
+                "Die Liste ist noch unvollstaendig. Sobald der Strom eingeholt ist, "
+                "steht hier mehr.")
+    if reichweite is None:
+        # Gar kein Eintrag. Hier ist der fehlende Strom die wahrscheinliche
+        # Ursache und nicht bloss Beiwerk.
+        if not status["stream"]["ok"]:
+            return ("Keine Ereignisse erreichbar",
+                    f"Der Ereignisstrom ist nicht erreichbar: {status['stream']['reason']}")
+        return ("Noch kein Task im Verzeichnis",
+                "Es sind bisher keine Ereignisse eingetroffen. Laeuft in den "
+                "Anwendungen und Workern der Hook des Dashboards?")
+    if any((f.text, f.status, f.task_name, f.worker_id)):
+        # Das Verzeichnis hat Eintraege, nur keinen passenden. Dass der Strom
+        # daneben stockt, steht in der Kopfzeile -- hier waere es die
+        # unwahrscheinlichere Erklaerung und lenkte von der Suche ab.
+        return ("Kein Task passt zu dieser Suche",
+                f"Das Verzeichnis reicht bis {_lesbar(reichweite)} zurueck -- "
+                "aelteres steht nicht mehr darin.")
+    return ("Kein Task im gewaehlten Zeitraum",
+            f"Das Verzeichnis reicht bis {_lesbar(reichweite)} zurueck.")
+
+
+def _lesbar(ts: float | None) -> str:
+    from swarmq_dashboard.web.templates import zeitpunkt
+
+    return zeitpunkt(ts)
+
+
+def _abfragen(request: Request[Any, Any, Any]) -> DirectoryQueries:
+    services = request.app.state.services
+    schreiber = services.services_directory_writer
+    if schreiber is None:
+        raise NotFoundException(detail="das Verzeichnis ist nicht geoeffnet")
+    return DirectoryQueries(schreiber._con)
+
+
+def _filter_aus(request: Request[Any, Any, Any]) -> Filter:
+    p = request.query_params
+    return Filter(
+        text=p.get("q", ""),
+        status=p.get("status", ""),
+        task_name=p.get("task_name", ""),
+        worker_id=p.get("worker_id", ""),
+        since=_zahl(p.get("since")),
+        until=_zahl(p.get("until")),
+    )
+
+
+def _zahl(wert: str | None) -> float | None:
+    try:
+        return float(wert) if wert else None
+    except ValueError:
+        return None
+
+
+@get("/tasks")
+async def liste(request: Request[Any, Any, Any]) -> Template:
+    """Die Task-Liste mit Suche und vier Filtern (R10)."""
+    q = _abfragen(request)
+    f = _filter_aus(request)
+    seite = q.search(f, cursor=request.query_params.get("cursor"))
+    status = request.app.state.services.status()
+    reichweite = q.reach()
+    leer = leerzustand(f, status, reichweite)
+    return Template(
+        "tasks/liste.html",
+        context={
+            "zeilen": seite.rows,
+            "hinweis": seite.note,
+            "weiter": seite.next_cursor,
+            "filter": f,
+            "reichweite": reichweite,
+            "leer_titel": leer[0],
+            "leer_ursache": leer[1],
+            "herkunft_hinweis": HERKUNFT_HINWEIS,
+            "status": status,
+            "account": request.session.get(SESSION_ACCOUNT_KEY, ""),
+            "aktiv": "tasks",
+            "csrf_token": request.session.get("csrf", ""),
+        },
+    )
+
+
+@get("/tasks/{task_id:str}")
+async def detail(request: Request[Any, Any, Any], task_id: FromPath[str]) -> Template:
+    """Die Task-Ansicht mit allen Feldern, Argumenten und der Signalfolge."""
+    q = _abfragen(request)
+    schreiber = request.app.state.services.services_directory_writer
+    zeile = schreiber.row(task_id)
+    if zeile is None:
+        # Benannt, nicht als Absturz -- und ohne zu behaupten, es habe den
+        # Task nie gegeben: er kann schlicht aelter sein als die Aufbewahrung.
+        raise NotFoundException(
+            detail=f"Kein Task mit der Kennung {task_id!r} im Verzeichnis. "
+            "Er kann aelter sein als die Aufbewahrung."
+        )
+    return Template(
+        "tasks/detail.html",
+        context={
+            "task": zeile,
+            "signale": q.signals(task_id),
+            "herkunft_hinweis": HERKUNFT_HINWEIS,
+            "status": request.app.state.services.status(),
+            "account": request.session.get(SESSION_ACCOUNT_KEY, ""),
+            "aktiv": "tasks",
+            "csrf_token": request.session.get("csrf", ""),
+        },
+    )

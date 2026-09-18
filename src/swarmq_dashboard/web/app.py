@@ -46,6 +46,7 @@ from swarmq_dashboard.web.auth import (
     session_guard,
 )
 from swarmq_dashboard.web.routes.login import login, login_form, logout
+from swarmq_dashboard.web.routes.tasks import detail, liste
 from swarmq_dashboard.web.stream import LIVE_CHANNEL, LivePublisher, live
 from swarmq_dashboard.web.templates import statische_dateien, template_config
 
@@ -516,7 +517,8 @@ def create_app(
     # Sitzung angenommen. R23 verlangt aber ein **sitzungsgebundenes**
     # Merkmal. ``csrf_guard`` liefert das; es steht in der Sitzung selbst.
     return Litestar(
-        route_handlers=[zustand, login_form, login, logout, live, statische_dateien()],
+        route_handlers=[zustand, login_form, login, logout, live, liste, detail,
+                        statische_dateien()],
         template_config=template_config(),
         lifespan=[lebenszyklus],
         stores=build_store_registry(weiche),

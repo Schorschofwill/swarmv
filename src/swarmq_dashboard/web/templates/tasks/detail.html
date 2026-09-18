@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block titel %}Task {{ task['task_id'] }}{% endblock %}
+{% block inhalt %}
+
+<section class="card">
+  <h2 class="mono">{{ task['task_id'] }}</h2>
+  <dl class="felder">
+    <dt>Name</dt><dd class="mono">{{ task['task_name'] or '--' }}</dd>
+    <dt>Queue</dt><dd class="mono">{{ task['queue'] or '--' }}</dd>
+    <dt>Status</dt><dd>
+      <span class="chip chip--{{ zustandsart(task['status']) }}">
+        <span class="dot dot--{{ zustandsart(task['status']) }}"></span> {{ task['status'] or 'unbekannt' }}
+      </span>
+      {%- if task['incomplete'] %}
+      <span class="chip chip--wartet"><span class="dot dot--wartet"></span> unvollstaendig</span>
+      {%- endif %}
+    </dd>
+    <dt>Eingereiht</dt><dd class="mono">
+      {%- if task['enqueued_at'] %}{{ zeitpunkt(task['enqueued_at']) }}
+      {%- else %}<span class="muted">erst beim Aufgreifen -- {{ herkunft_hinweis }}</span>
+      {%- endif %}</dd>
+    <dt>Gestartet</dt><dd class="mono">{{ zeitpunkt(task['started_at']) }}</dd>
+    <dt>Beendet</dt><dd class="mono">{{ zeitpunkt(task['ended_at']) }}</dd>
+    <dt>Laufzeit</dt><dd class="mono num">
+      {%- if task['duration_ms'] %}{{ '%.0f'|format(task['duration_ms']) }} ms{% else %}--{% endif %}</dd>
+    <dt>Worker</dt><dd class="mono">{{ task['worker_id'] or '--' }}</dd>
+    <dt>Wiederholungen</dt><dd class="mono num">{{ task['retry_count'] }}</dd>
+    <dt>Herkunft</dt><dd class="mono">{{ task['origin'] }}</dd>
+    {%- if task['error'] %}
+    <dt>Fehler</dt><dd class="mono fehler">{{ task['error'] }}</dd>
+    {%- endif %}
+  </dl>
+</section>
+
+<section class="card">
+  <h3>Argumente</h3>
+  {#- Klartext, sieben Tage lang (R7, KD11). Bewusst so entschieden: ohne die
+      Argumente beantwortet das Dashboard die Frage "welcher Kunde ist
+      betroffen?" nicht. -#}
+  <pre class="mono args">{{ task['args_text'] or '--' }}</pre>
+</section>
+
+<section class="card">
+  <h3>Signalfolge</h3>
+  {#- In **Stromreihenfolge**, nicht nach Zeitstempel: Anwendungs- und
+      Worker-Host haben getrennte Uhren, und schon Sekunden Versatz liessen
+      das Aufgreifen vor der Einreihung erscheinen (R11). -#}
+  {%- if signale %}
+  <table class="tabelle">
+    <thead><tr><th>Signal</th><th>Zeitpunkt</th></tr></thead>
+    <tbody>
+      {%- for s in signale %}
+      <tr><td class="mono">{{ s['type'] }}</td><td class="mono">{{ zeitpunkt(s['ts']) }}</td></tr>
+      {%- endfor %}
+    </tbody>
+  </table>
+  {%- else %}
+  <p class="muted">Keine Signale im Verzeichnis.</p>
+  {%- endif %}
+</section>
+
+{% endblock %}
