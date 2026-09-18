@@ -56,6 +56,12 @@ Test-Liste (AGENTS.md):
 29. Ein Nicht-ASCII-Merkmal wird abgewiesen, nicht mit 500 quittiert.
 30. Die Anmeldeseite entwertet kein gueltiges Merkmal.
 31. Eine unbrauchbare Kontendatei laesst den Dienst antworten.
+
+=== ZYKLUS 11: Audit (U10, R27) ===
+32. Ein fehlendes Audit haelt die Anmeldung nicht auf, verschwindet aber nicht.
+    (Dass die Eintraege wirklich entstehen, prueft die Integrationsreihe --
+    ohne echten Strom ist das Audit leer, und jede Zusicherung darauf haelte
+    trivial.)
 """
 
 from __future__ import annotations
@@ -805,3 +811,21 @@ async def test_eine_unbrauchbare_kontendatei_laesst_den_dienst_antworten(tmp_pat
         )
         assert app.state.services.status()["accounts"]["ok"] is False
         assert app.state.services.status()["accounts"]["reason"]
+
+
+# --- Zyklus 11: Audit (U10, R27) ----------------------------------------
+
+
+async def test_ein_fehlendes_audit_haelt_die_anmeldung_nicht_auf(tmp_path: Path) -> None:
+    """KTD8: die Anmeldung muss gehen, wenn Valkey weg ist -- der Audit liegt
+    aber in Valkey. Ein nicht geschriebener Eintrag darf sie nicht aufhalten;
+    verschwinden darf er auch nicht.
+    """
+    config = _mit_konto(tmp_path)          # zeigt auf tote Ports
+    app = create_app(config, hasher=_BILLIG, throttle_scale=_BREMSE)
+    async with AsyncTestClient(app=app, base_url=BASIS) as c:
+        antwort = await _anmelden(c)
+        assert antwort.status_code == 303, "die Anmeldung scheiterte ohne Valkey"
+        assert (await c.get("/api/status")).status_code == 200
+        assert app.state.services.audit.lost > 0, "der nicht geschriebene Eintrag wurde verschwiegen"
+        assert (await c.get("/api/status")).json()["audit"]["lost"] > 0

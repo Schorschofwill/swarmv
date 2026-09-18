@@ -27,6 +27,7 @@ from litestar.stores.base import Store
 from litestar.stores.registry import StoreRegistry
 
 from swarmq_dashboard.accounts import AccountStore
+from swarmq_dashboard.audit import AuditLog
 from swarmq_dashboard.broker import BrokerObserver, BrokerUnavailable
 from swarmq_dashboard.config import DashboardConfig
 from swarmq_dashboard.directory.reader import StreamReader
@@ -156,6 +157,9 @@ class Services:
         #: sie prueft die Bremse ueber echte Anfragen und bezahlt die
         #: Wartezeit sonst in Sekunden Laufzeit.
         self._throttle_scale = throttle_scale
+        #: Der Audit-Strom (R27). Er haengt am Ereignisstrom, nicht an der
+        #: Kontendatei -- und er darf fehlen, ohne eine Aktion aufzuhalten.
+        self.audit = AuditLog(None)
         self.accounts: AccountStore | None = None
         self.throttle: LoginThrottle | None = None
         #: Der Speicher aus der Registratur -- eine vierte Verbindung auf die
@@ -247,6 +251,8 @@ class Services:
         )
         if self.reader is not None and self._stream is not None:
             self.reader._source = self._stream
+        # Derselbe Strom, eigener Schluessel und eigener Deckel (R9, R27).
+        self.audit = AuditLog(self._stream)
         await self._broker_pruefen()
 
     async def _valkey(
@@ -373,6 +379,10 @@ class Services:
             "accounts": _teil(self._gruende["accounts"] is None, self._gruende["accounts"]),
             # Ein Takt, der still nicht mehr laeuft, waere genau die Art
             # Ausfall, die dieses Dashboard nicht machen darf.
+            # Nicht geschriebene Audit-Eintraege. Sie entstehen, wenn Valkey
+            # fehlt -- die Aktion laeuft dann trotzdem (KTD8), aber still
+            # bleiben darf das nicht (R27).
+            "audit": {"lost": self.audit.lost},
             "maintenance": {
                 "refresh": self._gruende["takt_refresh"],
                 "purge": self._gruende["takt_purge"],

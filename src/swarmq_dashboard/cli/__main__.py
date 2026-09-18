@@ -19,8 +19,9 @@ import getpass
 import sqlite3
 import sys
 from collections.abc import Callable, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import TextIO
+from typing import Any, TextIO
 
 from argon2 import PasswordHasher
 
@@ -109,6 +110,13 @@ def _build_parser() -> argparse.ArgumentParser:
         a = aktionen.add_parser(name, help=hilfe)
         a.add_argument("name", help="Kontoname")
     aktionen.add_parser("list", help="Konten mit ihrem Zustand zeigen")
+
+    audit = unter.add_parser("audit", help="nachsehen, wer was getan hat (R27)")
+    audit_aktionen = audit.add_subparsers(dest="aktion", required=True)
+    liste = audit_aktionen.add_parser("list", help="Eintraege in Zeitreihenfolge zeigen")
+    liste.add_argument("--account", help="nur Eintraege dieses Kontos")
+    liste.add_argument("--action", help="nur Eintraege dieser Aktionsart")
+    liste.add_argument("--limit", type=int, default=200, help="hoechstens so viele Eintraege")
     return p
 
 
@@ -118,6 +126,7 @@ def main(
     prompt: Prompt = getpass.getpass,
     out: TextIO | None = None,
     hasher: PasswordHasher | None = None,
+    audit_stream: Any | None = None,
 ) -> int:
     """Einstiegspunkt. Gibt den Rueckgabewert des Prozesses zurueck.
 
@@ -128,6 +137,9 @@ def main(
     """
     ziel = sys.stdout if out is None else out
     args = _build_parser().parse_args(argv)
+    if args.befehl == "audit":
+        return _audit(args, ziel, audit_stream)
+
     store = None
     try:
         # Die Konstruktion gehoert **in** den try: sie legt Verzeichnis und
@@ -183,6 +195,56 @@ def _konto(args: argparse.Namespace, store: AccountStore, prompt: Prompt, out: T
     store.unlock(args.name)
     print(f"Sperre von {args.name} aufgehoben.", file=out)
     return 0
+
+
+def _audit(args: argparse.Namespace, out: TextIO, stream: Any | None) -> int:
+    """Den Audit-Strom lesbar ausgeben (R27).
+
+    Ein nicht erreichbarer Strom ergibt einen Rueckgabewert ungleich null.
+    Stille leere Ausgabe waere hier die gefaehrlichste Antwort: ein Skript
+    laese "keine Aktionen", wo in Wahrheit "kein Strom" gilt.
+    """
+    import asyncio
+
+    from swarmq_dashboard.audit import AuditLog
+    from swarmq_dashboard.config import DashboardConfig
+    from swarmq_dashboard.stream import StreamUnavailable, ValkeyStreamClient
+
+    async def lesen() -> int:
+        klient = stream
+        if klient is None:
+            try:
+                url = DashboardConfig.from_env().stream_url
+            except Exception as exc:
+                print(f"Der Ereignisstrom ist nicht eingestellt: {exc}", file=out)
+                return 1
+            klient = ValkeyStreamClient(url)
+        try:
+            await klient.connect()
+        except StreamUnavailable as exc:
+            print(f"Der Audit-Strom ist nicht erreichbar: {exc}", file=out)
+            return 1
+        try:
+            eintraege = await AuditLog(klient).read(
+                account=args.account, action=args.action, limit=args.limit
+            )
+        finally:
+            await klient.close()
+
+        if not eintraege:
+            print("Keine Eintraege im Audit-Strom.", file=out)
+            return 0
+        for e in eintraege:
+            zeit = datetime.fromtimestamp(e.ts, tz=UTC).strftime("%Y-%m-%d %H:%M:%S")
+            teile = [zeit, e.account, e.action, e.outcome]
+            if e.target:
+                teile.append(f"-> {e.target}")
+            if e.detail:
+                teile.append(f"({e.detail})")
+            print("  ".join(teile), file=out)
+        return 0
+
+    return asyncio.run(lesen())
 
 
 if __name__ == "__main__":  # pragma: no cover

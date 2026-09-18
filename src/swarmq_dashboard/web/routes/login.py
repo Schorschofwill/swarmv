@@ -157,16 +157,28 @@ async def login(
         await rotate_session_id(request)
         merkmal = new_csrf_token()
         request.set_session({SESSION_ACCOUNT_KEY: konto, SESSION_CSRF_KEY: merkmal})
+        # Die Herkunft als Ziel, nie das Passwort und nie der Kontoname als
+        # Detailtext: der Audit-Strom hat weder die Rechtezusage aus R7a noch
+        # die Trimmung des Verzeichnisses -- was hier hineingeraet, steht
+        # dauerhaft und offen.
+        await services.audit.record("login", account=konto, target=herkunft)
         antwort = Redirect("/", status_code=303)
         antwort.set_cookie(_merkmal_cookie(merkmal))
         return antwort
 
+    # R22: "der Betreiber sieht Fehlanmeldungen im Audit". Festgehalten wird
+    # der **versuchte** Kontoname -- er ist die Spur, die den Angriff zeigt.
+    await services.audit.record("login", account=konto, target=herkunft, outcome="abgewiesen")
     return Response(content=LOGIN_FAILED, media_type="text/plain", status_code=401)
 
 
 @post("/logout")
 async def logout(request: Request[Any, Any, Any]) -> Redirect:
     """Abmelden. Die Sitzung gilt danach sofort nicht mehr."""
+    konto = request.session.get(SESSION_ACCOUNT_KEY) if request.session else None
+    await request.app.state.services.audit.record(
+        "logout", account=str(konto or "unbekannt"), target=_herkunft(request)
+    )
     request.clear_session()
     antwort = Redirect("/login", status_code=303)
     # Das Merkmal mit fortnehmen: es gehoerte zur Sitzung und hat ohne sie
