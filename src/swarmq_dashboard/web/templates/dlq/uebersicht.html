@@ -3,18 +3,18 @@
 {% block inhalt %}
 
 {%- if meldung %}
-<p class="chip chip--wartet"><span class="dot dot--wartet"></span> {{ meldung }}</p>
+<p class="tag is-wait"><span class="tag-dot"></span> {{ meldung }}</p>
 {%- endif %}
 
 {#- Die massgebliche Zahl. Sie kommt aus der passiven Beobachtung und kostet
     keine Umreihung -- deshalb steht sie oben und die Sichtung darunter. -#}
 <section class="card">
-  <h2 class="karten-titel">Gescheiterte Arbeit je Queue</h2>
+  <h2 class="card-section">Gescheiterte Arbeit je Queue</h2>
   {%- if not queues %}
   {% with titel="Keine Queue bekannt", ursache=queues_leer_ursache %}
   {% include "leerzustand.html" %}{% endwith %}
   {%- else %}
-  <table class="tabelle">
+  <table>
     <thead><tr><th>Queue</th><th>Dead Letter</th><th>Aktionen</th></tr></thead>
     <tbody>
       {%- for z in queues %}
@@ -25,35 +25,35 @@
           {#- Niemals eine Null, wo eine Auskunft fehlt: eine Null laese sich
               als "keine gescheiterte Arbeit" -- die gefaehrlichste stille
               Falschaussage dieser Seite. -#}
-          <span class="chip chip--fehler"><span class="dot dot--fehler"></span>
+          <span class="tag is-fail"><span class="tag-dot"></span>
             unbekannt: {{ z.stats.error }}</span>
           {%- else %}{{ z.stats.dead_letter if z.stats else 0 }}
           {%- endif %}
         </td>
-        <td class="aktionen">
+        <td class="actions">
           {%- if z.busy %}
-          <span class="chip chip--wartet"><span class="dot dot--wartet"></span>
+          <span class="tag is-wait"><span class="tag-dot"></span>
             wird gerade gesichtet</span>
           {%- else %}
-          <form method="post" action="/dlq/{{ z.queue }}/peek" class="inline">
+          <form method="post" action="/dlq/{{ z.queue }}/peek">
             <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
             <input type="hidden" name="bestaetigt" value="sichten">
-            <button class="btn btn--leise">Sichten</button>
+            <button class="btn btn-sm">Sichten</button>
           </form>
           {%- endif %}
-          <form method="post" action="/dlq/{{ z.queue }}/requeue-all" class="inline">
+          <form method="post" action="/dlq/{{ z.queue }}/requeue-all">
             <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
-            <button class="btn btn--leise">Alle wieder einreihen</button>
+            <button class="btn btn-sm">Alle wieder einreihen</button>
           </form>
           {#- R30: der Knopf wiederholt Queue **und** Zahl. Beides steht auch
               in den versteckten Feldern, damit der Dienst gegen genau das
               pruefen kann, was hier zu lesen war. -#}
-          <form method="post" action="/dlq/{{ z.queue }}/purge" class="inline">
+          <form method="post" action="/dlq/{{ z.queue }}/purge">
             <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
             <input type="hidden" name="bestaetigung" value="{{ z.queue }}">
             <input type="hidden" name="erwartet"
                    value="{{ z.stats.dead_letter if z.stats and not z.stats.error else 0 }}">
-            <button class="btn btn--gefahr">
+            <button class="btn btn-destructive">
               {{ z.stats.dead_letter if z.stats and not z.stats.error else 0 }}
               Nachrichten in {{ z.queue }} endgueltig loeschen
             </button>
@@ -69,16 +69,16 @@
 {#- Der Hinweis steht **vor** jedem Sichten, nicht danach: "non-destructive"
     stimmt nur im Wortsinn, und wer das erst hinterher liest, hat schon
     umgereiht (R28a). -#}
-<p class="leiste muted">{{ sicht_warnung }}</p>
+<p class="notice">{{ sicht_warnung }}</p>
 
 {%- if gesichtet %}
 <section class="card">
-  <h2 class="karten-titel">Sichtung von {{ gesichtet.queue }}</h2>
+  <h2 class="card-section">Sichtung von {{ gesichtet.queue }}</h2>
   {%- if gesichtet.error %}
-  <p class="chip chip--fehler"><span class="dot dot--fehler"></span> {{ gesichtet.error }}</p>
+  <p class="tag is-fail"><span class="tag-dot"></span> {{ gesichtet.error }}</p>
   {%- else %}
   <p class="muted">{{ gesichtet.gelesen }} Nachrichten gelesen und wieder eingereiht.</p>
-  <table class="tabelle">
+  <table>
     <thead><tr><th>Kennung</th><th>Name</th><th>Queue</th><th>Groesse</th><th></th></tr></thead>
     <tbody>
       {%- for e in gesichtet.entries %}
@@ -88,10 +88,10 @@
         <td class="mono">{{ e['queue'] or '--' }}</td>
         <td class="mono">{{ e['body_size'] }} B</td>
         <td>
-          <form method="post" action="/dlq/{{ gesichtet.queue }}/requeue" class="inline">
+          <form method="post" action="/dlq/{{ gesichtet.queue }}/requeue">
             <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
             <input type="hidden" name="task_id" value="{{ e['task_id'] }}">
-            <button class="btn btn--leise">Wieder einreihen</button>
+            <button class="btn btn-sm">Wieder einreihen</button>
           </form>
         </td>
       </tr>
@@ -103,15 +103,15 @@
 {%- endif %}
 
 <section class="card">
-  <h2 class="karten-titel">Gescheiterte Tasks aus dem Verzeichnis</h2>
+  <h2 class="card-section">Gescheiterte Tasks aus dem Verzeichnis</h2>
   {#- Stehender Hinweis, auch bei voller Liste: die Abwesenheit einer
       fehlenden Zeile ist selbst keine Aussage. -#}
-  <p class="leiste muted">{{ unvollstaendig_hinweis }}</p>
+  <p class="notice">{{ unvollstaendig_hinweis }}</p>
   {%- if hinweis %}
-  <p class="chip chip--wartet"><span class="dot dot--wartet"></span> {{ hinweis }}</p>
+  <p class="tag is-wait"><span class="tag-dot"></span> {{ hinweis }}</p>
   {%- endif %}
   {%- if tasks %}
-  <table class="tabelle">
+  <table>
     <thead><tr>
       <th>Kennung</th><th>Name</th><th>Queue</th><th>Argumente</th>
       <th>Fehler</th><th>Zuletzt</th>

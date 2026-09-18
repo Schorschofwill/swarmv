@@ -301,6 +301,27 @@
   }
   .qtab:hover { background: var(--surface); color: var(--ink); }
   .qtab[aria-current="page"] { background: var(--surface); border-color: var(--control-border); font-weight: 600; }
+
+  /* Leerzustand eines Bereichs (R33). Eine leere Tabelle liest sich wie
+     "nichts los"; hier steht stattdessen die wahrscheinliche Ursache. */
+  .empty { padding: 34px 16px; text-align: center; }
+  .empty-title { font-size: 13.5px; font-weight: 500; }
+  .empty-cause { margin-top: 6px; font-size: 12.5px; color: var(--muted); }
+
+  /* Mehrere Formulare nebeneinander in einer Tabellenzelle -- jede Aktion
+     ist ein eigenes Formular, weil jede ihr eigenes Ziel hat. */
+  .actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .actions > form { display: inline; }
+
+  /* Anmeldeseite (R20): einzige Seite ohne Navigation und Kopfzeile. */
+  .signin { flex-grow: 1; display: flex; align-items: center; justify-content: center; }
+  .signin-card { width: 352px; padding: 26px 28px; }
+  .signin-title { font-size: 16px; font-weight: 600; margin-bottom: 18px; }
+
+  /* Der ausdrueckliche Ruhezustand einer Marke. Farblich die Grundform --
+     ausgeschrieben, damit "kenne ich nicht" ein benannter Zustand ist und
+     keine Luecke. */
+  .tag.is-idle { background: var(--fill); color: var(--ink-2); }
 }
 
 /* ------------------------------------------------------------------ */

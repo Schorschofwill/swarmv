@@ -70,22 +70,22 @@ def marke(name: str, zustand: dict[str, Any], strom: bool = False) -> str:
     ruhiges System lesen.
     """
     if not zustand.get("ok"):
-        art, wort = "fehler", _NICHT_ERREICHBAR
+        art, wort = "is-fail", _NICHT_ERREICHBAR
         grund = zustand.get("reason") or ""
     elif strom and zustand.get("stale"):
-        art, wort = "wartet", _VERZOEGERT
+        art, wort = "is-wait", _VERZOEGERT
         grund = f"zuletzt {zeitpunkt(zustand.get('last_event_at'))}"
     elif strom:
-        art, wort = "ok", _AKTUELL
+        art, wort = "is-ok", _AKTUELL
         grund = f"zuletzt {zeitpunkt(zustand.get('last_event_at'))}"
     else:
-        art, wort = "ok", _ERREICHBAR
+        art, wort = "is-ok", _ERREICHBAR
         grund = ""
 
     zusatz = f' <span class="muted">{escape(grund)}</span>' if grund else ""
     return Markup(
-        f'<span class="chip chip--{art}" title="{escape(name)}">'
-        f'<span class="dot dot--{art}"></span> {escape(name)}: {wort}{zusatz}</span>'
+        f'<span class="tag {art}" title="{escape(name)}">'
+        f'<span class="tag-dot"></span> {escape(name)}: {wort}{zusatz}</span>'
     )
 
 
@@ -93,15 +93,15 @@ def marke(name: str, zustand: dict[str, Any], strom: bool = False) -> str:
 #: nicht in der Vorlage, damit sie an **einer** Stelle liegt: eine Vorlage,
 #: die sie nachbaut, laeuft irgendwann auseinander.
 _ZUSTANDSART = {
-    "fertig": "ok",
-    "laufend": "laeuft",
-    "wartend": "neutral",
-    "wiederholung": "wartet",
-    "storniert": "neutral",
-    "gescheitert": "fehler",
-    "dead_letter": "fehler",
-    "abgelaufen": "fehler",
-    "abgewiesen": "fehler",
+    "fertig": "is-ok",
+    "laufend": "is-run",
+    "wartend": "is-idle",
+    "wiederholung": "is-wait",
+    "storniert": "is-idle",
+    "gescheitert": "is-fail",
+    "dead_letter": "is-fail",
+    "abgelaufen": "is-fail",
+    "abgewiesen": "is-fail",
 }
 
 
@@ -111,7 +111,7 @@ def zustandsart(status: str | None) -> str:
     Neutral und nicht "fehler": ein Status, den diese Fassung nicht kennt, ist
     keine Stoerung -- er ist eine Aussage, die wir noch nicht einordnen.
     """
-    return _ZUSTANDSART.get(status or "", "neutral")
+    return _ZUSTANDSART.get(status or "", "is-idle")
 
 
 def weiterlink(f: object, cursor: str) -> str:

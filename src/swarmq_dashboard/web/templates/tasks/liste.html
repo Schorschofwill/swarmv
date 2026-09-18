@@ -3,7 +3,7 @@
 {% block inhalt %}
 
 <section class="card">
-  <form class="filterleiste" method="get" action="/tasks">
+  <form class="filters" method="get" action="/tasks">
     <input class="mono" name="q" value="{{ filter.text }}" placeholder="Suche in Name und Argumenten">
     <input class="mono" name="status" value="{{ filter.status }}" placeholder="Status">
     <input class="mono" name="task_name" value="{{ filter.task_name }}" placeholder="Task-Name">
@@ -15,19 +15,19 @@
 {#- Zwei stehende Hinweise. Sie stehen auch dann da, wenn gerade keine
     betroffene Zeile sichtbar ist: die Abwesenheit einer solchen Zeile ist
     selbst keine Aussage. -#}
-<p class="leiste muted">
+<p class="notice">
   Die Suche reicht zurueck bis {{ zeitpunkt(reichweite) }} -- aelteres steht
   nicht mehr im Verzeichnis.
 </p>
-<p class="leiste muted">{{ herkunft_hinweis }}</p>
+<p class="notice">{{ herkunft_hinweis }}</p>
 
 {%- if hinweis %}
-<p class="chip chip--wartet"><span class="dot dot--wartet"></span> {{ hinweis }}</p>
+<p class="tag is-wait"><span class="tag-dot"></span> {{ hinweis }}</p>
 {%- endif %}
 
 {%- if zeilen %}
 <section class="card">
-  <table class="tabelle">
+  <table>
     <thead><tr>
       <th>Kennung</th><th>Name</th><th>Queue</th><th>Status</th>
       <th>Eingereiht</th><th>Worker</th><th>Argumente</th>
@@ -39,13 +39,13 @@
         <td class="mono">{{ z['task_name'] or '--' }}</td>
         <td class="mono">{{ z['queue'] or '--' }}</td>
         <td>
-          <span class="chip chip--{{ zustandsart(z['status']) }}">
-            <span class="dot dot--{{ zustandsart(z['status']) }}"></span> {{ z['status'] or 'unbekannt' }}
+          <span class="tag {{ zustandsart(z['status']) }}">
+            <span class="tag-dot"></span> {{ z['status'] or 'unbekannt' }}
           </span>
           {%- if z['incomplete'] %}
           {#- R4a: die Luecke muss sichtbar sein, sonst ist sie keine Meldung. -#}
-          <span class="chip chip--wartet" title="In dieser Zeitspanne fehlen moeglicherweise Ereignisse">
-            <span class="dot dot--wartet"></span> unvollstaendig</span>
+          <span class="tag is-wait" title="In dieser Zeitspanne fehlen moeglicherweise Ereignisse">
+            <span class="tag-dot"></span> unvollstaendig</span>
           {%- endif %}
         </td>
         <td class="mono">
@@ -61,7 +61,7 @@
   </table>
 </section>
 {%- if weiter %}
-<a class="btn btn--leise" href="/tasks?{{ weiterlink(filter, weiter) }}">Weitere</a>
+<a class="btn btn-sm" href="/tasks?{{ weiterlink(filter, weiter) }}">Weitere</a>
 {%- endif %}
 {%- else %}
 {% with titel=leer_titel, ursache=leer_ursache %}{% include "leerzustand.html" %}{% endwith %}

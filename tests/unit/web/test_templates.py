@@ -41,7 +41,13 @@ from pathlib import Path
 
 import pytest
 
-from swarmq_dashboard.web.templates import BEREICHE, render, statische_dateien
+from swarmq_dashboard.web.templates import (
+    BEREICHE,
+    STATIC_DIR,
+    TEMPLATE_DIR,
+    render,
+    statische_dateien,
+)
 
 _STATIK = Path(__file__).parents[3] / "src" / "swarmq_dashboard" / "web" / "static"
 
@@ -72,8 +78,12 @@ def test_drei_bereiche_und_kein_vierter() -> None:
     html = render("base.html", status=_zustand(), account="ops", aktiv="worker")
     for bereich in BEREICHE:
         assert bereich.titel in html, f"{bereich.titel} fehlt in der Navigation"
-    treffer = re.findall(r'class="navlink[^"]*"', html)
+    treffer = re.findall(r'class="nav-link"', html)
     assert len(treffer) == 3, f"{len(treffer)} Navigationseintraege statt drei"
+    # Der aktive Bereich traegt ``aria-current`` statt einer eigenen Klasse:
+    # das Stylesheet haengt seine Hervorhebung daran, und ein Vorleseprogramm
+    # bekommt die Auskunft damit gleich mit.
+    assert html.count('aria-current="page"') == 1, "der aktive Bereich ist nicht ausgezeichnet"
 
 
 def test_die_kopfzeile_stellt_alle_drei_zustaende_dar() -> None:
@@ -186,3 +196,53 @@ def test_jede_vom_stylesheet_verlangte_schrift_liegt_da() -> None:
     assert verlangt, "das Stylesheet verlangt gar keine Schrift"
     fehlend = [f for f in verlangt if not (_STATIK / f).is_file()]
     assert not fehlend, f"verlangt, aber nicht vorhanden: {fehlend}"
+
+
+# --- Vorlagen gegen das Stylesheet --------------------------------------
+
+
+def _css_klassen() -> set[str]:
+    return set(re.findall(r"\.([a-zA-Z][\w-]*)", (STATIC_DIR / "app.css").read_text(encoding="utf-8")))
+
+
+def _vorlagen_klassen() -> dict[str, set[str]]:
+    """Alle **festen** Klassennamen aus den Vorlagen, je Datei.
+
+    Namen mit Jinja-Anteil bleiben aussen vor; sie kommen aus
+    ``zustandsart`` und ``marke`` und werden unten eigens geprueft.
+    """
+    gefunden: dict[str, set[str]] = {}
+    for p in sorted(TEMPLATE_DIR.rglob("*.html")):
+        for wert in re.findall(r'class="([^"]*)"', p.read_text(encoding="utf-8")):
+            if "{" in wert:
+                continue
+            for name in wert.split():
+                gefunden.setdefault(name, set()).add(p.name)
+    return gefunden
+
+
+def test_jede_klasse_der_vorlagen_hat_eine_regel() -> None:
+    """Sonst ist die Seite funktionsfaehig und trotzdem ungestaltet.
+
+    Genau das war sie: 33 von 41 Klassennamen hatten keine Regel, weil die
+    Vorlagen ein eigenes Vokabular erfanden statt das freigegebene zu
+    benutzen. Alle vier Tore standen dabei auf gruen -- niemand hielt die
+    beiden Seiten gegeneinander. Dieser Test tut es.
+    """
+    vorhanden = _css_klassen()
+    fehlend = {k: v for k, v in _vorlagen_klassen().items() if k not in vorhanden}
+    assert not fehlend, "ohne Regel im Stylesheet: " + ", ".join(
+        f".{k} ({', '.join(sorted(v))})" for k, v in sorted(fehlend.items())
+    )
+
+
+def test_jede_zustandsart_hat_eine_regel() -> None:
+    """Die Zustandsarten stehen nicht im Klartext in der Vorlage, sondern
+    kommen aus ``zustandsart`` und ``marke`` -- der Test oben sieht sie
+    darum nicht. Ohne Regel bliebe die Marke farblos, und Farbe ist hier
+    die halbe Aussage."""
+    from swarmq_dashboard.web.templates import _ZUSTANDSART
+
+    vorhanden = _css_klassen()
+    for art in set(_ZUSTANDSART.values()) | {"is-ok", "is-wait", "is-fail"}:
+        assert art in vorhanden, f"die Zustandsart {art!r} hat keine Regel"

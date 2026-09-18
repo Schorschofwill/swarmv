@@ -133,6 +133,23 @@ Baustein (`.tag.is-wait`, `.notice.is-fail`, `tr.is-gone`), damit eine Vorlage
 nur eine Klasse tauschen muss. Die Namen sind ein Vorschlag, kein Vertrag: der
 Bau darf sie umbenennen, solange Marken, Größen und Zustände bleiben.
 
+**Nachtrag 2026-09-18.** Der Bau hat die Namen des Stylesheets übernommen,
+nicht umbenannt. Vorher lief beides auseinander: die Vorlagen erfanden ein
+eigenes, deutsches Vokabular (`.chip`, `.tabelle`, `.kopf`), und 33 von 41
+benutzten Klassen hatten im Stylesheet keine Regel — das Dashboard war
+funktionsfähig und dabei weitgehend ungestaltet. Alle Tore standen auf grün,
+weil niemand die beiden Seiten gegeneinander hielt. Der Satz oben bleibt
+gültig, bekommt aber eine Bedingung: umbenennen darf der Bau nur **beide**
+Seiten zugleich. `test_jede_klasse_der_vorlagen_hat_eine_regel` erzwingt das
+jetzt, zusammen mit `test_jede_zustandsart_hat_eine_regel` für die Zustände,
+die erst zur Laufzeit aus `zustandsart()` und `marke()` entstehen.
+
+Vier Regeln kamen dabei hinzu, weil die Vorlagen sie brauchten und das
+Stylesheet sie nicht hatte: `.empty` (Leerzustand eines Bereichs, R33),
+`.actions` (mehrere Formulare nebeneinander in einer Zelle), `.signin`
+(Anmeldeseite) und `.tag.is-idle` — der ausdrücklich benannte Ruhezustand,
+damit "kenne ich nicht" ein Zustand ist und keine Lücke.
+
 Nicht entschieden und im Implementierungsplan zu klären: wie HTMX die
 Fragmente schneidet (ganze Tabelle, Gruppe oder Zeile), welche `id` eine Zeile
 für den Austausch per `hx-swap-oob` bekommt, und ob die Sollwert-Bedienung ein

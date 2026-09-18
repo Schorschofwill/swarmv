@@ -13,26 +13,36 @@
   <script src="/static/idiomorph-ext.min.js" defer></script>
 </head>
 <body hx-ext="morph">
-<div class="shell">
 
   <nav class="nav">
-    <div class="nav-brand">swarmq</div>
+    <div class="nav-brand">
+      <span class="nav-word">swarmq</span>
+      <span class="nav-sub">Dashboard</span>
+    </div>
     {%- for b in bereiche %}
-    <a class="navlink{% if b.slug == aktiv %} navlink--aktiv{% endif %}" href="{{ b.pfad }}">
+    <a class="nav-link" href="{{ b.pfad }}"
+       {%- if b.slug == aktiv %} aria-current="page"{% endif %}>
       {{ b.titel }}
     </a>
     {%- endfor %}
-    <div class="nav-fuss">
+    <div class="nav-foot">
       <span class="mono">{{ account }}</span>
       <form method="post" action="/logout">
         <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
-        <button class="btn btn--leise">Abmelden</button>
+        <button class="btn btn-sm">Abmelden</button>
       </form>
     </div>
   </nav>
 
-  <main class="main">
-    <header class="kopf">
+  <div class="content">
+    <header class="head">
+      {#- Links der Bereich, rechts die Zustaende. ``.head-state`` traegt das
+          ``margin-left: auto`` -- ohne den Behaelter kleben die Marken links
+          und die Kopfzeile verliert ihre Ordnung. -#}
+      <span class="head-title">
+        {%- for b in bereiche %}{% if b.slug == aktiv %}{{ b.titel }}{% endif %}{% endfor -%}
+      </span>
+      <span class="head-state">
       {#- Jede Marke ist Punkt UND Wort: Farbe allein traegt nie die Aussage.
           Ein Bildschirmfoto im Ticket verliert seine Farben, und rund jeder
           zwoelfte Mann sieht Rot und Gruen nicht auseinander. -#}
@@ -40,25 +50,25 @@
       {{ marke("Backend", status.backend) }}
       {{ marke("Strom", status.stream, strom=True) }}
       {%- if status.directory.rebuilding %}
-      <span class="chip chip--wartet"><span class="dot dot--wartet"></span> Neuaufbau laeuft</span>
+      <span class="tag is-wait"><span class="tag-dot"></span> Neuaufbau laeuft</span>
       {%- endif %}
       {%- if status.directory.behind %}
-      <span class="chip chip--wartet"><span class="dot dot--wartet"></span> Luecke im Strom</span>
+      <span class="tag is-wait"><span class="tag-dot"></span> Luecke im Strom</span>
       {%- endif %}
       {%- if status.directory.erasure_pending %}
-      <span class="chip chip--wartet"><span class="dot dot--wartet"></span> Loeschung offen</span>
+      <span class="tag is-wait"><span class="tag-dot"></span> Loeschung offen</span>
       {%- endif %}
       {%- if status.audit.lost %}
-      <span class="chip chip--wartet"><span class="dot dot--wartet"></span>
+      <span class="tag is-wait"><span class="tag-dot"></span>
         {{ status.audit.lost }} Audit-Eintraege verloren</span>
       {%- endif %}
+      </span>
     </header>
 
-    <div class="inhalt">
+    <main class="page">
       {% block inhalt %}{% endblock %}
-    </div>
-  </main>
+    </main>
+  </div>
 
-</div>
 </body>
 </html>

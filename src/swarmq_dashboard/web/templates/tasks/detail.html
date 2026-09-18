@@ -6,10 +6,10 @@
     die Bibliothek setzt nur einen Merker, und ob ein Worker ihn bemerkt,
     weiss erst der Ausgang (R12a). -#}
 {%- if hinweis == "beendet" %}
-<p class="chip chip--neutral"><span class="dot dot--neutral"></span>
+<p class="tag is-idle"><span class="tag-dot"></span>
   Der Task ist bereits beendet -- eine Stornierung waere gegenstandslos. Es wurde nichts geschrieben.</p>
 {%- elif hinweis == "backend" %}
-<p class="chip chip--fehler"><span class="dot dot--fehler"></span>
+<p class="tag is-fail"><span class="tag-dot"></span>
   Das Backend ist nicht erreichbar -- die Stornierung wurde <strong>nicht</strong> angefordert.</p>
 {%- endif %}
 
@@ -18,19 +18,19 @@
   {%- if task['cancel_requested_at'] and task['status'] not in beendet %}
   {#- "angefordert", nicht "storniert": ein rechnender Task bemerkt die
       Anforderung moeglicherweise nie (R12a). -#}
-  <p class="chip chip--wartet"><span class="dot dot--wartet"></span>
+  <p class="tag is-wait"><span class="tag-dot"></span>
     Stornierung angefordert um {{ zeitpunkt(task['cancel_requested_at']) }} --
     ob der Task sie bemerkt, zeigt erst sein Ausgang.</p>
   {%- endif %}
-  <dl class="felder">
+  <dl class="fields">
     <dt>Name</dt><dd class="mono">{{ task['task_name'] or '--' }}</dd>
     <dt>Queue</dt><dd class="mono">{{ task['queue'] or '--' }}</dd>
     <dt>Status</dt><dd>
-      <span class="chip chip--{{ zustandsart(task['status']) }}">
-        <span class="dot dot--{{ zustandsart(task['status']) }}"></span> {{ task['status'] or 'unbekannt' }}
+      <span class="tag {{ zustandsart(task['status']) }}">
+        <span class="tag-dot"></span> {{ task['status'] or 'unbekannt' }}
       </span>
       {%- if task['incomplete'] %}
-      <span class="chip chip--wartet"><span class="dot dot--wartet"></span> unvollstaendig</span>
+      <span class="tag is-wait"><span class="tag-dot"></span> unvollstaendig</span>
       {%- endif %}
     </dd>
     <dt>Eingereiht</dt><dd class="mono">
@@ -45,7 +45,7 @@
     <dt>Wiederholungen</dt><dd class="mono num">{{ task['retry_count'] }}</dd>
     <dt>Herkunft</dt><dd class="mono">{{ task['origin'] }}</dd>
     {%- if task['error'] %}
-    <dt>Fehler</dt><dd class="mono fehler">{{ task['error'] }}</dd>
+    <dt>Fehler</dt><dd class="mono">{{ task['error'] }}</dd>
     {%- endif %}
   </dl>
 </section>
@@ -64,7 +64,7 @@
       Worker-Host haben getrennte Uhren, und schon Sekunden Versatz liessen
       das Aufgreifen vor der Einreihung erscheinen (R11). -#}
   {%- if signale %}
-  <table class="tabelle">
+  <table>
     <thead><tr><th>Signal</th><th>Zeitpunkt</th></tr></thead>
     <tbody>
       {%- for s in signale %}

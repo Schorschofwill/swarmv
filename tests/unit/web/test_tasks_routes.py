@@ -244,7 +244,7 @@ async def test_herkunft_aufgreifen_ohne_geratenen_zeitpunkt(tmp_path: Path) -> N
         #    der Zeichenkette: sie steht auch im ``title`` der Zelle, und eine
         #    Zusicherung darauf hielt den Hinweis nicht.
         sichtbar = re.search(
-            r'<p class="leiste muted">\s*Scheduler-Ausloesungen', antwort.text
+            r'<p class="notice">\s*Scheduler-Ausloesungen', antwort.text
         )
         assert sichtbar, "der stehende Hinweis aus R31 steht nicht sichtbar auf der Seite"
     finally:
