@@ -810,3 +810,14 @@ def create_app(
         middleware=[sitzung.middleware],
         guards=[session_guard, csrf_guard],
     )
+
+
+def aus_der_umgebung() -> Litestar:
+    """Die Anwendung aus den Umgebungsvariablen bauen.
+
+    Die Naht zwischen Kommandozeile und Dienst. Granian bekommt einen
+    **Modulpfad** und ruft ihn im Arbeitsprozess selbst auf; alles, was der
+    Dienst braucht, muss darum aus der Umgebung kommen und nicht aus
+    Argumenten, die diesen Weg nicht ueberleben.
+    """
+    return create_app(DashboardConfig.from_env())

@@ -18,7 +18,7 @@ import argparse
 import getpass
 import sqlite3
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TextIO
@@ -111,6 +111,13 @@ def _build_parser() -> argparse.ArgumentParser:
         a.add_argument("name", help="Kontoname")
     aktionen.add_parser("list", help="Konten mit ihrem Zustand zeigen")
 
+    dienst = unter.add_parser("serve", help="den Dienst fahren")
+    dienst.add_argument("--host", default="127.0.0.1",
+                        help="Adresse, auf der gelauscht wird (Vorgabe: 127.0.0.1)")
+    dienst.add_argument("--port", type=int, default=8080, help="Port (Vorgabe: 8080)")
+    dienst.add_argument("--tls-cert", type=Path, help="Zertifikat im PEM-Format")
+    dienst.add_argument("--tls-key", type=Path, help="Schluessel im PEM-Format")
+
     audit = unter.add_parser("audit", help="nachsehen, wer was getan hat (R27)")
     audit_aktionen = audit.add_subparsers(dest="aktion", required=True)
     liste = audit_aktionen.add_parser("list", help="Eintraege in Zeitreihenfolge zeigen")
@@ -127,6 +134,8 @@ def main(
     out: TextIO | None = None,
     hasher: PasswordHasher | None = None,
     audit_stream: Any | None = None,
+    server: Any | None = None,
+    umgebung: Mapping[str, str] | None = None,
 ) -> int:
     """Einstiegspunkt. Gibt den Rueckgabewert des Prozesses zurueck.
 
@@ -137,6 +146,8 @@ def main(
     """
     ziel = sys.stdout if out is None else out
     args = _build_parser().parse_args(argv)
+    if args.befehl == "serve":
+        return _serve(args, ziel, server, umgebung)
     if args.befehl == "audit":
         return _audit(args, ziel, audit_stream)
 
@@ -160,6 +171,73 @@ def main(
     finally:
         if store is not None:
             store.close()
+
+
+#: Adressen, auf denen eine Klartextverbindung vertretbar ist: nur der eigene
+#: Rechner. Ueberall sonst schickt der Browser das Sitzungscookie nicht mit --
+#: es traegt ``secure`` --, und die Anmeldung kann gar nicht gelingen.
+OERTLICH = ("127.0.0.1", "::1", "localhost")
+
+
+def _serve(args: argparse.Namespace, out: TextIO, server: Any,
+           umgebung: Mapping[str, str] | None) -> int:
+    """Den Dienst fahren (KTD5: **ein** Arbeiter).
+
+    Die Zahl ist nicht Geschmack. Der prozessinterne Riegel der
+    Dead-Letter-Bedienung und die Kanal-Verteilung der Live-Schicht leben im
+    Prozess. Mit zwei Arbeitern traegt beides nicht mehr, und zwar **still**:
+    zwei Teammitglieder koennten dieselbe Queue gleichzeitig sichten, ohne
+    dass es jemand bemerkt.
+    """
+    if bool(args.tls_cert) != bool(args.tls_key):
+        fehlt = "Schluessel (--tls-key)" if args.tls_cert else "Zertifikat (--tls-cert)"
+        print(f"Es fehlt der {fehlt}. Ohne beides zusammen gibt es kein TLS -- "
+              "und still ohne zu starten waere schlimmer, als gar nicht zu starten.",
+              file=out)
+        return 2
+    if not args.tls_cert and args.host not in OERTLICH:
+        print(
+            f"Auf {args.host} ohne TLS zu lauschen geht nicht auf: das "
+            "Sitzungscookie traegt 'secure', der Browser schickt es ueber eine "
+            "Klartextverbindung nicht mit, und die Anmeldung scheitert ohne "
+            "jede Fehlermeldung.\n"
+            "Entweder --tls-cert und --tls-key angeben, oder hinter einem "
+            "vorgelagerten TLS-Abschluss auf 127.0.0.1 lauschen.",
+            file=out,
+        )
+        return 2
+
+    # Die Einstellungen **vor** dem Start pruefen: ein Traceback aus dem
+    # Arbeitsprozess sieht aus, als waere das Werkzeug kaputt, dabei fehlt
+    # nur eine Variable.
+    from swarmq_dashboard.config import DashboardConfig
+
+    try:
+        DashboardConfig.from_env(umgebung)
+    except Exception as exc:
+        print(f"Die Einstellungen taugen nicht: {exc}", file=out)
+        return 2
+
+    if server is None:
+        from granian import Granian
+
+        server = Granian
+    lauf = server(
+        "swarmq_dashboard.web.app:aus_der_umgebung",
+        address=args.host,
+        port=args.port,
+        interface="asgi",
+        factory=True,
+        # **Einer.** Siehe Docstring; KTD5.
+        workers=1,
+        ssl_cert=args.tls_cert,
+        ssl_key=args.tls_key,
+    )
+    ziel = f"https://{args.host}:{args.port}" if args.tls_cert else \
+        f"http://{args.host}:{args.port}"
+    print(f"Dashboard laeuft auf {ziel} -- mit einem Arbeiter (KTD5).", file=out)
+    lauf.serve()
+    return 0
 
 
 def _konto(args: argparse.Namespace, store: AccountStore, prompt: Prompt, out: TextIO) -> int:
