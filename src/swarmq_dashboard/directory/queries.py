@@ -283,15 +283,42 @@ class DirectoryQueries:
         auf eine Suche in Tag 15 mit "keine Treffer". R8 nennt diesen Fehler
         woertlich vorweg.
 
-        Mit ``retention_start`` wird an der Aufbewahrungsgrenze abgeschnitten.
-        Die Zahl kann dadurch **zu vorsichtig** sein -- eine noch lebende
+        Drei Boeden, und es gilt der spaeteste:
+
+        * der aelteste Eintrag,
+        * die Aufbewahrungsgrenze (``retention_start``) -- davor wurde
+          geloescht,
+        * der Beginn des Verzeichnisses -- davor hat es nie gelesen.
+
+        Der dritte fehlte im ersten Anlauf, und damit blieb die Zusage
+        gebrochen: ein Dienst, der seit zwei Tagen laeuft, meldete sieben
+        Tage. Die Zahl kann jetzt **zu vorsichtig** sein -- eine noch lebende
         Zeile von davor ist ja da --, und das ist die richtige Richtung: sie
         verspricht nie mehr Abdeckung, als es gibt.
         """
         wert = self._con.execute("select min(first_seen_at) from task").fetchone()[0]
         if wert is None:
             return None
-        aeltester = float(wert)
-        if retention_start is None:
-            return aeltester
-        return max(aeltester, retention_start)
+        boeden = [float(wert)]
+        if retention_start is not None:
+            boeden.append(retention_start)
+        # Der dritte Boden: vor dem Beginn des Verzeichnisses kann es nichts
+        # wissen. Ohne ihn meldete ein Dienst, der seit zwei Tagen laeuft,
+        # bei sieben Tagen Aufbewahrung sieben Tage Reichweite -- weil eine
+        # einzige lebende Zeile von vor dreissig Tagen den aeltesten Eintrag
+        # unter die Grenze zog und ``max`` dann auf die Grenze sprang.
+        beginn = self._beginn()
+        if beginn is not None:
+            boeden.append(beginn)
+        return max(boeden)
+
+    def _beginn(self) -> float | None:
+        zeile = self._con.execute(
+            "select value from progress where key='coverage_start'"
+        ).fetchone()
+        if zeile is None:
+            return None
+        try:
+            return float(zeile[0])
+        except (TypeError, ValueError):
+            return None

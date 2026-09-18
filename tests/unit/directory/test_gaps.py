@@ -245,3 +245,27 @@ def test_die_kopfzeile_kennt_die_luecke_nach_dem_neustart(tmp_path: Path) -> Non
         assert w2.gap_count() == 1, "die Kopfzeile erfaehrt nichts von der Luecke"
     finally:
         w2.close()
+
+
+def test_verworfene_und_abgewiesene_ueberleben_den_neustart(tmp_path: Path) -> None:
+    """R4a. Derselbe Fehler wie bei ``behind`` -- eine Zeile daneben gemacht.
+
+    ``dropped`` und ``rejected`` waren reine Speicherzaehler. Nach dem ersten
+    Neustart schwieg die Kopfzeile, obwohl die Eintraege dauerhaft fehlen,
+    und Schweigen liest sich als "nichts verloren". Der Kommentar ueber der
+    Luecken-Zaehlung verwirft ``behind`` genau mit dieser Begruendung.
+    """
+    pfad = tmp_path / "v.sqlite3"
+    w = DirectoryWriter(connect(pfad))
+    w.bump_lost(dropped=3, rejected=2)
+    w.close()
+
+    w2 = DirectoryWriter(connect(pfad))
+    try:
+        assert w2.lost_counts() == (3, 2), (
+            f"die Verlustzaehler ueberleben keinen Neustart: {w2.lost_counts()}"
+        )
+        w2.bump_lost(dropped=1)
+        assert w2.lost_counts() == (4, 2), "die Zaehler werden nicht fortgeschrieben"
+    finally:
+        w2.close()

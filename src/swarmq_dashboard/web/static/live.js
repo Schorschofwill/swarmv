@@ -20,6 +20,8 @@
      Seite fuer jedes einzelne den vollen Stand -- der Bildschirm eines
      Teammitglieds waere dann die Last, die den Dienst umwirft. */
   var SAMMELFRIST_MS = 400;
+  /* Eigene, laengere Frist fuer das vollstaendige Neuladen. */
+  var NEULADEN_FRIST_MS = 2000;
 
   function nachholen() {
     offen = null;
@@ -32,8 +34,23 @@
     if (offen === null) offen = window.setTimeout(nachholen, SAMMELFRIST_MS);
   }
 
-  /* Verlust im Rueckstau: der Teilstand waere eine Luege, also ganz neu. */
-  quelle.addEventListener("reload", function () { location.reload(); });
+  /* Verlust im Rueckstau: der Teilstand waere eine Luege, also ganz neu.
+     Aber **gedrosselt** wie alles andere. Ungedrosselt gemessen: 20
+     Neuladevorgaenge in drei Sekunden fuer eine einzige Ansicht -- jeder ein
+     voller Seitenaufruf, und auf der Startseite haengt daran die
+     Broker-Abfrage im Anfrageweg. Die Ops-Oberflaeche legte damit im
+     Vorfall Last auf denselben Broker, dessen Vorfall sie zeigt. Und weil
+     die neu geladene Seite sofort wieder in derselben Lage steht, kam sie
+     gar nicht zur Ruhe.
+
+     Die Frist ist laenger als die der gewoehnlichen Ereignisse: ein
+     Neuladen kostet mehr, und ein Rueckstau loest sich nicht in 400 ms. */
+  var neuladen_offen = null;
+  quelle.addEventListener("reload", function () {
+    if (neuladen_offen !== null) return;
+    neuladen_offen = window.setTimeout(function () { location.reload(); },
+                                       NEULADEN_FRIST_MS);
+  });
 
   /* Sitzung zu Ende (R32). Die Ansicht darf dann nicht stehenbleiben und
      weiter aussehen wie ein angemeldeter Stand. */

@@ -73,13 +73,21 @@ DEFAULT_MAINTENANCE_S = 10.0
 #: ein Rueckstand von zehntausend Ereignissen bei Stapelgroesse 500 zwanzig
 #: Sekunden, in denen die Ansicht alt ist und nicht sagt, warum.
 DEFAULT_INGEST_S = 0.5
-#: Frist fuer eine einzelne Erreichbarkeitspruefung. Ohne sie haelt ein
+#: Notbremse fuer eine einzelne Erreichbarkeitspruefung -- **laenger** als
+#: jede Frist, die sie umschliesst (``stream.DEFAULT_CONNECT_TIMEOUT_S``,
+#: ``broker.CONNECT_TIMEOUT_S``). Andersherum war sie schaedlich: sie brach
+#: die innere Frist immer zuerst ab, mit ``CancelledError``, und das lief an
+#: jedem ``except Exception`` vorbei -- der halb aufgebaute Klient blieb
+#: liegen. Gemessen 25 Takte, 25 offene Dateizeiger. Sie greift jetzt nur
+#: noch, wenn eine innere Frist selbst versagt.
+#:
+#: Ohne sie haelt ein
 #: Dienst, der die Verbindung annimmt und dann schweigt, den ganzen Takt auf
 #: -- gemessen sechs Sekunden je Durchlauf gegen ein totes Backend, und in
 #: dieser Zeit laeuft weder die Aufbewahrung noch die Anzeige nach. Eine
 #: ueberschrittene Frist ist kein Fehler des Dienstes, sondern eine Auskunft
 #: ueber ihn, und sie steht so im Bericht.
-PROBE_TIMEOUT_S = 2.0
+PROBE_TIMEOUT_S = 6.0
 #: Wie lange das Herunterfahren auf einen auslaufenden Takt wartet.
 STOP_TIMEOUT_S = 5.0
 
@@ -245,6 +253,13 @@ class Services:
         self._wecker = asyncio.Event()
         self.reader: StreamReader | None = None
         self.services_directory_writer: DirectoryWriter | None = None
+        #: Von aussen gesetzte Aussenverbindungen. Sie ueberleben das
+        #: Herunterfahren, die laufenden nicht: ``startup()`` ist idempotent
+        #: zugesagt, und ein zweiter Lebenszyklus muss dieselben Vorgaben
+        #: wiederfinden -- sonst faehrt er gegen die echten Adressen, obwohl
+        #: jemand ausdruecklich etwas anderes eingesetzt hat.
+        self._stream_vorgabe = stream
+        self._broker_vorgabe = broker
         self._stream: ValkeyStreamClient | None = stream
         self._backend: ValkeyStreamClient | None = None
         self._broker: Any | None = broker
@@ -254,7 +269,7 @@ class Services:
             "accounts": "noch nicht geoeffnet",
             "takt_refresh": None,
             "takt_purge": None,
-            "takt_ingest": "noch nicht gelaufen",
+            "takt_ingest": None,
             # Die drei Teile der Pflege einzeln: faellt einer aus, sollen die
             # anderen weiterlaufen **und** der Ausfall benannt sein.
             "pflege_retention": None,
@@ -269,6 +284,19 @@ class Services:
 
     async def startup(self) -> None:
         """Alles hochfahren, was geht. Wirft nie.
+
+        Setzt den Halt-Merker zurueck. Ohne das war die zugesagte Idempotenz
+        eine Luege: nach einem ``shutdown()`` blieb ``_halt`` stehen, alle
+        drei Takte pruefen ihn als Erstes, und der zweite Lebenszyklus
+        derselben Anwendung las nichts, raeumte nichts auf und fuehrte nichts
+        nach -- waehrend der Bericht alles in Ordnung meldete.
+        """
+        self._halt = False
+        self._wecker.clear()
+        return await self._startup()
+
+    async def _startup(self) -> None:
+        """
 
         Idempotent: ein zweiter Aufruf baut nichts doppelt auf. Das ist keine
         Bequemlichkeit -- ein Lebenszyklus, der beim zweiten Durchlauf wirft,
@@ -426,8 +454,9 @@ class Services:
         for teil in (self._stream, self._backend, self._broker, self._dlq_admin,
                      self.canceller):
             await _leise_schliessen(teil)
-        self._stream = self._backend = None
-        self._broker = None
+        self._stream = self._stream_vorgabe
+        self._backend = None
+        self._broker = self._broker_vorgabe
         if self.services_directory_writer is not None:
             try:
                 self.services_directory_writer.close()
@@ -638,9 +667,17 @@ class Services:
             # fehlt -- die Aktion laeuft dann trotzdem (KTD8), aber still
             # bleiben darf das nicht (R27).
             "audit": {"lost": self.audit.lost},
+            # Alle Takte, nicht nur zwei. Ein Takt, der still nicht mehr
+            # arbeitet, ist genau die Art Ausfall, die dieses Dashboard nicht
+            # machen darf -- und die drei neuen Gruende standen in einem
+            # privaten Woerterbuch und sonst nirgends.
             "maintenance": {
                 "refresh": self._gruende["takt_refresh"],
                 "purge": self._gruende["takt_purge"],
+                "ingest": self._gruende["takt_ingest"],
+                "retention": self._gruende["pflege_retention"],
+                "throttle": self._gruende["pflege_throttle"],
+                "sessions": self._gruende["pflege_sessions"],
             },
         }
 

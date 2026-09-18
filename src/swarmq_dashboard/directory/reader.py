@@ -124,12 +124,15 @@ class StreamReader:
             # Strom wieder falsch -- die Luecke von gestern bleibt trotzdem
             # eine (R4a).
             "gaps": self.writer.gap_count(),
-            "dropped": self._dropped,
+            # Aus der Datei, nicht aus dem Speicher: nach einem Neustart
+            # schwieg die Kopfzeile sonst ueber Eintraege, die dauerhaft
+            # fehlen -- und Schweigen liest sich als "nichts verloren".
+            "dropped": self.writer.lost_counts()[0],
             # Ereignisse, die die Datenbank nicht annahm, und ein noch nicht
             # eingeloestes Loeschversprechen (R7a). Beides gehoert in die
             # Kopfzeile: still bleiben hiesse, eine Luecke als Vollstaendigkeit
             # auszugeben.
-            "rejected": self.writer.rejected,
+            "rejected": self.writer.lost_counts()[1],
             "erasure_pending": self.writer.erasure_pending,
             "oldest_entry": self.writer.oldest_entry(),
         }
@@ -205,6 +208,16 @@ class StreamReader:
         letzte: str,
         zahl: int,
     ) -> None:
+        # Der Beginn der Abdeckung (R8). Der **frueheste Zeitpunkt des ersten
+        # Stapels**, nicht "jetzt": enthaelt der Strom Historie, deckt das
+        # Verzeichnis sie wirklich ab, und die Reichweite darf das sagen.
+        # ``set_coverage_start`` schreibt nur beim ersten Mal.
+        if ausgefallen:
+            # Dauerhaft, nicht nur im Speicher: der Verlust bleibt, auch wenn
+            # der Dienst neu startet (R4a).
+            self.writer.bump_lost(dropped=len(ausgefallen))
+        if ereignisse:
+            self.writer.set_coverage_start(min(ev.ts for _sid, ev in ereignisse))
         self.writer.apply(ereignisse)
         # Erst **nach** dem Einarbeiten markieren: die Zeilen dieses Stapels
         # gibt es vorher noch gar nicht, und gerade sie sind die, die den
@@ -276,8 +289,14 @@ class StreamReader:
         jetzt = time.time() if now is None else now
         grenze = jetzt - retention_s
         self._expired_before_ms = int(grenze * 1000)
-        await self._source.trim_by_min_id(self._key, self._expired_before_ms)
+        # **Zuerst** das Verzeichnis. Andersherum haengt die Loeschung der
+        # Klartext-Argumente (R7a) an einem fremden Dienst: ist Valkey weg,
+        # wirft das Trimmen, und das Ablaufen kam nie dran -- gemessen 0 von
+        # 40 Laeufen. Die einzige technische Grenze, unter der die
+        # Klartext-Entscheidung vertretbar ist, setzte damit still aus.
+        #
         # Derselbe Riegel wie beim Durchlauf: das Ablaufen dauert auf einem
         # vollen Verzeichnis Sekunden und laeuft deshalb im Arbeitsthread.
         async with self._riegel:
             await asyncio.to_thread(self.writer.expire, older_than=grenze)
+        await self._source.trim_by_min_id(self._key, self._expired_before_ms)

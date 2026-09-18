@@ -35,6 +35,7 @@ Test-Liste (AGENTS.md):
 === ZYKLUS 5: Befunde aus der Pruefung von Stufe B ===
 12. Der Neuaufbau gilt erst als beendet, wenn der Strom eingeholt ist.
 13. Ein unlesbarer Eintrag zaehlt als Luecke statt spurlos zu verschwinden.
+13a. Und der Zaehler ueberlebt den Neustart -- er steht in der Datei.
 14. Die eigene Altersbereinigung loest keinen Rueckstands-Alarm aus.
 15. Die gemeldete Luecke verschwindet mit dem Rueckstand.
 
@@ -498,3 +499,27 @@ async def test_zwei_durchlaeufe_verschraenken_sich_nicht(tmp_path: Path) -> None
     assert sum(ergebnisse) == 200, f"Eintraege doppelt oder gar nicht gelesen: {ergebnisse}"
     zeilen = r.writer._con.execute("select count(*) from task").fetchone()[0]
     assert zeilen == 200, f"{zeilen} Zeilen statt 200"
+
+
+async def test_ein_unlesbarer_eintrag_wird_dauerhaft_gezaehlt(tmp_path: Path) -> None:
+    """R4a. Der Zaehler muss den Neustart ueberleben.
+
+    ``dropped`` war ein reiner Speicherzaehler: nach dem ersten Neustart
+    schwieg die Kopfzeile, obwohl der Eintrag dauerhaft fehlt -- und
+    Schweigen liest sich als "nichts verloren". Geprueft wird hier ueber den
+    **Leser**, nicht ueber ``bump_lost`` von Hand: die Stelle, an der es im
+    Betrieb passiert, war ungedeckt, und genau solche Naehte sind in diesem
+    Projekt schon mehrfach unangeschlossen geblieben.
+    """
+    s = FakeStream()
+    s.add(_ev("gut", 100.0))
+    # Ein Eintrag, den diese Fassung nicht lesen kann.
+    s.eintraege.append(("150000-0", b"das ist kein Ereignis"))
+    r = _reader(tmp_path, s)
+    await r.poll_once()
+
+    assert r.status()["dropped"] == 1, f"der Verlust wird nicht gezaehlt: {r.status()}"
+    assert r.writer.lost_counts()[0] == 1, (
+        "der Verlust steht nicht in der Datei -- nach einem Neustart schweigt "
+        "die Kopfzeile darueber"
+    )

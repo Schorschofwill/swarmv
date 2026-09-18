@@ -105,6 +105,20 @@ def _laufend(tid: str, wid: str, ts: float) -> list[Event]:
                            "queue": "reports", "worker_id": wid})]
 
 
+def _gescheitert(tid: str, wid: str, ts: float) -> list[Event]:
+    return [*_laufend(tid, wid, ts),
+            Event(type="task_failed", ts=ts + 1, source=wid, origin=Origin.PICKUP,
+                  payload={"task_id": tid, "task_name": "render_pdf", "queue": "reports",
+                           "worker_id": wid, "error": "kaputt", "duration_ms": 3.0})]
+
+
+def _verworfen(tid: str, wid: str, ts: float) -> list[Event]:
+    return [*_laufend(tid, wid, ts),
+            Event(type="task_dlq", ts=ts + 1, source=wid, origin=Origin.PICKUP,
+                  payload={"task_id": tid, "task_name": "render_pdf", "queue": "reports",
+                           "worker_id": wid, "error": "weg", "duration_ms": 2.0})]
+
+
 def _erledigt(tid: str, wid: str, ts: float) -> list[Event]:
     return [*_laufend(tid, wid, ts),
             Event(type="task_completed", ts=ts + 1, source=wid, origin=Origin.PICKUP,
@@ -146,17 +160,24 @@ async def test_belegte_slots_und_erledigte_tasks(tmp_path: Path) -> None:
     """R14. "Nebenlaeufig" ist die Kapazitaet, nicht die Belegung -- die
     Frage "sind alle Slots belegt?" beantwortete die Seite gar nicht."""
     config = _config(tmp_path)
+    # Zwei laufende, **drei** erledigte: gleiche Zahlen liessen sich nicht
+    # auseinanderhalten, und die Mutation "melde die laufenden als erledigt"
+    # ueberlebte. Unter den erledigten je ein anderer Ausgang -- die Liste in
+    # ``load()`` kannte sechs, geprueft war einer.
     _fuellen(config, _meta("phx-w1:0"), _herzschlag("phx-w1:0", JETZT),
              *_laufend("a", "phx-w1:0", JETZT),
              *_laufend("b", "phx-w1:0", JETZT),
              *_erledigt("c", "phx-w1:0", JETZT),
-             *_erledigt("d", "phx-w1:0", JETZT))
+             *_gescheitert("d", "phx-w1:0", JETZT),
+             *_verworfen("e", "phx-w1:0", JETZT))
     c = await _angemeldet(config, broker=FakeBroker(), stream=None)
     try:
         zeile = _zeile((await c.get(f"/?jetzt={JETZT + 10}")).text, "phx-w1:0")
         assert "2 von 4" in zeile, f"die Belegung fehlt oder ist falsch: {zeile}"
-        assert re.search(r">\s*2\s*<", zeile.split("2 von 4")[1]), (
-            f"die Zahl erledigter Tasks fehlt: {zeile}"
+        # Die **eigene** Zelle, und eine andere Zahl als die Belegung.
+        nach = zeile.split("2 von 4</td>")[1]
+        assert re.match(r'\s*<td class="mono num">3</td>', nach), (
+            f"die Zahl erledigter Tasks fehlt oder ist falsch: {nach[:80]}"
         )
     finally:
         await c.__aexit__(None, None, None)
@@ -206,7 +227,10 @@ async def test_die_laufzeit_steht_da(tmp_path: Path) -> None:
     c = await _angemeldet(config, broker=FakeBroker(), stream=None)
     try:
         zeile = _zeile((await c.get(f"/?jetzt={JETZT + 10}")).text, "phx-w1:0")
-        assert "3 d" in zeile and "4 h" in zeile, f"die Laufzeit fehlt: {zeile}"
+        zellen = re.findall(r'<td class="mono">([^<]*)</td>', zeile)
+        assert zellen[-1].strip() == "3 d 4 h", (
+            f"die Laufzeit fehlt oder die Einheiten stehen verkehrt: {zellen}"
+        )
     finally:
         await c.__aexit__(None, None, None)
 
@@ -220,8 +244,11 @@ async def test_ohne_startzeitpunkt_kein_geratener_wert(tmp_path: Path) -> None:
     c = await _angemeldet(config, broker=FakeBroker(), stream=None)
     try:
         zeile = _zeile((await c.get(f"/?jetzt={JETZT + 10}")).text, "phx-w9:0")
-        assert " d " not in zeile and re.search(r"--|unbekannt", zeile), (
-            f"eine Laufzeit wurde geraten: {zeile}"
+        # Die **Laufzeit-Zelle**, nicht die Zeile: der Strich stand auch in
+        # der Slot-Spalte, und "0 min" waere durchgegangen.
+        zellen = re.findall(r'<td class="mono">([^<]*)</td>', zeile)
+        assert zellen and zellen[-1].strip() == "--", (
+            f"eine Laufzeit wurde geraten: {zellen}"
         )
     finally:
         await c.__aexit__(None, None, None)
@@ -271,6 +298,137 @@ async def test_eine_unabfragbare_queue_verdirbt_die_summe_nicht_still(
         kopf = " ".join(kopf[:kopf.find("<table")].split())
         assert "unvollst" in kopf.lower() or "mindestens" in kopf.lower(), (
             f"die lueckenhafte Summe gibt sich als vollstaendig aus: {kopf}"
+        )
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+# --- Zyklus 4: Was die Korrektur selbst falsch behauptete ----------------
+
+
+async def test_ein_getrennter_worker_belegt_keinen_slot(tmp_path: Path) -> None:
+    """"5 von 2" ist arithmetisch unmoeglich -- und stand so auf der Seite.
+
+    ``belegt()`` zaehlt Zeilen mit Status "laufend". Bleibt ein Abschluss
+    aus -- Luecke im Strom, verworfener Eintrag, abgestuerzter Worker --,
+    bleibt die Zeile fuer immer laufend. Fuer einen Worker, den dieselbe
+    Zeile als **getrennt** ausweist, meldet die Seite dann Ueberlast: im
+    Vorfall die teuerste Fehldeutung, weil sie in die falsche Richtung
+    schickt.
+    """
+    config = _config(tmp_path)
+    _fuellen(config, _meta("phx-w1:0", concurrency=2), _herzschlag("phx-w1:0", JETZT),
+             *_laufend("a", "phx-w1:0", JETZT), *_laufend("b", "phx-w1:0", JETZT),
+             *_laufend("c", "phx-w1:0", JETZT), *_laufend("d", "phx-w1:0", JETZT),
+             *_laufend("e", "phx-w1:0", JETZT))
+    c = await _angemeldet(config, broker=FakeBroker(), stream=None)
+    try:
+        # Lange nach der Frist: der Worker gilt als getrennt.
+        zeile = _zeile((await c.get(f"/?jetzt={JETZT + 10_000}")).text, "phx-w1:0")
+        assert "getrennt" in zeile
+        assert "5 von 2" not in zeile, f"unmoegliche Belegung: {zeile}"
+        assert re.search(r">\s*--\s*<|0 von 2", zeile), (
+            f"ein getrennter Worker meldet weiter belegte Slots: {zeile}"
+        )
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+async def test_eine_queue_die_der_broker_nicht_kennt_gilt_als_ungemessen(
+    tmp_path: Path,
+) -> None:
+    """Der Rueckstau zaehlte alles, was keinen **Fehler** trug.
+
+    ``QueueStats(exists=False, depth=0, error=None)`` ist aber keine Messung,
+    sondern ihr Ausbleiben: die Queue gibt es am Broker nicht, oder ihr Name
+    wurde oertlich abgelehnt. Als Null in die Summe zu nehmen und die
+    Unvollstaendigkeits-Marke zu unterdruecken ist genau die Null, wo eine
+    Auskunft fehlt.
+    """
+    config = _config(tmp_path)
+    _fuellen(config, _meta("phx-w1:0", gruppe="reports", queues=["reports", "mails"]),
+             _herzschlag("phx-w1:0", JETZT))
+    broker = FakeBroker({"reports": QueueStats(queue="reports", exists=True, depth=12),
+                         "mails": QueueStats(queue="mails", exists=False)})
+    c = await _angemeldet(config, broker=broker, stream=None)
+    try:
+        text = (await c.get(f"/?jetzt={JETZT + 10}")).text
+        kopf = text[text.find("gruppe-reports"):]
+        kopf = " ".join(kopf[:kopf.find("<table")].split())
+        assert "unvollst" in kopf.lower(), (
+            f"eine nie gemessene Queue geht still als Null in die Summe: {kopf}"
+        )
+        assert "mails" in kopf, f"die fehlende Queue wird nicht benannt: {kopf}"
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+async def test_eine_gruppe_ohne_bekannte_queues_meldet_keine_null(
+    tmp_path: Path,
+) -> None:
+    """Ein Worker ohne Stammdaten hat keine Queues. Ueber die leere Menge zu
+    summieren ergibt 0 -- und "0 wartende Nachrichten" ist die beruhigendste
+    Antwort auf "staut es sich?", die es gibt. Gemessen wurde nichts."""
+    config = _config(tmp_path)
+    _fuellen(config, *_laufend("a", "phx-w9:0", JETZT))     # nur ein Signal
+    c = await _angemeldet(config, broker=FakeBroker(), stream=None)
+    try:
+        text = (await c.get(f"/?jetzt={JETZT + 10}")).text
+        kopf = text[text.find("gruppe-"):]
+        kopf = " ".join(kopf[:kopf.find("<table")].split())
+        assert "0 wartende" not in kopf, (
+            f"eine Gruppe ohne bekannte Queue meldet einen Rueckstau von null: {kopf}"
+        )
+        assert "unbekannt" in kopf.lower() or "keine Queue" in kopf, (
+            f"der Grund fehlt: {kopf}"
+        )
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+async def test_jede_gruppe_zaehlt_nur_ihre_eigenen_queues(tmp_path: Path) -> None:
+    """"Je Gruppe" war nicht beobachtbar: beide Tests bauten genau eine
+    Gruppe, deren Queues alle Queues der Seite waren. Die Summe ueber
+    **alle** Queues statt ueber die eigenen fiel damit nicht auf."""
+    config = _config(tmp_path)
+    _fuellen(config,
+             _meta("phx-a:0", gruppe="reports", queues=["reports"]),
+             _herzschlag("phx-a:0", JETZT),
+             _meta("phx-b:0", gruppe="mails", queues=["mails"]),
+             _herzschlag("phx-b:0", JETZT))
+    broker = FakeBroker({"reports": QueueStats(queue="reports", exists=True, depth=100),
+                         "mails": QueueStats(queue="mails", exists=True, depth=7)})
+    c = await _angemeldet(config, broker=broker, stream=None)
+    try:
+        text = (await c.get(f"/?jetzt={JETZT + 10}")).text
+
+        def kopf(name: str) -> str:
+            teil = text[text.find(f'id="gruppe-{name}"'):]
+            return " ".join(teil[:teil.find("<table")].split())
+
+        assert "100 wartende" in kopf("reports"), kopf("reports")
+        assert "7 wartende" in kopf("mails"), kopf("mails")
+        assert "107" not in kopf("reports"), (
+            f"die Gruppe zaehlt fremde Queues mit: {kopf('reports')}"
+        )
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+async def test_ohne_luecke_keine_unvollstaendigkeits_marke(tmp_path: Path) -> None:
+    """Die Gegenprobe. Eine Marke, die immer dasteht, sagt nichts -- und
+    kein Test sicherte bisher zu, dass sie **fehlt**, wenn alles antwortet."""
+    config = _config(tmp_path)
+    _fuellen(config, _meta("phx-a:0", gruppe="reports", queues=["reports"]),
+             _herzschlag("phx-a:0", JETZT))
+    broker = FakeBroker({"reports": QueueStats(queue="reports", exists=True, depth=5)})
+    c = await _angemeldet(config, broker=broker, stream=None)
+    try:
+        text = (await c.get(f"/?jetzt={JETZT + 10}")).text
+        teil = text[text.find('id="gruppe-reports"'):]
+        kopf = " ".join(teil[:teil.find("<table")].split())
+        assert "unvollst" not in kopf.lower() and "keine Queue" not in kopf, (
+            f"die Marke steht da, obwohl alle Queues geantwortet haben: {kopf}"
         )
     finally:
         await c.__aexit__(None, None, None)

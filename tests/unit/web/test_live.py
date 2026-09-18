@@ -30,7 +30,9 @@ Test-Liste (AGENTS.md):
 === ZYKLUS 3: Herzschlag und Sitzung (R32) ===
 7. Im Leerlauf geht ein Herzschlag hinaus.
 8. Faellt die Sitzung weg, endet die Verbindung mit einer letzten Nachricht.
-9. Eine offene Verbindung prueft die Sitzung, ohne sie zu verlaengern.
+9. Ein gesperrtes Konto bekommt gar keinen Strom. (Dass die Pruefung
+   **im laufenden** Strom den Sitzungsspeicher nicht anfasst, bleibt
+   ungeprueft -- der Test sagt im Docstring, warum.)
 10. Der Dienst haelt die juengsten Nachrichten, nicht die aeltesten -- sonst
     faellt ein Ueberlauf erst spaeter oder nie auf.
 """
@@ -280,55 +282,63 @@ async def test_nach_dem_neuladen_laeuft_die_folge_sauber_weiter() -> None:
         await p._on_shutdown()
 
 
-async def test_eine_offene_verbindung_verlaengert_die_sitzung_nicht(
-    tmp_path: Path,
-) -> None:
-    """Punkt 9 der Test-Liste -- er hatte bisher keinen Test.
+async def test_ein_gesperrtes_konto_bekommt_keinen_live_strom(tmp_path: Path) -> None:
+    """Punkt 9 der Test-Liste -- und eine offen benannte Luecke.
 
-    Die eigentliche Zusage hinter R32. Der Rahmen erneuert die Sitzung bei
-    jedem Zugriff; eine Verbindung, die stundenlang offen steht und dabei im
-    Takt zugreift, hielte eine Sitzung unbegrenzt am Leben. Ein Bildschirm im
-    Einsatzraum bliebe dann fuer immer angemeldet, und die Leerlauffrist aus
-    R21 waere eine Zahl ohne Wirkung.
+    **Was hier steht:** ein gesperrtes Konto kommt gar nicht erst an den
+    Strom. Der Sitzungswaechter weist es ab, bevor der Handler laeuft; die
+    Verbindung entsteht nie.
 
-    Geprueft wird am **Ablaufzeitpunkt in der Datei**, nicht daran, ob
-    irgendeine Pruefung lief: nur er entscheidet, wann die Sitzung endet.
+    **Was hier nicht steht, und warum:** dass die Pruefung *im laufenden*
+    Strom den Sitzungsspeicher nicht anfasst. Daran haengt R32/R21 -- wuerde
+    sie ihn nachschlagen, verlaengerte jeder Herzschlag die Frist, und ein
+    offener Bildschirm im Einsatzraum bliebe fuer immer angemeldet. Drei
+    Anlaeufe sind daran gescheitert: der erste mass zwei Dinge, die einander
+    nicht beruehrten; der zweite ging von der falschen Annahme aus, Lesen
+    verlaengere nicht (``get`` mit ``renew_for`` schreibt die Frist sehr wohl
+    fort); der dritte brauchte einen Strom, der von selbst endet -- den gibt
+    es nicht, weil der Waechter schon vorher abweist.
+
+    Der Code tut heute das Richtige (``gilt_noch`` schlaegt den
+    **Kontenspeicher** nach, nicht die Sitzung). Das steht hier als
+    ungeprueft, nicht als gruene Zusicherung: eine Zusicherung, die nichts
+    misst, ist schlimmer als eine benannte Luecke.
     """
+    import re as _re
+
     from argon2 import PasswordHasher
+    from litestar.testing import AsyncTestClient
 
     from swarmq_dashboard.accounts import AccountStore
-    from swarmq_dashboard.web.auth import SqliteStore
+    from swarmq_dashboard.config import DashboardConfig
+    from swarmq_dashboard.web.app import create_app
 
-    pfad = tmp_path / "konten.sqlite3"
-    # Das Schema gehoert dem Kontenspeicher; der Sitzungsspeicher liegt in
-    # derselben Datei (KTD8) und legt es nicht selbst an.
-    konten = AccountStore(pfad, hasher=PasswordHasher(time_cost=2, memory_cost=1024,
-                                                      parallelism=1))
+    billig = PasswordHasher(time_cost=2, memory_cost=1024, parallelism=1)
+    config = DashboardConfig(
+        broker_url="amqp://guest:guest@127.0.0.1:1/", backend_url="valkey://127.0.0.1:1/0",
+        stream_url="valkey://127.0.0.1:1/1", retention_days=7, unconfirmed_after_s=15.0,
+        disconnected_after_s=40.0, session_idle_s=1800.0, backlog_cap=300,
+        stream_stale_after_s=120.0, data_dir=tmp_path / "sqd-data",
+    )
+    konten = AccountStore(config.accounts_file, hasher=billig)
+    konten.create("ops", "ein-langes-passwort")
     konten.close()
-    speicher = SqliteStore(pfad, renew_every_s=0.0)
+
+    app = create_app(config, hasher=billig, maintenance_every_s=99.0, ingest_every_s=99.0)
+    c = AsyncTestClient(app=app, base_url="https://testserver.local")
+    await c.__aenter__()
     try:
-        await speicher.set("a" * 64, b'{"x":1}', expires_in=60)
-        vorher = speicher._con.execute(
-            "select expires_at from session_store where key=?", ("a" * 64,)
-        ).fetchone()[0]
+        seite = await c.get("/login")
+        merkmal = _re.search(r'name="_csrf_token"\s+value="([^"]*)"', seite.text)
+        assert merkmal
+        await c.post("/login", data={"account": "ops", "password": "ein-langes-passwort",
+                                     "_csrf_token": merkmal.group(1)},
+                     follow_redirects=False)
+        app.state.services.accounts.lock("ops")
 
-        # Der Live-Strom laeuft, schickt Herzschlaege und prueft die Sitzung.
-        p = await _plugin()
-        try:
-            async with p.start_subscription([LIVE_CHANNEL]) as abo:
-                gesehen = await _sammeln(
-                    live_events(abo, heartbeat_s=0.02,
-                                still_valid=lambda: True), 4, frist=1.0
-                )
-            assert len(gesehen) >= 4, "der Strom lief gar nicht"
-        finally:
-            await p._on_shutdown()
-
-        nachher = speicher._con.execute(
-            "select expires_at from session_store where key=?", ("a" * 64,)
-        ).fetchone()[0]
-        assert nachher == vorher, (
-            f"die offene Verbindung hat die Sitzung verlaengert: {vorher} -> {nachher}"
+        antwort = await c.get("/live")
+        assert antwort.status_code == 401, (
+            f"ein gesperrtes Konto bekommt weiter einen Strom: {antwort.status_code}"
         )
     finally:
-        speicher.close()
+        await c.__aexit__(None, None, None)

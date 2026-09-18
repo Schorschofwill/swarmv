@@ -43,7 +43,11 @@ DEAD_LETTER_SUFFIX = "XQ"
 #: Zeitgrenze fuer den Verbindungsaufbau. Ohne sie haengt der Aufbau gegen
 #: einen Server, der TCP annimmt und dann schweigt -- eine Firewall, die
 #: verwirft statt abzulehnen -- unbegrenzt, und mit ihm der ganze Takt.
-CONNECT_TIMEOUT_S = 10.0
+#: Frist fuer Aufbau und Pruefung. Kuerzer als die umschliessende Frist des
+#: Dienstes (``web/app.py``, ``PROBE_TIMEOUT_S``): sonst bricht die aeussere
+#: die innere ab, bevor sie ihren Kanal schliessen kann -- gemessen 10 Takte,
+#: 10 offene Kanaele, und RabbitMQ laesst je Verbindung nur 2047 zu.
+CONNECT_TIMEOUT_S = 3.0
 #: Was AMQP als Queue-Namen zulaesst -- der Zeichenvorrat der Protokollschicht,
 #: Zeichen fuer Zeichen gegen sie abgeglichen, nicht enger gefasst. Eine
 #: strengere eigene Regel waere genau die stille Falschaussage, gegen die
@@ -119,19 +123,30 @@ class BrokerObserver:
         billigste Vorgang, der wirklich mit dem Broker spricht.
         """
         if self._connection is not None and not self._connection.is_closed:
+            kanal = None
             try:
                 kanal = await asyncio.wait_for(self._connection.channel(),
                                                timeout=CONNECT_TIMEOUT_S)
-            except Exception as exc:
+            except BaseException as exc:
+                # **BaseException**: ein Abbruch von aussen ist kein Fehler,
+                # laesst aber denselben Kanal offen. Genau daran leckte der
+                # Takt -- und zwar an der Stelle, die gegen ein frueheres
+                # Kanalleck geschrieben wurde.
                 # Schliessen, nicht bloss vergessen: eine fallengelassene
                 # Verbindung meldet sich beim Aufraeumen als "close was never
                 # awaited" und haelt bis dahin ihren Socket.
                 tot, self._connection = self._connection, None
                 with contextlib.suppress(Exception):
                     await tot.close()
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
                 raise BrokerUnavailable(str(exc)) from exc
-            with contextlib.suppress(Exception):
-                await kanal.close()
+            finally:
+                # Der Kanal war nur zur Probe da und geht in jedem Fall zu --
+                # auch wenn gleich ein Abbruch durchgereicht wird.
+                if kanal is not None:
+                    with contextlib.suppress(Exception):
+                        await kanal.close()
             return
         if self._connection is None or self._connection.is_closed:
             try:

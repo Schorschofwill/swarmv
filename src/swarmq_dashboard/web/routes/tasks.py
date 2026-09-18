@@ -65,10 +65,10 @@ def leerzustand(f: Filter, status: dict[str, Any], reichweite: float | None) -> 
         # daneben stockt, steht in der Kopfzeile -- hier waere es die
         # unwahrscheinlichere Erklaerung und lenkte von der Suche ab.
         return ("Kein Task passt zu dieser Suche",
-                f"Das Verzeichnis reicht bis {_lesbar(reichweite)} zurueck -- "
+                f"Das Verzeichnis reicht bis {_lesbar(reichweite)} zurück -- "
                 "älteres steht nicht mehr darin.")
     return ("Kein Task im gewählten Zeitraum",
-            f"Das Verzeichnis reicht bis {_lesbar(reichweite)} zurueck.")
+            f"Das Verzeichnis reicht bis {_lesbar(reichweite)} zurück.")
 
 
 def _lesbar(ts: float | None) -> str:
@@ -141,7 +141,7 @@ async def liste(request: Request[Any, Any, Any]) -> Template:
     status = request.app.state.services.status()
     # An der Aufbewahrungsgrenze abgeschnitten (R8). Ohne das zog eine
     # einzige langlebige Zeile die gemeldete Reichweite beliebig weit
-    # zurueck, waehrend alles dazwischen laengst geraeumt war.
+    # zurück, waehrend alles dazwischen laengst geraeumt war.
     reichweite = q.reach(retention_start=_aufbewahrungsgrenze(request))
     leer = leerzustand(f, status, reichweite)
     return Template(

@@ -381,46 +381,75 @@ async def test_das_merkmal_bleibt_an_die_sitzung_gebunden(tmp_path: Path) -> Non
 
 
 async def test_die_seite_abonniert_den_live_kanal(tmp_path: Path) -> None:
-    """R13, R13a, R32. Die Live-Schicht war serverseitig vollstaendig und im
-    Browser an nichts angeschlossen: kein ``EventSource``, kein
-    ``sse-connect``. Eine offene Seite fror ein und bescheinigte sich dabei
-    in der Kopfzeile "Strom: aktuell".
+    """R13, R13a, R32. Zwei Aussagen, zwei Zusicherungen.
+
+    Die erste Fassung pruefte ``"/live" in text`` -- und das ist schon durch
+    ``<script src="/static/live.js">`` erfuellt, weil diese Zeichenkette
+    ``/live`` enthaelt. Das Abonnement auf ``/gibtesnicht`` umzubiegen liess
+    alle Tests gruen. Dasselbe Muster wie bei den Ziffern, nur mit einem
+    Pfad: eine Zeichenkette, die auch woanders steht.
     """
     config = _config(tmp_path)
     app = _dienst(config, stream=FakeStream())
     c = await _angemeldet(app)
     try:
-        text = (await c.get("/")).text
-        assert "/live" in text, "keine Seite abonniert den Live-Kanal"
+        # 1. Das Geruest bindet die Datei ein.
+        seite = (await c.get("/")).text
+        assert 'src="/static/live.js"' in seite, "das Geruest laedt live.js nicht"
+
+        # 2. Die **ausgelieferte** Datei abonniert den Kanal. Getrennt
+        #    geprueft, weil das zwei verschiedene Fehler sind.
+        skript = (await c.get("/static/live.js")).text
+        assert 'EventSource("/live")' in skript, (
+            "das ausgelieferte Skript abonniert nicht /live"
+        )
     finally:
         await c.__aexit__(None, None, None)
 
 
-async def test_der_canceller_verbindet_sich_beim_ersten_gebrauch() -> None:
-    """Die Naht selbst, am echten Objekt.
+async def test_das_skript_behandelt_verlust_und_sitzungsende(tmp_path: Path) -> None:
+    """Die beiden Nachrichten, die serverseitig eigens erzeugt werden.
 
-    ``connect()`` hatte im ganzen Dienst keinen Aufrufer; ``cancel()`` warf
-    darum jedes Mal "das Backend ist nicht verbunden", und die Ansicht gab
-    dem Backend die Schuld. Jetzt haengt die Naht in ``cancel()`` -- traege,
-    damit niemand beim Hochfahren eine Verbindung bezahlt, die die meisten
-    Sitzungen nie brauchen.
+    ``live.js`` hatte gar keinen Test -- die ganze Datei war ungedeckt.
+    Geprueft wird hier, dass die beiden Arten ueberhaupt behandelt werden;
+    was sie dann tun, sagt der Test darunter.
     """
-    from swarmq_dashboard.web.cancel import SwarmQCanceller
+    config = _config(tmp_path)
+    app = _dienst(config, stream=FakeStream())
+    c = await _angemeldet(app)
+    try:
+        skript = (await c.get("/static/live.js")).text
+        for art in ("reload", "session_ended"):
+            assert f'addEventListener("{art}"' in skript, (
+                f"das Skript behandelt {art!r} nicht -- die Nachricht wird "
+                "serverseitig erzeugt und erreicht dann niemanden"
+            )
+        assert '"/login"' in skript, "das Sitzungsende fuehrt nicht zur Anmeldung"
+    finally:
+        await c.__aexit__(None, None, None)
 
-    c = SwarmQCanceller("amqp://guest:guest@127.0.0.1:1/", "valkey://127.0.0.1:1/0")
-    rufe: list[int] = []
 
-    class App:
-        async def cancel(self, task_id: str) -> bool:
-            return True
+async def test_das_skript_drosselt_auch_das_neuladen(tmp_path: Path) -> None:
+    """Die Sammelfrist galt nur fuer den einen Weg.
 
-    async def statt_connect() -> None:
-        rufe.append(1)
-        c._app = App()
-
-    c.connect = statt_connect  # type: ignore[method-assign]
-    assert await c.cancel("t-1") is True
-    assert rufe == [1], "cancel() verbindet sich nicht"
+    ``location.reload()`` feuerte sofort und fuer **jede** Verlustmeldung.
+    Gemessen: 20 Neuladevorgaenge in drei Sekunden fuer eine einzige
+    Ansicht, jeder ein voller Seitenaufruf -- und auf der Startseite haengt
+    daran die Broker-Abfrage im Anfrageweg. Die Ops-Oberflaeche legt damit
+    im Vorfall Last auf denselben Broker, dessen Vorfall sie zeigt.
+    """
+    config = _config(tmp_path)
+    app = _dienst(config, stream=FakeStream())
+    c = await _angemeldet(app)
+    try:
+        skript = (await c.get("/static/live.js")).text
+        stelle = skript[skript.find('addEventListener("reload"'):]
+        stelle = stelle[:stelle.find("});") + 3]
+        assert "setTimeout" in stelle or "neuladen" in stelle, (
+            f"das Neuladen ist ungedrosselt: {' '.join(stelle.split())}"
+        )
+    finally:
+        await c.__aexit__(None, None, None)
 
 
 async def test_das_merkmal_wird_gegen_die_sitzung_geprueft_nicht_gegen_das_cookie(
@@ -453,3 +482,112 @@ async def test_das_merkmal_wird_gegen_die_sitzung_geprueft_nicht_gegen_das_cooki
         )
     finally:
         await c.__aexit__(None, None, None)
+
+
+async def test_der_dienst_haelt_den_beginn_der_abdeckung_fest(tmp_path: Path) -> None:
+    """R8. Die Naht zum dritten Boden der Reichweite.
+
+    ``set_coverage_start`` von Hand zu rufen beweist die Methode, nicht das
+    Verhalten -- und genau dieser Unterschied hat in diesem Projekt schon
+    sechs Teile unangeschlossen gelassen. Hier faehrt der Dienst, liest von
+    selbst, und der Merker muss danach stehen.
+    """
+    config = _config(tmp_path)
+    strom = FakeStream()
+    strom.add(_ev("a41f", JETZT))
+    app = _dienst(config, stream=strom)
+    async with AsyncTestClient(app=app, base_url=BASIS):
+        w = app.state.services.services_directory_writer
+        assert await _warte_bis(lambda: w.coverage_start() is not None), (
+            "der Beginn der Abdeckung wird nie festgehalten -- die Reichweite "
+            "verspricht dann mehr, als das Verzeichnis je gesehen hat"
+        )
+        assert w.coverage_start() == JETZT, (
+            f"der Beginn ist nicht der fruehste Zeitpunkt des ersten Stapels: "
+            f"{w.coverage_start()}"
+        )
+
+
+async def test_ein_zweiter_lebenszyklus_laeuft_wieder_an(tmp_path: Path) -> None:
+    """``startup()`` verspricht Idempotenz -- ``_halt`` machte sie zunichte.
+
+    Der Halt-Merker wurde nur im Konstruktor zurueckgesetzt. Nach einem
+    ``shutdown()`` blieb er stehen, und alle drei Takte pruefen ihn als
+    Erstes: der zweite Lebenszyklus derselben Anwendung liest **nichts**,
+    raeumt nichts auf, fuehrt nichts nach -- und der Bericht meldet dabei
+    alles in Ordnung. Genau die stille Falschaussage, gegen die dieses
+    Dashboard gebaut ist.
+    """
+    config = _config(tmp_path)
+    strom = FakeStream()
+    strom.add(_ev("erster", JETZT))
+    app = _dienst(config, stream=strom)
+
+    async with AsyncTestClient(app=app, base_url=BASIS):
+        w = app.state.services.services_directory_writer
+        assert await _warte_bis(lambda: w.row("erster") is not None)
+
+    strom.add(_ev("zweiter", JETZT + 1))
+    async with AsyncTestClient(app=app, base_url=BASIS):
+        w2 = app.state.services.services_directory_writer
+        assert await _warte_bis(lambda: w2.row("zweiter") is not None), (
+            "der zweite Lebenszyklus liest nichts mehr -- und meldet dabei, "
+            "dass alles in Ordnung ist"
+        )
+
+
+async def test_die_frist_laeuft_auch_ohne_strom(tmp_path: Path) -> None:
+    """R7a. Die Klartext-Loeschung darf nicht an einem fremden Dienst haengen.
+
+    ``maintain()`` trimmte erst den Strom und liess dann das Verzeichnis
+    ablaufen. Ist Valkey weg, wirft der erste Schritt, und der zweite kommt
+    nie dran -- gemessen 0 von 40 Laeufen. Die einzige technische Grenze,
+    unter der die Klartext-Entscheidung vertretbar ist, setzte damit still
+    aus, sobald ein Dienst ausfiel, mit dem sie nichts zu tun hat.
+    """
+    import time as _t
+
+    class StummerStrom(FakeStream):
+        async def trim_by_min_id(self, key: str, min_ms: int) -> int:
+            from swarmq_dashboard.stream import StreamUnavailable
+            raise StreamUnavailable("der Strom ist weg")
+
+    config = _config(tmp_path)
+    app = _dienst(config, stream=StummerStrom())
+    w = DirectoryWriter(connect(config.directory_file))
+    w.apply([(None, _ev("alt", _t.time() - 30 * 86400))])
+    w._con.execute("update task set last_seen_at=? where task_id='alt'",
+                   (_t.time() - 30 * 86400,))
+    w._con.commit()
+    w.close()
+
+    async with AsyncTestClient(app=app, base_url=BASIS):
+        schreiber = app.state.services.services_directory_writer
+        assert await _warte_bis(lambda: schreiber.row("alt") is None), (
+            "die Aufbewahrungsfrist laeuft nicht, weil der Strom fehlt -- "
+            "der Klartext bleibt liegen"
+        )
+
+
+async def test_ein_stillgelegter_takt_steht_im_bericht(tmp_path: Path) -> None:
+    """Ein Takt, der still nicht mehr arbeitet, ist die Art Ausfall, die
+    dieses Dashboard nicht machen darf.
+
+    Die Ausfallgruende der neuen Takte wurden in ein privates Woerterbuch
+    geschrieben und nirgends herausgegeben -- der Kommentar daneben
+    verspricht das Gegenteil.
+    """
+    class WerfenderStrom(FakeStream):
+        async def read_after(self, key: str, last_id: str, count: int) -> list[Any]:
+            raise RuntimeError("der Strom antwortet nicht")
+
+    config = _config(tmp_path)
+    app = _dienst(config, stream=WerfenderStrom())
+    async with AsyncTestClient(app=app, base_url=BASIS):
+        services = app.state.services
+        assert await _warte_bis(
+            lambda: bool(services.status()["maintenance"].get("ingest"))
+        ), (
+            "ein dauerhaft scheiterndes Einlesen steht in keiner Antwort: "
+            f"{services.status()['maintenance']}"
+        )

@@ -68,12 +68,12 @@
       {%- if status.directory.erasure_pending %}
       <span class="tag is-wait"><span class="tag-dot"></span> Löschung offen</span>
       {%- endif %}
-      {#- Verlorene Eintraege. Der Leser zaehlt beides seit je; gerendert
+      {#- Verlorene Einträge. Der Leser zaehlt beides seit je; gerendert
           wurde keins von beiden, und damit war der Verlust erkannt, gezaehlt
           und dem Menschen vorenthalten (R4a). Ein Task, dessen Ereignisse
           hier ausfielen, liest sich als "nie gelaufen". -#}
       {%- if status.directory.dropped %}
-      <span class="tag is-wait" title="Eintraege aus dem Strom, die diese Fassung nicht lesen konnte">
+      <span class="tag is-wait" title="Einträge aus dem Strom, die diese Fassung nicht lesen konnte">
         <span class="tag-dot"></span>
         {{ status.directory.dropped }} Einträge nicht lesbar</span>
       {%- endif %}

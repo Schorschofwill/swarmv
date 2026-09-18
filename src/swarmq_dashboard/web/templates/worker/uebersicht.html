@@ -16,14 +16,22 @@
     {#- Der Rueckstau gehoert an die Gruppe, nicht in eine Tabelle am
         Seitenende: ohne Kontrollkanal ist er die einzige Antwort auf
         "staut es sich?" (R14 Satz 2), und die Frage entsteht hier. -#}
+    {%- if g.wartend is not none %}
     · {{ g.wartend }} wartende Nachrichten
+    {%- else %}
+    · wartende Nachrichten unbekannt
+    {%- endif %}
     {%- if g.rueckstau_unvollstaendig %} ·
     <span class="tag is-wait"><span class="tag-dot"></span>
-      unvollständig: {{ g.rueckstau_unvollstaendig|join(', ') }} nicht abgefragt</span>
+      {% if g.wartend is none %}keine Queue gemessen{% else %}unvollständig{% endif %}:
+      {{ g.rueckstau_unvollstaendig|join(', ') or 'diese Gruppe kennt keine Queue' }}</span>
+    {%- elif g.wartend is none %} ·
+    <span class="tag is-wait"><span class="tag-dot"></span>
+      diese Gruppe kennt keine Queue -- ohne Stammdaten ist kein Rückstau messbar</span>
     {%- endif %}
     {%- if g.eingeschraenkt %} ·
     <span class="tag is-wait"><span class="tag-dot"></span>
-      eingeschränkt: fuer mindestens einen Worker gibt es nur das letzte Signal</span>
+      eingeschränkt: für mindestens einen Worker gibt es nur das letzte Signal</span>
     {%- endif %}
   </p>
 
@@ -97,7 +105,7 @@
           {%- if q.ohne_hook %}
           <span class="tag is-wait"><span class="tag-dot"></span>
             {{ q.ohne_hook }} Konsumenten ohne Hook{% if not q.bekannt %} --
-            der Strom kennt keinen Worker fuer diese Queue{% endif %}</span>
+            der Strom kennt keinen Worker für diese Queue{% endif %}</span>
           {%- endif %}
         </td>
         {%- endif %}

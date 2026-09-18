@@ -7,6 +7,7 @@ Absturz, und genau darum sind sie gefaehrlich -- ein Absturz faellt auf.
 Test-Liste (AGENTS.md):
 
 === ZYKLUS 1: Reichweite (R8) ===
+0. Sie geht nie vor den Beginn des Verzeichnisses zurueck (Zyklus 6).
 1. Ein Dauerlaeufer zieht die gemeldete Reichweite nicht hinter die
    Aufbewahrungsgrenze zurueck.
 2. Ohne Dauerlaeufer bleibt die Reichweite der aelteste Eintrag.
@@ -357,3 +358,66 @@ async def test_bei_unbekannter_tiefe_steht_dort_keine_null(tmp_path: Path) -> No
         )
     finally:
         await c.__aexit__(None, None, None)
+
+
+# --- Zyklus 6: Die Reichweite hat einen dritten Boden -------------------
+
+
+def test_die_reichweite_geht_nicht_vor_den_beginn_des_verzeichnisses(
+    tmp_path: Path,
+) -> None:
+    """R8, zweiter Anlauf.
+
+    Der erste Anlauf nahm ``max(aeltester Eintrag, Aufbewahrungsgrenze)``. Das
+    hob die Zahl gegenueber vorher an, aber nicht weit genug: laeuft der
+    Dienst erst seit zwei Tagen und zieht **eine** noch lebende Zeile den
+    aeltesten Eintrag auf dreissig Tage zurueck, meldete die Seite weiter
+    sieben Tage -- abgedeckt sind zwei. Der Fehler war von dreissig auf
+    sieben Tage geschrumpft, nicht beseitigt, und der Docstring behauptete
+    dabei ausdruecklich das Gegenteil.
+
+    Es fehlte der dritte Boden: der Punkt, ab dem das Verzeichnis ueberhaupt
+    liest. Vorher kann es nichts wissen, egal wie grosszuegig die
+    Aufbewahrung ist.
+    """
+    con = connect(tmp_path / "v.sqlite3")
+    w, q = DirectoryWriter(con), DirectoryQueries(con)
+    jetzt = time.time()
+    beginn = jetzt - 2 * 86400
+    w.set_coverage_start(beginn)
+    # Ein Dauerlaeufer von vor 30 Tagen, sonst nichts Aelteres als 2 Tage.
+    w.apply([(None, _enq("dauerlaeufer", jetzt - 30 * 86400)),
+             (None, _enq("frisch", jetzt - 86400))])
+    w._con.execute("update task set last_seen_at=? where task_id='dauerlaeufer'", (jetzt,))
+    w._con.commit()
+
+    reichweite = q.reach(retention_start=jetzt - 7 * 86400)
+    assert reichweite is not None
+    assert reichweite >= beginn - 1.0, (
+        f"die gemeldete Reichweite liegt {(beginn - reichweite) / 86400:.1f} Tage "
+        "vor dem Beginn des Verzeichnisses -- dort hat es nie gelesen"
+    )
+
+
+def test_ohne_bekannten_beginn_bleibt_es_bei_der_grenze(tmp_path: Path) -> None:
+    """Ein Verzeichnis aus der Zeit vor diesem Merker kennt seinen Beginn
+    nicht. Dann ist die Aufbewahrungsgrenze die beste Auskunft -- und sie zu
+    verschweigen waere schlechter, als sie vorsichtig zu nennen."""
+    con = connect(tmp_path / "v.sqlite3")
+    w, q = DirectoryWriter(con), DirectoryQueries(con)
+    jetzt = time.time()
+    w.apply([(None, _enq("alt", jetzt - 30 * 86400))])
+    w._con.execute("update task set last_seen_at=? where task_id='alt'", (jetzt,))
+    w._con.commit()
+    grenze = jetzt - 7 * 86400
+    assert q.reach(retention_start=grenze) == grenze
+
+
+def test_der_beginn_wird_nur_einmal_gesetzt(tmp_path: Path) -> None:
+    """Sonst wanderte er mit jedem Durchlauf nach vorn, und die Reichweite
+    schrumpfte auf den letzten Takt zusammen."""
+    con = connect(tmp_path / "v.sqlite3")
+    w = DirectoryWriter(con)
+    w.set_coverage_start(1000.0)
+    w.set_coverage_start(9999.0)
+    assert w.coverage_start() == 1000.0

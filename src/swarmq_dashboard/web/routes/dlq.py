@@ -268,7 +268,7 @@ async def leeren(
 ) -> Template:
     """Die Dead-Letter-Queue leeren (R30).
 
-    Die einzige Handlung im Dashboard, die Daten endgueltig vernichtet. Sie
+    Die einzige Handlung im Dashboard, die Daten endgültig vernichtet. Sie
     verlangt Queue-Name **und** Zahl -- und der Dienst prueft die Zahl gegen
     den Stand von **jetzt**, nicht gegen den, der beim Rendern galt.
     """
@@ -282,6 +282,6 @@ async def leeren(
         queue, bestaetigung=str(data.get("bestaetigung", "")), erwartet=erwartet,
     )
     bericht = (f"Leeren abgewiesen: {ergebnis.error}" if ergebnis.error
-               else f"Geleert: {ergebnis.moved} Nachrichten endgueltig entfernt.")
+               else f"Geleert: {ergebnis.moved} Nachrichten endgültig entfernt.")
     await _vermerken(request, queue, bericht)
     return await _seite(request, meldung=bericht)

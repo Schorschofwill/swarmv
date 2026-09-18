@@ -160,6 +160,7 @@ class DirectoryWriter:
                     # die Nutzlast wird nicht mitgefuehrt, sie traegt
                     # Klartext-Argumente (R7a).
                     self.rejected += 1
+                    self.bump_lost(rejected=1)
                     continue
                 beruehrt += 1
             self._con.execute("commit")
@@ -276,6 +277,79 @@ class DirectoryWriter:
         self.mark_incomplete(float(von), float(bis), in_transaktion=in_transaktion)
         self.record_gap(float(von), float(bis), quelle="hook_lost",
                         in_transaktion=in_transaktion)
+
+    #: Schluessel der beiden Verlustzaehler (R4a).
+    DROPPED_KEY = "lost_dropped"
+    REJECTED_KEY = "lost_rejected"
+
+    def bump_lost(self, *, dropped: int = 0, rejected: int = 0) -> None:
+        """Verlustzaehler fortschreiben -- **in der Datei**, nicht im Speicher.
+
+        Vorher waren es reine Speicherzaehler. Nach dem ersten Neustart
+        schwieg die Kopfzeile, obwohl die Eintraege dauerhaft fehlen, und
+        Schweigen liest sich als "nichts verloren". Genau mit dieser
+        Begruendung wurde ``behind`` fuer die Luecken-Anzeige verworfen --
+        und der Fehler eine Zeile spaeter wiederholt.
+        """
+        for schluessel, zahl in ((self.DROPPED_KEY, dropped),
+                                 (self.REJECTED_KEY, rejected)):
+            if zahl:
+                self._con.execute(
+                    "insert into progress(key, value) values (?, ?) "
+                    "on conflict(key) do update set "
+                    "value = cast(cast(value as integer) + ? as text)",
+                    (schluessel, str(zahl), zahl),
+                )
+        if dropped or rejected:
+            self._con.commit()
+
+    def lost_counts(self) -> tuple[int, int]:
+        """``(dropped, rejected)`` aus der Datei."""
+        werte: list[int] = []
+        for schluessel in (self.DROPPED_KEY, self.REJECTED_KEY):
+            zeile = self._con.execute(
+                "select value from progress where key=?", (schluessel,)
+            ).fetchone()
+            try:
+                werte.append(int(zeile[0]) if zeile is not None else 0)
+            except (TypeError, ValueError):
+                werte.append(0)
+        return (werte[0], werte[1])
+
+    #: Schluessel des Zeitpunkts, ab dem das Verzeichnis ueberhaupt liest.
+    COVERAGE_KEY = "coverage_start"
+
+    def set_coverage_start(self, ts: float) -> None:
+        """Den Beginn der Abdeckung festhalten -- **einmal**, nie wieder.
+
+        Der dritte Boden der Reichweite (R8). Aufbewahrungsgrenze und
+        aeltester Eintrag reichen nicht: laeuft der Dienst erst seit zwei
+        Tagen, kann er ueber Tag drei bis sieben nichts wissen, egal wie
+        grosszuegig die Frist ist. Ohne diesen Wert meldete die Seite
+        trotzdem sieben Tage.
+
+        Nur beim ersten Mal: wanderte er mit jedem Durchlauf nach vorn,
+        schrumpfte die gemeldete Reichweite auf den letzten Takt zusammen.
+        """
+        self._con.execute(
+            "insert into progress(key, value) values (?, ?) "
+            "on conflict(key) do nothing",
+            (self.COVERAGE_KEY, repr(float(ts))),
+        )
+        self._con.commit()
+
+    def coverage_start(self) -> float | None:
+        """Der festgehaltene Beginn, oder ``None`` fuer ein Verzeichnis aus
+        der Zeit vor diesem Merker."""
+        zeile = self._con.execute(
+            "select value from progress where key=?", (self.COVERAGE_KEY,)
+        ).fetchone()
+        if zeile is None:
+            return None
+        try:
+            return float(zeile[0])
+        except (TypeError, ValueError):
+            return None
 
     def gap_count(self) -> int:
         """Wie viele Luecken festgehalten sind (R4a).

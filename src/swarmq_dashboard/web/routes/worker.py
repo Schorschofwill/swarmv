@@ -110,10 +110,26 @@ class Gruppe:
         Die Kapazitaet allein ("nebenlaeufig 4") beantwortet die Frage aus
         Fluss F2 nicht: sie lautet "sind alle Slots belegt?", nicht "wie
         viele gaebe es".
+
+        Fuer einen **getrennten** Worker steht hier "--". Die Zahl kommt aus
+        Zeilen mit Status "laufend", und die bleiben es fuer immer, wenn der
+        Abschluss ausfaellt -- Luecke im Strom, verworfener Eintrag,
+        abgestuerzter Worker. Die Seite meldete damit "5 von 2" fuer einen
+        Worker, den dieselbe Zeile als getrennt auswies: arithmetisch
+        unmoeglich, und im Vorfall die teuerste Fehldeutung, weil sie in die
+        falsche Richtung schickt. Ein getrennter Worker belegt nichts; was
+        wir sehen, sind Karteileichen.
         """
+        if not w.connected(now=self.now):
+            return "--"
         laufend = self.last.get(w.worker_id, (0, 0))[0]
         if w.concurrency is None:
             return f"{laufend} von ?"
+        # Mehr laufende Zeilen als Slots heisst nicht Ueberlast, sondern
+        # liegengebliebene Zeilen. Die Zahl so stehen zu lassen waere eine
+        # Behauptung ueber den Worker; so ist sie eine ueber das Verzeichnis.
+        if laufend > w.concurrency:
+            return f"{w.concurrency} von {w.concurrency} (+{laufend - w.concurrency} ohne Abschluss)"
         return f"{laufend} von {w.concurrency}"
 
     def erledigt(self, w: Worker) -> int:
@@ -129,26 +145,39 @@ class Gruppe:
                     gesehen.append(q)
         return gesehen
 
+    def _gemessen(self, q: str) -> bool:
+        """Liegt fuer diese Queue wirklich eine Messung vor?
+
+        ``error`` allein reicht nicht: ``QueueStats(exists=False)`` traegt
+        keinen Fehler und ist trotzdem keine Messung -- die Queue gibt es am
+        Broker nicht, oder ihr Name wurde oertlich abgelehnt. Als Null in die
+        Summe zu nehmen ist genau die Null, wo eine Auskunft fehlt.
+        """
+        s = self.stats.get(q)
+        return s is not None and not s.error and bool(s.exists)
+
     @property
-    def wartend(self) -> int:
+    def wartend(self) -> int | None:
         """Summe der wartenden Nachrichten ihrer Queues (R14 Satz 2).
 
         Ohne Kontrollkanal ist das die einzige Antwort auf "staut es sich?"
         -- und sie gehoert an die Gruppe, nicht in eine Tabelle am
         Seitenende, wo die Frage nicht entsteht.
+
+        ``None`` heisst **nicht gemessen** und nicht "null". Eine Gruppe,
+        deren Worker keine Stammdaten hat, kennt gar keine Queue; ueber die
+        leere Menge zu summieren ergab 0, und "0 wartende Nachrichten" ist
+        die beruhigendste Antwort auf "staut es sich?", die es gibt.
         """
-        return sum(self.stats[q].depth for q in self.queues
-                   if q in self.stats and not self.stats[q].error)
+        gemessen = [q for q in self.queues if self._gemessen(q)]
+        if not gemessen:
+            return None
+        return sum(self.stats[q].depth for q in gemessen)
 
     @property
     def rueckstau_unvollstaendig(self) -> list[str]:
-        """Queues, die nicht abgefragt werden konnten.
-
-        Eine Summe, der eine Queue fehlt, ist keine Summe -- und sie liest
-        sich als eine. Also muss dastehen, welche fehlt.
-        """
-        return [q for q in self.queues
-                if q not in self.stats or self.stats[q].error]
+        """Queues ohne Messung -- nicht nur die mit Fehlgrund."""
+        return [q for q in self.queues if not self._gemessen(q)]
 
     @property
     def verbunden(self) -> list[Worker]:

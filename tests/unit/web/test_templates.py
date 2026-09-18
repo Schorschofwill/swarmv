@@ -317,10 +317,66 @@ def test_der_sichtbare_text_schreibt_umlaute() -> None:
                   account="ops", aktiv="tasks")
     # Nur der sichtbare Text, ohne Auszeichnung und ohne Attribute.
     sichtbar = re.sub(r"<[^>]*>", " ", html)
-    for falsch in ("Luecke", "verzoegert", "unvollstaendig", "laeuft", "Loeschung"):
+    for falsch in ("Luecke", "verzoegert", "laeuft", "Loeschung"):
         assert falsch not in sichtbar, (
             f"{falsch!r} steht im sichtbaren Text -- die Gestaltung schreibt Umlaute"
         )
+
+
+def test_kein_ascii_ersatz_im_sichtbaren_text_der_vorlagen() -> None:
+    """Der Test darueber rendert nur ``base.html``.
+
+    Von seinen fuenf Woertern kann eines dort in keinem Zweig auftreten --
+    die Zusicherung kam nie zu einer Pruefung, und der
+    Unvollstaendigkeits-Hinweis der Dead-Letter-Seite durfte still
+    zurueckfallen. Hier laufen alle Vorlagen und alle Textkonstanten der
+    Routen durch **eine** Probe.
+
+    Geprueft wird auch der Text in ``title``-Attributen: er ist beim
+    Ueberfahren sichtbar, und beim ersten Durchgang wurde er uebergangen.
+    """
+    import ast
+
+    verdaechtig = re.compile(
+        r"\b\w*(?:ae|oe|ue)\w*\b", re.IGNORECASE)
+    erlaubt = {"queue", "queues", "neu", "true", "false", "value", "values",
+               "duration", "requeue", "enqueued", "aktuell", "steuerung",
+               "quellenname", "zeitraeume", "uebersicht",
+               # Deutsche Woerter, die die Buchstabenfolge echt enthalten.
+               "quelle", "quellen", "neue", "neuen", "neuer"}
+
+    treffer: list[str] = []
+    for datei in TEMPLATE_DIR.rglob("*.html"):
+        text = datei.read_text(encoding="utf-8")
+        # Jinja-Kommentare und Auszeichnung entfernen, ``title``-Texte behalten.
+        ohne_kommentar = re.sub(r"\{#-?.*?-?#\}", " ", text, flags=re.S)
+        # Jinja-Ausdruecke und -Bloecke sind Code, kein Text: dort stehen
+        # Bezeichner wie ``enqueued_at``, und die bleiben ASCII.
+        ohne_kommentar = re.sub(r"\{\{.*?\}\}|\{%-?.*?-?%\}", " ",
+                                ohne_kommentar, flags=re.S)
+        titel = " ".join(re.findall(r'title="([^"]*)"', ohne_kommentar))
+        sichtbar = re.sub(r"<[^>]*>", " ", ohne_kommentar) + " " + titel
+        for wort in verdaechtig.findall(sichtbar):
+            if wort.lower() not in erlaubt:
+                treffer.append(f"{datei.name}: {wort}")
+
+    for pfad in (TEMPLATE_DIR.parent / "routes").glob("*.py"):
+        baum = ast.parse(pfad.read_text(encoding="utf-8"))
+        doks = {id(k.body[0].value) for k in ast.walk(baum)
+                if isinstance(k, ast.Module | ast.ClassDef | ast.FunctionDef
+                              | ast.AsyncFunctionDef)
+                and ast.get_docstring(k) is not None and k.body
+                and isinstance(k.body[0], ast.Expr)}
+        for knoten in ast.walk(baum):
+            if (isinstance(knoten, ast.Constant) and isinstance(knoten.value, str)
+                    and id(knoten) not in doks and " " in knoten.value):
+                for wort in verdaechtig.findall(knoten.value):
+                    if wort.lower() not in erlaubt:
+                        treffer.append(f"{pfad.name}: {wort}")
+
+    assert not treffer, (
+        "ASCII-Ersatz im sichtbaren Text:\n  " + "\n  ".join(sorted(set(treffer)))
+    )
 
 
 def test_eine_unbekannte_variable_wirft_statt_zu_schweigen() -> None:

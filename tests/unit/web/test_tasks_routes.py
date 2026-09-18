@@ -54,6 +54,8 @@ Test-Liste (AGENTS.md):
 from __future__ import annotations
 
 import re
+import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -598,5 +600,44 @@ async def test_jedes_filterfeld_traegt_eine_beschriftung(tmp_path: Path) -> None
             assert kennung in beschriftet, (
                 f"das Feld {kennung!r} hat keine Beschriftung: {beschriftet}"
             )
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+async def test_die_seite_nennt_keine_reichweite_vor_der_aufbewahrung(
+    tmp_path: Path,
+) -> None:
+    """R8, ueber die **Seite** statt ueber die Hilfsfunktion.
+
+    Die Reparatur war nur an ``DirectoryQueries.reach`` geprueft. Die Stelle
+    im Betrieb -- die Route, die die Aufbewahrungsgrenze uebergibt, und der
+    Satz, der die Zahl ausspricht -- war ungedeckt: den Parameter aus dem
+    Aufruf zu streichen liess die ganze Testreihe gruen.
+    """
+    config = _config(tmp_path)
+    _verzeichnis_fuellen(config)
+    jetzt = time.time()
+    w = DirectoryWriter(connect(config.directory_file))
+    # Ein Dauerlaeufer: erster Zeitpunkt vor 30 Tagen, noch am Leben.
+    w.apply([(None, Event(type="task_enqueue", ts=jetzt - 30 * 86400, source="app",
+                          origin=Origin.ENQUEUE,
+                          payload={"task_id": "dauer", "task_name": "x",
+                                   "queue": "reports", "args": [], "kwargs": {}}))])
+    w._con.execute("update task set last_seen_at=? where task_id='dauer'", (jetzt,))
+    w._con.commit()
+    w.close()
+
+    c = await _angemeldet(config)
+    try:
+        text = (await c.get("/tasks")).text
+        gesagt = re.search(r"reicht zurück bis ([0-9-]{10} [0-9:]{8})", text)
+        assert gesagt, f"die Reichweite wird nicht genannt: {text[:200]}"
+        genannt = datetime.strptime(gesagt.group(1), "%Y-%m-%d %H:%M:%S").replace(
+            tzinfo=UTC).timestamp()
+        grenze = jetzt - config.retention_days * 86400.0
+        assert genannt >= grenze - 1.0, (
+            f"die Seite verspricht {(grenze - genannt) / 86400:.0f} Tage mehr "
+            "Abdeckung, als die Aufbewahrung hergibt"
+        )
     finally:
         await c.__aexit__(None, None, None)

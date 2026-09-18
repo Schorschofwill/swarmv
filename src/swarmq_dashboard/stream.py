@@ -28,7 +28,12 @@ FIELD = "e"
 #: Zeitgrenze fuer den Verbindungsaufbau. Ohne sie haengt der Aufbau gegen ein
 #: Gegenueber, das TCP annimmt und dann schweigt -- eine Firewall, die
 #: verwirft statt abzulehnen --, und mit ihm der ganze Takt.
-DEFAULT_CONNECT_TIMEOUT_S = 5.0
+#: Frist fuer den Aufbau **und** fuer jede spaetere Erreichbarkeitspruefung.
+#: Sie muss kuerzer sein als die umschliessende Frist des Dienstes
+#: (``web/app.py``, ``PROBE_TIMEOUT_S``) -- sonst bricht die aeussere die
+#: innere ab, bevor diese aufraeumen kann, und jeder Takt laesst einen
+#: Socket zurueck. Gemessen: 25 Takte, 25 offene Dateizeiger.
+DEFAULT_CONNECT_TIMEOUT_S = 3.0
 #: Zeitgrenze einzelner Befehle. valkey-py hat hier eine Vorgabe von 5 s; sie
 #: wird hier ausdruecklich gesetzt, damit sie nicht still wandern kann.
 DEFAULT_SOCKET_TIMEOUT_S = 5.0
@@ -44,6 +49,12 @@ class StreamUnavailable(RuntimeError):
     Erreichbarkeit von einem echten Fehler zu unterscheiden -- und dabei
     unvermeidlich zu weit oder zu eng fasst.
     """
+
+
+async def _leise(client: Any) -> None:
+    """Schliessen, ohne dass ein Fehler dabei den eigentlichen verdeckt."""
+    with contextlib.suppress(Exception):
+        await client.aclose()
 
 
 class ValkeyStreamClient:
@@ -82,11 +93,16 @@ class ValkeyStreamClient:
             try:
                 await asyncio.wait_for(self._client.ping(),
                                        timeout=self._connect_timeout_s)
-            except Exception as exc:
+            except BaseException as exc:
+                # **BaseException**, nicht ``Exception``: ein Abbruch von
+                # aussen ist kein Fehler, hinterlaesst aber denselben
+                # Schmutz. Genau daran leckte der Auffrischungstakt.
                 alt = self._client
                 self._client = None
                 with contextlib.suppress(Exception):
                     await alt.aclose()
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
                 raise StreamUnavailable(str(exc)) from exc
             return
         try:
@@ -96,12 +112,16 @@ class ValkeyStreamClient:
         try:
             await asyncio.wait_for(client.ping(), timeout=self._connect_timeout_s)
         except TimeoutError as exc:
-            await client.aclose()
+            await _leise(client)
             raise StreamUnavailable(
                 f"keine Antwort binnen {self._connect_timeout_s:.0f} s"
             ) from exc
-        except Exception as exc:
-            await client.aclose()
+        except BaseException as exc:
+            # Siehe oben: auch der Abbruch muss den halb aufgebauten Klienten
+            # schliessen, sonst bleibt sein Socket bis zum Prozessende offen.
+            await _leise(client)
+            if isinstance(exc, asyncio.CancelledError):
+                raise
             raise StreamUnavailable(str(exc)) from exc
         self._client = client
 
