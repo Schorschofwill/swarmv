@@ -182,3 +182,52 @@ class DlqService:
                 "Die Zahl der Nachrichten laesst sich nicht pruefen -- es wird nichts geloescht."
             )
         return int(await tiefe(queue))
+
+
+class SwarmQDlqAdmin:
+    """Die wirkende Seite ueber ``RabbitMQBroker`` -- **traege** verbunden.
+
+    Absichtlich nicht beim Hochfahren: das Oeffnen der Seite kommt ohne sie
+    aus. Die Tiefe (R28) liefert die passive Beobachtung in ``broker.py``,
+    und die Dead-Letter-Tasks liefert das Verzeichnis. Eine Verbindung, die
+    nur fuer Aktionen gebraucht wird, erst bei der ersten Aktion aufzubauen
+    heisst: wer nur hinsieht, bezahlt nichts -- auch keinen Kanal.
+    """
+
+    def __init__(self, broker_url: str) -> None:
+        self._url = broker_url
+        self._broker: Any | None = None
+
+    async def _verbunden(self) -> Any:
+        if self._broker is None:
+            from swarmq.broker.rabbitmq import RabbitMQBroker
+
+            broker = RabbitMQBroker(self._url)
+            await broker.connect()
+            self._broker = broker
+        return self._broker
+
+    async def close(self) -> None:
+        if self._broker is not None:
+            try:
+                await self._broker.close()
+            except Exception:
+                pass
+            self._broker = None
+
+    async def list_dead_letters(self, queue: str, limit: int = 100) -> tuple[list[dict[str, Any]], int]:
+        return await (await self._verbunden()).list_dead_letters(queue, limit=limit)  # type: ignore[no-any-return]
+
+    async def retry_dead_letter(self, queue: str, task_id: str,
+                                scan_limit: int = 1000) -> tuple[bool, int]:
+        broker = await self._verbunden()
+        return await broker.retry_dead_letter(queue, task_id, scan_limit=scan_limit)  # type: ignore[no-any-return]
+
+    async def retry_all_dead_letters(self, queue: str, limit: int = 10_000) -> tuple[int, int]:
+        return await (await self._verbunden()).retry_all_dead_letters(queue, limit=limit)  # type: ignore[no-any-return]
+
+    async def purge_dead_letters(self, queue: str) -> int:
+        return int(await (await self._verbunden()).purge_dead_letters(queue))
+
+    async def dead_letter_depth(self, queue: str) -> int:
+        return int(await (await self._verbunden()).dead_letter_depth(queue))

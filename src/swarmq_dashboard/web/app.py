@@ -35,6 +35,7 @@ from swarmq_dashboard.config import DashboardConfig
 from swarmq_dashboard.directory.reader import StreamReader
 from swarmq_dashboard.directory.schema import connect
 from swarmq_dashboard.directory.writer import DirectoryWriter
+from swarmq_dashboard.dlq import DlqService, SwarmQDlqAdmin
 from swarmq_dashboard.events import TASK_STREAM
 from swarmq_dashboard.stream import StreamUnavailable, ValkeyStreamClient
 from swarmq_dashboard.web.auth import (
@@ -46,6 +47,15 @@ from swarmq_dashboard.web.auth import (
     session_guard,
 )
 from swarmq_dashboard.web.cancel import Canceller, SwarmQCanceller
+from swarmq_dashboard.web.routes.dlq import (
+    alle_wiedereinreihen,
+    leeren,
+    sichten,
+    wiedereinreihen,
+)
+from swarmq_dashboard.web.routes.dlq import (
+    uebersicht as dlq_uebersicht,
+)
 from swarmq_dashboard.web.routes.login import login, login_form, logout
 from swarmq_dashboard.web.routes.tasks import cancel, detail, liste
 from swarmq_dashboard.web.routes.worker import entfernen, uebersicht
@@ -159,6 +169,7 @@ class Services:
         throttle_scale: float = 1.0,
         canceller: Canceller | None = None,
         broker: Any | None = None,
+        dlq_admin: Any | None = None,
     ) -> None:
         self._config = config
         self._hasher = hasher
@@ -172,6 +183,12 @@ class Services:
         self.canceller: Canceller = canceller or SwarmQCanceller(
             config.broker_url, config.backend_url
         )
+        #: Die Dead-Letter-Bedienung (U15). Ihre Verbindung entsteht **traege**
+        #: -- erst bei der ersten Aktion. Das Oeffnen der Seite kommt ohne sie
+        #: aus: die Tiefe liefert die passive Beobachtung, die gescheiterten
+        #: Tasks das Verzeichnis. Wer nur hinsieht, bezahlt nichts (R28).
+        self._dlq_admin: Any = dlq_admin or SwarmQDlqAdmin(config.broker_url)
+        self.dlq = DlqService(self._dlq_admin)
         #: Der Audit-Strom (R27). Er haengt am Ereignisstrom, nicht an der
         #: Kontendatei -- und er darf fehlen, ohne eine Aktion aufzuhalten.
         self.audit = AuditLog(None)
@@ -327,7 +344,7 @@ class Services:
 
     async def shutdown(self) -> None:
         """Alles schliessen, auch das, was nie hochkam. Wirft nie."""
-        for teil in (self._stream, self._backend, self._broker):
+        for teil in (self._stream, self._backend, self._broker, self._dlq_admin):
             await _leise_schliessen(teil)
         self._stream = self._backend = None
         self._broker = None
@@ -490,6 +507,7 @@ def create_app(
     throttle_scale: float = 1.0,
     canceller: Canceller | None = None,
     broker: Any | None = None,
+    dlq_admin: Any | None = None,
 ) -> Litestar:
     """Die Anwendung bauen. Der Lebenszyklus haelt die Aussenverbindungen.
 
@@ -498,7 +516,7 @@ def create_app(
     genau das war der Fehler bei ``refresh()``, das nur von Hand gerufen wurde.
     """
     services = Services(config, hasher=hasher, throttle_scale=throttle_scale,
-                        canceller=canceller, broker=broker)
+                        canceller=canceller, broker=broker, dlq_admin=dlq_admin)
     # Die Registratur zeigt auf den Speicher des Dienstes, statt einen
     # eigenen zu halten: sonst bliebe eine vierte Verbindung auf die
     # Kontendatei offen, die niemand schliesst und deren abgelaufene Zeilen
@@ -550,7 +568,9 @@ def create_app(
     # Merkmal. ``csrf_guard`` liefert das; es steht in der Sitzung selbst.
     return Litestar(
         route_handlers=[zustand, login_form, login, logout, live, liste, detail,
-                        cancel, uebersicht, entfernen, statische_dateien()],
+                        cancel, uebersicht, entfernen, dlq_uebersicht, sichten,
+                        wiedereinreihen, alle_wiedereinreihen, leeren,
+                        statische_dateien()],
         template_config=template_config(),
         lifespan=[lebenszyklus],
         stores=build_store_registry(weiche),
