@@ -859,3 +859,63 @@ async def test_die_live_verbindung_braucht_eine_sitzung(tmp_path: Path) -> None:
     async with _klient(_mit_konto(tmp_path)) as c:
         antwort = await c.get("/live", follow_redirects=False)
         assert antwort.status_code in (302, 303, 401), antwort.status_code
+
+
+# --- Zyklus 8: Der Weg zur Anmeldung (aus dem ersten Blick eines Menschen) --
+
+
+async def test_ein_browser_landet_auf_der_anmeldung(tmp_path: Path) -> None:
+    """Wer das Dashboard aufmacht, soll die Anmeldung sehen, nicht JSON.
+
+    Beim ersten Oeffnen im Browser kam
+    ``{"status_code":401,"detail":"keine gueltige Sitzung"}`` -- eine
+    Sackgasse. Die Anmeldeseite gibt es, nur fuehrt nichts zu ihr.
+
+    Zwei Fehler auf einmal: der Dienst schickt niemanden hin, **und** der
+    Integrationstest hat 401 ausdruecklich als richtig durchgewinkt
+    (``status_code in (401, 302, 303)`` fuer jeden Pfad). Eine Zusicherung,
+    die drei Antworten zugleich fuer richtig haelt, prueft keine davon.
+    """
+    config = _config(tmp_path)
+    async with AsyncTestClient(app=create_app(config, hasher=_BILLIG),
+                               base_url=BASIS) as c:
+        for pfad in ("/", "/tasks", "/dlq"):
+            antwort = await c.get(pfad, headers={"accept": "text/html"},
+                                  follow_redirects=False)
+            assert antwort.status_code == 303, (
+                f"{pfad} antwortet mit {antwort.status_code} statt zur "
+                "Anmeldung zu schicken"
+            )
+            assert antwort.headers["location"] == "/login"
+
+
+async def test_schnittstellen_bleiben_bei_401(tmp_path: Path) -> None:
+    """Eine Umleitung waere dort falsch: ``/api/status`` und ``/live`` liest
+    kein Mensch, sondern ein Programm -- und ein 303 auf eine HTML-Seite
+    sieht fuer den Strom wie ein Erfolg aus."""
+    config = _config(tmp_path)
+    async with AsyncTestClient(app=create_app(config, hasher=_BILLIG),
+                               base_url=BASIS) as c:
+        for pfad, art in (("/api/status", "application/json"),
+                          ("/live", "text/event-stream")):
+            antwort = await c.get(pfad, headers={"accept": art},
+                                  follow_redirects=False)
+            assert antwort.status_code == 401, (
+                f"{pfad} antwortet mit {antwort.status_code} statt 401"
+            )
+
+
+async def test_ein_fragmentaufruf_bekommt_die_umleitung_als_kopfzeile(
+    tmp_path: Path,
+) -> None:
+    """HTMX tauscht die Antwort in die Seite -- eine Umleitung wuerde die
+    Anmeldeseite **in** das Dashboard morphen. Die Kopfzeile laesst den
+    Klienten stattdessen wirklich navigieren."""
+    config = _config(tmp_path)
+    async with AsyncTestClient(app=create_app(config, hasher=_BILLIG),
+                               base_url=BASIS) as c:
+        antwort = await c.get("/tasks", headers={"accept": "text/html",
+                                                 "hx-request": "true"},
+                              follow_redirects=False)
+        assert antwort.status_code == 401
+        assert antwort.headers.get("hx-redirect") == "/login"

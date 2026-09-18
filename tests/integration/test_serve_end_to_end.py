@@ -13,7 +13,8 @@ und spricht ueber das Netz mit ihm.
 Test-Liste (AGENTS.md):
 
 1. Der Prozess kommt hoch und beantwortet eine Anfrage.
-2. Ohne Sitzung ist jede Seite geschuetzt (R21).
+2. Ohne Sitzung fuehrt jede Seite zur Anmeldung -- und jede
+   Schnittstelle antwortet mit 401 (R21).
 3. Die Anmeldeseite steht ohne Sitzung -- sonst kaeme niemand hinein.
 4. Das Stylesheet wird ausgeliefert, und zwar aus dem Paket (KTD7).
 5. Der Prozess laesst sich wieder beenden.
@@ -97,12 +98,33 @@ def test_der_dienst_kommt_hoch_und_antwortet(dienst: str) -> None:
 
 
 def test_ohne_sitzung_ist_alles_geschuetzt(dienst: str) -> None:
-    """R21. Ueber das Netz geprueft, nicht ueber den Testklienten."""
-    for pfad in ("/", "/tasks", "/dlq", "/api/status", "/live"):
+    """R21. Ueber das Netz geprueft, nicht ueber den Testklienten.
+
+    Je Pfad **eine** erwartete Antwort. Die erste Fassung liess
+    ``in (401, 302, 303)`` gelten -- und hat damit genau den Fehler
+    durchgewinkt, ueber den ein Mensch dann stolperte: die Startseite
+    antwortete mit einem nackten JSON-401, obwohl es eine Anmeldeseite gibt.
+    Eine Zusicherung, die drei Antworten zugleich fuer richtig haelt, prueft
+    keine davon.
+    """
+    # Seiten, die ein Mensch aufmacht: ab zur Anmeldung.
+    for pfad in ("/", "/tasks", "/dlq"):
         antwort = httpx.get(f"{dienst}{pfad}", timeout=5.0,
+                            headers={"accept": "text/html"},
                             follow_redirects=False)
-        assert antwort.status_code in (401, 302, 303), (
-            f"{pfad} ist ohne Sitzung erreichbar: {antwort.status_code}"
+        assert antwort.status_code == 303, (
+            f"{pfad} antwortet mit {antwort.status_code} statt zur Anmeldung "
+            "zu schicken"
+        )
+        assert antwort.headers["location"] == "/login"
+
+    # Schnittstellen: 401, und keine Umleitung.
+    for pfad, art in (("/api/status", "application/json"),
+                      ("/live", "text/event-stream")):
+        antwort = httpx.get(f"{dienst}{pfad}", timeout=5.0,
+                            headers={"accept": art}, follow_redirects=False)
+        assert antwort.status_code == 401, (
+            f"{pfad} antwortet mit {antwort.status_code} statt 401"
         )
 
 

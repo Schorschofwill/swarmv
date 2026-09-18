@@ -22,10 +22,14 @@ from contextlib import asynccontextmanager, suppress
 from typing import Any
 
 from argon2 import PasswordHasher
-from litestar import Litestar, get
+from litestar import Litestar, Request, get
 from litestar.channels import ChannelsPlugin
 from litestar.channels.backends.memory import MemoryChannelsBackend
+from litestar.exceptions import NotAuthorizedException
+from litestar.exceptions.responses import create_exception_response
 from litestar.middleware.session.server_side import ServerSideSessionConfig
+from litestar.response import Redirect, Response
+from litestar.status_codes import HTTP_303_SEE_OTHER, HTTP_401_UNAUTHORIZED
 from litestar.stores.base import Store
 from litestar.stores.registry import StoreRegistry
 
@@ -811,7 +815,35 @@ def create_app(
     # ein nie angemeldeter Klient abholt, in einer fremden angemeldeten
     # Sitzung angenommen. R23 verlangt aber ein **sitzungsgebundenes**
     # Merkmal. ``csrf_guard`` liefert das; es steht in der Sitzung selbst.
+    def zur_anmeldung(request: Request[Any, Any, Any],
+                      exc: NotAuthorizedException) -> Response[Any]:
+        """Einen Menschen zur Anmeldung schicken, ein Programm nicht.
+
+        Beim ersten Oeffnen im Browser kam
+        ``{"status_code":401,"detail":"keine gueltige Sitzung"}`` -- eine
+        Sackgasse. Die Anmeldeseite gibt es, nur fuehrte nichts zu ihr.
+
+        Die Unterscheidung haengt an der Anfrage, nicht am Pfad:
+
+        * **HTMX** tauscht die Antwort in die laufende Seite. Eine Umleitung
+          morphte die Anmeldeseite *in* das Dashboard; die Kopfzeile
+          ``HX-Redirect`` laesst den Klienten stattdessen wirklich
+          navigieren.
+        * **Ein Browser** (er verlangt ``text/html``) wird umgeleitet.
+        * **Alles andere** -- ``/api/status``, der Live-Strom, ein Skript --
+          bekommt weiter 401. Ein 303 auf eine HTML-Seite saehe fuer den
+          Strom wie ein Erfolg aus.
+        """
+        will_html = "text/html" in request.headers.get("accept", "")
+        if request.headers.get("hx-request"):
+            return Response(content=None, status_code=HTTP_401_UNAUTHORIZED,
+                            headers={"HX-Redirect": "/login"})
+        if will_html:
+            return Redirect("/login", status_code=HTTP_303_SEE_OTHER)
+        return create_exception_response(request, exc)
+
     return Litestar(
+        exception_handlers={NotAuthorizedException: zur_anmeldung},
         route_handlers=[zustand, login_form, login, logout, live, liste, detail,
                         cancel, uebersicht, entfernen, dlq_uebersicht, sichten,
                         wiedereinreihen, alle_wiedereinreihen, leeren,
