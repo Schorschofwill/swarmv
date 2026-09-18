@@ -121,14 +121,22 @@ def test_zweimal_anlegen_wird_abgewiesen(store: AccountStore) -> None:
 # --- Zyklus 2 -----------------------------------------------------------
 
 
-def _dauer(fn: object, runden: int = 15) -> float:
-    """Mittlere Dauer in Sekunden. Median, damit ein Ausreisser nichts kippt."""
-    proben = []
+def _dauer_paar(a: object, b: object, runden: int = 15) -> tuple[float, float]:
+    """Die Median-Dauern beider Aufrufe in Sekunden, **abwechselnd** gemessen.
+
+    Nacheinander zu messen waere anfaellig: eine Lastspitze waehrend der ersten
+    Messreihe blaeht deren Median auf und kippt den Vergleich, ohne dass sich
+    am Code etwas geaendert haette. Abwechselnd gemessen trifft dieselbe
+    Spitze beide Reihen -- der Quotient bleibt aussagekraeftig.
+    """
+    proben_a: list[float] = []
+    proben_b: list[float] = []
     for _ in range(runden):
-        t = time.perf_counter()
-        fn()  # type: ignore[operator]
-        proben.append(time.perf_counter() - t)
-    return statistics.median(proben)
+        for fn, proben in ((a, proben_a), (b, proben_b)):
+            t = time.perf_counter()
+            fn()  # type: ignore[operator]
+            proben.append(time.perf_counter() - t)
+    return statistics.median(proben_a), statistics.median(proben_b)
 
 
 def test_unbekanntes_konto_ist_nicht_schneller(store: AccountStore) -> None:
@@ -138,9 +146,12 @@ def test_unbekanntes_konto_ist_nicht_schneller(store: AccountStore) -> None:
     die Kontenliste ablesen, ohne ein einziges Passwort zu kennen.
     """
     store.create("bekannt", "ein-langes-passwort")
-    bekannt = _dauer(lambda: store.verify("bekannt", "falsches-passwort"))
-    unbekannt = _dauer(lambda: store.verify("gibtesnicht", "falsches-passwort"))
-    assert unbekannt > bekannt * 0.5, (
+    bekannt, unbekannt = _dauer_paar(
+        lambda: store.verify("bekannt", "falsches-passwort"),
+        lambda: store.verify("gibtesnicht", "falsches-passwort"),
+    )
+    # Beidseitig: auch **laenger** zu brauchen verraet das unbekannte Konto.
+    assert 0.5 < unbekannt / bekannt < 2.0, (
         f"unbekannt {unbekannt * 1000:.2f} ms gegen bekannt {bekannt * 1000:.2f} ms -- "
         "die Antwortzeit verraet, welche Konten es gibt"
     )
@@ -151,9 +162,11 @@ def test_gesperrtes_konto_ist_nicht_schneller(store: AccountStore) -> None:
     store.create("offen", "ein-langes-passwort")
     store.create("gesperrt", "ein-langes-passwort")
     store.lock("gesperrt")
-    offen = _dauer(lambda: store.verify("offen", "falsch"))
-    zu = _dauer(lambda: store.verify("gesperrt", "ein-langes-passwort"))
-    assert zu > offen * 0.5, (
+    offen, zu = _dauer_paar(
+        lambda: store.verify("offen", "falsch"),
+        lambda: store.verify("gesperrt", "ein-langes-passwort"),
+    )
+    assert 0.5 < zu / offen < 2.0, (
         f"gesperrt {zu * 1000:.2f} ms gegen offen {offen * 1000:.2f} ms -- "
         "die Antwortzeit verraet den Sperrzustand"
     )
