@@ -107,7 +107,13 @@ def test_jede_zustandsmarke_traegt_ein_wort() -> None:
                    stream={"ok": True, "reason": None, "stale": True,
                            "last_event_at": None, "retention_days": 7})
     html = render("base.html", status=weg, account="ops", aktiv="worker")
-    for punkt in re.finditer(r'<span class="dot[^"]*"[^>]*></span>\s*([^<]*)', html):
+    # ``tag-dot``, nicht ``dot``: beim Umbau auf das Vokabular des
+    # Stylesheets blieb hier der alte Name stehen, und die Schleife lief ins
+    # Leere -- nachgemessen null Treffer bei vier Marken auf der Seite. Eine
+    # Zusicherung, die nie zu einer Pruefung kommt, ist keine.
+    treffer = list(re.finditer(r'<span class="tag-dot"></span>\s*([^<]*)', html))
+    assert treffer, "keine einzige Zustandsmarke gefunden -- die Probe laeuft leer"
+    for punkt in treffer:
         assert punkt.group(1).strip(), f"eine Zustandsmarke ohne Wort: {punkt.group(0)!r}"
 
 
@@ -260,5 +266,18 @@ def test_die_kopfzeile_nennt_die_zahl_der_luecken() -> None:
                    "oldest_entry": 1_700_000_000.0}
     html = render("base.html", status=_zustand(directory=verzeichnis),
                   account="ops", aktiv="tasks")
-    assert "Luecke" in html, "die Kopfzeile schweigt ueber die Luecken"
-    assert "2" in html
+    # Die Marke selbst, nicht die Seite: "2" steht sonst schon im Datum
+    # 2023-11-14, und die Zahl durfte aus der Marke verschwinden, ohne dass
+    # etwas kippte.
+    marke = re.search(r'<span class="tag is-wait"><span class="tag-dot"></span>\s*([^<]*Luecke[^<]*)', html)
+    assert marke, "die Kopfzeile schweigt ueber die Luecken"
+    assert marke.group(1).strip().startswith("2 "), (
+        f"die Zahl der Luecken fehlt in der Marke: {marke.group(1)!r}"
+    )
+
+    # Triangulieren: eine andere Zahl muss eine andere Marke ergeben.
+    verzeichnis3 = {**verzeichnis, "gaps": 3}
+    html3 = render("base.html", status=_zustand(directory=verzeichnis3),
+                   account="ops", aktiv="tasks")
+    marke3 = re.search(r'<span class="tag is-wait"><span class="tag-dot"></span>\s*([^<]*Luecke[^<]*)', html3)
+    assert marke3 and marke3.group(1).strip().startswith("3 ")

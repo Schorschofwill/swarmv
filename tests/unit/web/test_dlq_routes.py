@@ -164,6 +164,31 @@ def _merkmal(c: Any) -> str:
     return str(c.cookies.get("csrftoken") or "")
 
 
+def _meldung(html: str) -> str:
+    """Die Meldungszeile der Seite -- nicht die ganze Seite.
+
+    ``assert "2" in antwort.text`` fand die Ziffer irgendwo und liess die
+    Mutation "melde immer 0 unverarbeitet" ueberleben.
+    """
+    marke = '<p class="tag is-wait">'
+    anfang = html.find(marke)
+    assert anfang >= 0, "die Seite traegt keine Meldung"
+    return " ".join(html[anfang + len(marke):html.find("</p>", anfang)].split())
+
+
+def _tiefenzelle(html: str, queue: str) -> str:
+    """Der Inhalt der Spalte "Dead Letter" fuer eine Queue.
+
+    Ohne diese Eingrenzung fand die Zusicherung die Tiefe im versteckten
+    Formularfeld des Loesch-Knopfes -- die Tabellenspalte durfte durch einen
+    Strich ersetzt werden, ohne dass ein Test kippte.
+    """
+    zeile = html[html.find(f'<td class="mono">{queue}</td>'):]
+    assert zeile, f"keine Zeile fuer {queue}"
+    naechste = zeile.find('<td class="mono">', 1)
+    return " ".join(zeile[naechste:zeile.find("</td>", naechste)].split())
+
+
 # --- Zyklus 1: Ansehen kostet nichts ------------------------------------
 
 
@@ -181,7 +206,10 @@ async def test_oeffnen_zeigt_die_tiefe_und_ruehrt_nichts_an(tmp_path: Path) -> N
         for _ in range(10):
             antwort = await c.get("/dlq")
             assert antwort.status_code == 200
-        assert "17" in antwort.text, "die Tiefe fehlt"
+        assert "17" in _tiefenzelle(antwort.text, "reports"), (
+            "die Tiefe steht nicht in der Tabelle -- sie nur im versteckten "
+            "Formularfeld zu finden hiesse, einen Strich durchgehen zu lassen"
+        )
         assert admin.aufrufe == [], f"das Ansehen hat die Queue angefasst: {admin.aufrufe}"
     finally:
         await c.__aexit__(None, None, None)
@@ -342,8 +370,11 @@ async def test_sammel_wiedereinreihung_meldet_beide_zahlen(tmp_path: Path) -> No
     try:
         antwort = await c.post("/dlq/reports/requeue-all", headers={"x-csrftoken": _merkmal(c)},
                                follow_redirects=True)
-        assert "2" in antwort.text and "1" in antwort.text
-        assert "unverarbeitet" in antwort.text.lower(), "die nicht verarbeitete Zahl fehlt"
+        meldung = _meldung(antwort.text)
+        assert "2 von 3 verarbeitet" in meldung, f"die Zahlen fehlen: {meldung!r}"
+        assert "1 unverarbeitet" in meldung, (
+            f"die nicht verarbeitete Zahl fehlt oder ist falsch: {meldung!r}"
+        )
         assert admin.aufrufe == ["retry_all:reports"]
     finally:
         await c.__aexit__(None, None, None)
@@ -405,7 +436,10 @@ async def test_eine_falsche_zahl_loescht_nicht(tmp_path: Path) -> None:
         antwort = await c.post("/dlq/reports/purge",
                                data={"bestaetigung": "reports", "erwartet": "3"},
                                headers={"x-csrftoken": _merkmal(c)}, follow_redirects=True)
-        assert "7" in antwort.text, "die neue Zahl wird nicht genannt"
+        meldung = _meldung(antwort.text)
+        assert "jetzt 7" in meldung, (
+            f"die **jetzige** Zahl wird nicht genannt: {meldung!r}"
+        )
         assert admin.aufrufe == [], "es wurde trotzdem geloescht"
     finally:
         await c.__aexit__(None, None, None)

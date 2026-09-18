@@ -327,11 +327,24 @@ async def test_unbekannter_speichername_laesst_den_start_scheitern(tmp_path: Pat
     abgemeldet sind.
     """
     from swarmq_dashboard.web.app import UnknownStore, build_store_registry
+    from swarmq_dashboard.web.auth import SqliteStore
 
-    registratur = build_store_registry(tmp_path / "accounts.sqlite3")
-    assert registratur.get("sessions") is not None
-    with pytest.raises(UnknownStore):
-        registratur.get("gibtesnicht")
+    # Ein **echter** Speicher, nicht ein Pfad. Vorher stand hier
+    # ``build_store_registry(tmp_path / "accounts.sqlite3")`` -- die
+    # Registratur bekam einen ``Path`` und gab ihn brav zurueck, und die
+    # Zusicherung "ist nicht None" traf auch dann zu, wenn unter ``sessions``
+    # irgendetwas Beliebiges stand. Also gerade in dem Fall, den der
+    # Docstring benennt.
+    speicher = SqliteStore(tmp_path / "accounts.sqlite3")
+    try:
+        registratur = build_store_registry(speicher)
+        assert registratur.get("sessions") is speicher, (
+            "unter 'sessions' haengt nicht der Speicher des Dienstes"
+        )
+        with pytest.raises(UnknownStore):
+            registratur.get("gibtesnicht")
+    finally:
+        speicher.close()
 
 
 # --- Zyklus 7: Sitzungsuebernahme ---------------------------------------

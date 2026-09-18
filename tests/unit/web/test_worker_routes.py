@@ -234,7 +234,12 @@ async def test_konsumenten_ohne_jeden_bekannten_worker(tmp_path: Path) -> None:
     c = await _angemeldet(config, broker=broker)
     try:
         text = (await c.get(f"/?jetzt={JETZT + 10}")).text
-        assert "4" in text and "ohne Hook" in text
+        # Die Zahl **im Hinweis**, nicht irgendwo: "4" steht auch in der
+        # Spalte Konsumenten, und ``ohne_hook`` durfte um eins danebenliegen,
+        # ohne dass diese Zusicherung kippte.
+        assert re.search(r"4\s*(Konsument|Konsumenten)\s*ohne Hook", text), (
+            "der Hinweis nennt nicht alle vier Konsumenten"
+        )
         assert "keinen worker" in text.lower(), "der Fall wird nicht benannt"
     finally:
         await c.__aexit__(None, None, None)

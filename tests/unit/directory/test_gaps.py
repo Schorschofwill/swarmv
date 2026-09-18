@@ -172,7 +172,16 @@ def test_mehrere_luecken_werden_zusammengefasst(tmp_path: Path) -> None:
     w.record_gap(T0 + 100, T0 + 200, quelle="stream_trim")
     w.record_gap(T0 + 5000, T0 + 5100, quelle="hook_lost")
     note = q.search(Filter()).note
-    assert note and "2" in note, f"die Zahl der Luecken fehlt: {note!r}"
+    # Nicht ``"2" in note``: die Spanne enthaelt "2023-11-14", und die Zahl
+    # durfte durch "mehreren" ersetzt werden, ohne dass etwas kippte.
+    assert note and note.startswith("In 2 Zeitspannen"), (
+        f"die Zahl der Luecken fehlt: {note!r}"
+    )
+
+    # Triangulieren: eine dritte Luecke muss die Zahl aendern.
+    w.record_gap(T0 + 9000, T0 + 9100, quelle="stream_trim")
+    note3 = q.search(Filter()).note
+    assert note3 and note3.startswith("In 3 Zeitspannen"), f"{note3!r}"
 
 
 def test_der_hinweis_verdraengt_den_kurzen_suchbegriff_nicht(tmp_path: Path) -> None:

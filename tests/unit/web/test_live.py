@@ -30,7 +30,7 @@ Test-Liste (AGENTS.md):
 === ZYKLUS 3: Herzschlag und Sitzung (R32) ===
 7. Im Leerlauf geht ein Herzschlag hinaus.
 8. Faellt die Sitzung weg, endet die Verbindung mit einer letzten Nachricht.
-9. Eine offene Verbindung verlaengert die Sitzung nicht.
+9. Eine offene Verbindung prueft die Sitzung, ohne sie zu verlaengern.
 10. Der Dienst haelt die juengsten Nachrichten, nicht die aeltesten -- sonst
     faellt ein Ueberlauf erst spaeter oder nie auf.
 """
@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import itertools
 from pathlib import Path
 
 from litestar.channels import ChannelsPlugin
@@ -238,3 +239,96 @@ async def test_der_dienst_haelt_die_juengsten_nachrichten(tmp_path: Path) -> Non
         "Ueberlauf erst bei der naechsten Nachricht auf, und bleibt es still, nie"
     )
     assert s.live._max_backlog == config.backlog_cap, "der Deckel kommt nicht aus der Einstellung"
+
+
+async def test_nach_dem_neuladen_laeuft_die_folge_sauber_weiter() -> None:
+    """Punkt 6 der Test-Liste -- er hatte bisher keinen Test.
+
+    Die Neuladen-Nachricht ist nur dann eine Loesung, wenn danach wieder
+    Verlass ist. Zaehlte der Strom hinterher weiter falsch, bekaeme die
+    Ansicht bei jedem folgenden Ereignis erneut "neu laden" und haenge in
+    einer Schleife -- aus einer einmaligen Stoerung wuerde eine dauerhafte.
+    """
+    p = await _plugin(max_backlog=3, strategie="dropleft")
+    try:
+        sender = LivePublisher(p)
+        async with p.start_subscription([LIVE_CHANNEL]) as abo:
+            beginn = sender.current_seq
+            for i in range(20):
+                await sender.publish("task", {"n": i})
+            await asyncio.sleep(0.2)
+            gesehen = await _sammeln(
+                live_events(abo, heartbeat_s=5.0, start_seq=beginn), 6
+            )
+
+        arten = [n["kind"] for n in gesehen]
+        assert RELOAD_KIND in arten, arten
+        # Nach der Neuladen-Nachricht darf keine zweite mehr kommen: der
+        # Strom hat sich auf den neuen Stand gesetzt.
+        danach = arten[arten.index(RELOAD_KIND) + 1:]
+        assert RELOAD_KIND not in danach, (
+            f"der Strom meldet nach dem Neuladen weiter Verlust: {arten}"
+        )
+        # Und die Folgenummern laufen ab da ohne Luecke.
+        nummern = [n["seq"] for n in gesehen[arten.index(RELOAD_KIND) + 1:]
+                   if n["kind"] not in ("heartbeat", RELOAD_KIND)]
+        assert nummern == sorted(nummern), f"die Folge laeuft rueckwaerts: {nummern}"
+        assert all(b - a == 1 for a, b in itertools.pairwise(nummern)), (
+            f"Luecke in der Folge nach dem Neuladen: {nummern}"
+        )
+    finally:
+        await p._on_shutdown()
+
+
+async def test_eine_offene_verbindung_verlaengert_die_sitzung_nicht(
+    tmp_path: Path,
+) -> None:
+    """Punkt 9 der Test-Liste -- er hatte bisher keinen Test.
+
+    Die eigentliche Zusage hinter R32. Der Rahmen erneuert die Sitzung bei
+    jedem Zugriff; eine Verbindung, die stundenlang offen steht und dabei im
+    Takt zugreift, hielte eine Sitzung unbegrenzt am Leben. Ein Bildschirm im
+    Einsatzraum bliebe dann fuer immer angemeldet, und die Leerlauffrist aus
+    R21 waere eine Zahl ohne Wirkung.
+
+    Geprueft wird am **Ablaufzeitpunkt in der Datei**, nicht daran, ob
+    irgendeine Pruefung lief: nur er entscheidet, wann die Sitzung endet.
+    """
+    from argon2 import PasswordHasher
+
+    from swarmq_dashboard.accounts import AccountStore
+    from swarmq_dashboard.web.auth import SqliteStore
+
+    pfad = tmp_path / "konten.sqlite3"
+    # Das Schema gehoert dem Kontenspeicher; der Sitzungsspeicher liegt in
+    # derselben Datei (KTD8) und legt es nicht selbst an.
+    konten = AccountStore(pfad, hasher=PasswordHasher(time_cost=2, memory_cost=1024,
+                                                      parallelism=1))
+    konten.close()
+    speicher = SqliteStore(pfad, renew_every_s=0.0)
+    try:
+        await speicher.set("a" * 64, b'{"x":1}', expires_in=60)
+        vorher = speicher._con.execute(
+            "select expires_at from session_store where key=?", ("a" * 64,)
+        ).fetchone()[0]
+
+        # Der Live-Strom laeuft, schickt Herzschlaege und prueft die Sitzung.
+        p = await _plugin()
+        try:
+            async with p.start_subscription([LIVE_CHANNEL]) as abo:
+                gesehen = await _sammeln(
+                    live_events(abo, heartbeat_s=0.02,
+                                still_valid=lambda: True), 4, frist=1.0
+                )
+            assert len(gesehen) >= 4, "der Strom lief gar nicht"
+        finally:
+            await p._on_shutdown()
+
+        nachher = speicher._con.execute(
+            "select expires_at from session_store where key=?", ("a" * 64,)
+        ).fetchone()[0]
+        assert nachher == vorher, (
+            f"die offene Verbindung hat die Sitzung verlaengert: {vorher} -> {nachher}"
+        )
+    finally:
+        speicher.close()

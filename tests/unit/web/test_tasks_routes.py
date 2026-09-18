@@ -521,7 +521,17 @@ async def test_die_liste_benennt_eine_geschnittene_luecke(tmp_path: Path) -> Non
     try:
         antwort = await c.get(f"/tasks?since={basis + 300}&until={basis + 600}")
         assert antwort.status_code == 200
-        assert "verlorengegangen" in antwort.text, "die Luecke wird verschwiegen"
-        assert "2023-11-14" in antwort.text, "die Spanne wird nicht genannt"
+        # Der Hinweisabsatz selbst, nicht die Seite: "2023-11-14" steht
+        # ohnehin in jeder Task-Zeile, und die Spanne durfte aus dem Hinweis
+        # verschwinden, ohne dass etwas kippte.
+        absatz = re.search(
+            r'<p class="tag is-wait"><span class="tag-dot"></span>\s*([^<]*)', antwort.text
+        )
+        assert absatz, "die Luecke wird verschwiegen"
+        hinweis = " ".join(absatz.group(1).split())
+        assert "verlorengegangen" in hinweis, hinweis
+        assert "2023-11-14 22:16:40" in hinweis, (
+            f"die Spanne wird nicht genannt: {hinweis!r}"
+        )
     finally:
         await c.__aexit__(None, None, None)

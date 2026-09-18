@@ -330,12 +330,57 @@ def test_die_liste_laeuft_ueber_einen_index(tmp_path: Path) -> None:
     eine Sortierung im Arbeitsspeicher -- gemessen bei 60.000 Zeilen 469 ms
     fuer zwanzig Seiten statt 2 ms. Bei sieben Tagen Tasks bezahlt das jede
     einzelne Anfrage.
+
+    Geprueft wird die Abfrage, die ``search()`` **wirklich** baut. Vorher
+    stand sie als Zeichenkette im Test: der Plan war dann eine Aussage ueber
+    den Test, nicht ueber den Code. Nachgemessen durfte die Sortierung auf
+    ``last_seen_at`` wechseln, ohne dass irgendein Test kippte -- obwohl der
+    Modulkopf genau davor warnt.
     """
-    w, _ = _setup(tmp_path)
+    w, q = _setup(tmp_path)
     w.apply([(None, _enq(f"t{i}", 100.0 + i)) for i in range(3)])
-    plan = [z[3] for z in w._con.execute(
-        "explain query plan "
-        "select task.* from task order by task.first_seen_at desc, task.task_id desc limit 50"
-    )]
+
+    # ``set_trace_callback`` statt eines Austauschs von ``execute``: die
+    # Verbindung laesst ihre Methoden nicht ersetzen, und mitzuschreiben ist
+    # ohnehin der ehrlichere Weg -- es faengt genau das ab, was SQLite
+    # wirklich zu sehen bekommt.
+    gesehen: list[str] = []
+    q._con.set_trace_callback(gesehen.append)
+    try:
+        q.search(Filter())
+    finally:
+        q._con.set_trace_callback(None)
+    listen = [s for s in gesehen if s.lstrip().startswith("select task.*")]
+    assert listen, f"die Listenabfrage wurde nicht erkannt: {gesehen}"
+
+    plan = [z[3] for z in q._con.execute("explain query plan " + listen[-1])]
     assert not any("TEMP B-TREE" in s for s in plan), f"sortiert im Speicher: {plan}"
     assert any("USING INDEX" in s for s in plan), f"kein Index im Plan: {plan}"
+
+
+def test_das_blaettern_haengt_am_ersten_zeitpunkt(tmp_path: Path) -> None:
+    """Der Schluessel ist ``first_seen_at`` und darf es nicht anders sein.
+
+    Der Modulkopf sagt warum: ueber ``last_seen_at`` zu blaettern hiesse,
+    dass eine Zeile waehrend des Blaetterns nach vorn springt und dahinter
+    eine andere ungesehen durchrutscht. Alle bisherigen Blaetter-Tests
+    benutzten Vorrichtungen, in denen beide Spalten dieselbe Reihenfolge
+    ergaben -- der Wechsel blieb darum unbemerkt.
+
+    Hier laufen sie ausdruecklich gegeneinander: der **aelteste** Task
+    bekommt das **juengste** Lebenszeichen.
+    """
+    w, q = _setup(tmp_path)
+    for i in range(4):
+        w.apply([(None, _enq(f"t{i}", 100.0 + i))])
+    # t0 ist der aelteste, bekommt aber das juengste Signal.
+    w._con.execute("update task set last_seen_at=? where task_id='t0'", (9_000.0,))
+    w._con.commit()
+
+    erste = q.search(Filter(), limit=2)
+    zweite = q.search(Filter(), limit=2, cursor=erste.next_cursor)
+    gesehen = [z["task_id"] for z in erste.rows] + [z["task_id"] for z in zweite.rows]
+    assert gesehen == ["t3", "t2", "t1", "t0"], (
+        f"das Blaettern folgt nicht dem Einreihungszeitpunkt: {gesehen}"
+    )
+    assert len(set(gesehen)) == 4, f"eine Zeile fiel aus oder kam doppelt: {gesehen}"
