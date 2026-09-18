@@ -305,6 +305,17 @@ async def test_herunterfahren_schliesst_alle_verbindungen(tmp_path: Path) -> Non
         assert True, name
 
 
+class _SchnellerBroker:
+    """Eine Broker-Attrappe, die sofort antwortet."""
+
+    async def connect(self) -> None: ...
+
+    async def close(self) -> None: ...
+
+    async def stats_many(self, queues: list[str]) -> dict[str, object]:
+        return {}
+
+
 async def test_der_takt_fuehrt_die_erreichbarkeit_nach(tmp_path: Path) -> None:
     """Der Modulkopf verspricht, dass ``refresh()`` im Takt nachfuehrt -- im
     Dienst rief es aber niemand ausser ``startup()``. Meine beiden
@@ -312,22 +323,28 @@ async def test_der_takt_fuehrt_die_erreichbarkeit_nach(tmp_path: Path) -> None:
     Methode, kein Verhalten: der Betreiber saehe dauerhaft "weg" und startete
     das Dashboard neu.
     """
-    s = Services(_config(tmp_path))
+    # Mit schneller Broker-Attrappe: gemessen wird die **Taktrate**, nicht
+    # wie lange ein toter Broker zum Sterben braucht.
+    s = Services(_config(tmp_path), broker=_SchnellerBroker())
     await s.startup()
     laeufe: list[int] = []
-    echt = s.refresh
 
     async def gezaehlt() -> None:
+        # Bewusst **ohne** das echte ``refresh`` dahinter: geprueft wird die
+        # Taktrate, und eine Erreichbarkeitspruefung gegen nicht vorhandene
+        # Dienste laeuft in ihre Frist von zwei Sekunden. Sie mitlaufen zu
+        # lassen hiesse, den Takt an der Dauer der Pruefung zu messen -- er
+        # kaeme in einer Viertelsekunde nie zweimal dran. Dass ``refresh``
+        # selbst taugt, zeigen die beiden Rueckkehr-Tests darueber.
         laeufe.append(1)
-        await echt()
 
     s.refresh = gezaehlt  # type: ignore[method-assign]
-    aufgabe = s.start_maintenance(every_s=0.05)
+    aufgaben = s.start_maintenance(every_s=0.05)
     try:
         await asyncio.sleep(0.25)
         assert len(laeufe) >= 2, f"der Takt lief {len(laeufe)}-mal"
     finally:
-        aufgabe.cancel()
+        await s.stop_tasks(aufgaben)
         await s.shutdown()
 
 
@@ -345,9 +362,9 @@ async def test_der_takt_raeumt_abgelaufene_zeilen_weg(tmp_path: Path) -> None:
         )
         s.throttle._con.commit()
 
-        aufgabe = s.start_maintenance(every_s=0.05)
+        aufgaben = s.start_maintenance(every_s=0.05)
         await asyncio.sleep(0.2)
-        aufgabe.cancel()
+        await s.stop_tasks(aufgaben)
 
         uebrig = s.throttle._con.execute("select count(*) from login_attempt").fetchone()[0]
         assert uebrig == 0, f"{uebrig} verfallene Zeilen blieben stehen"
@@ -400,13 +417,19 @@ async def test_ein_fehlschlagendes_refresh_legt_das_aufraeumen_nicht_still(tmp_p
         )
         s.throttle._con.commit()
 
-        async def wirft_immer() -> None:
+        async def haengt_und_wirft() -> None:
+            # **Haengen**, nicht nur werfen. Getrennte Ausnahmebehandlung
+            # allein trug das nicht: solange beide Schritte nacheinander in
+            # einem Takt liefen, hungerte ein langsames ``refresh`` das
+            # Aufraeumen aus, ohne dass ein Fehler entstand. Gemessen gegen
+            # einen toten Broker: kein einziger Aufraeum-Durchlauf.
+            await asyncio.sleep(0.08)
             raise RuntimeError("der Strom ist weg")
 
-        s.refresh = wirft_immer  # type: ignore[method-assign]
-        aufgabe = s.start_maintenance(every_s=0.05)
+        s.refresh = haengt_und_wirft  # type: ignore[method-assign]
+        aufgaben = s.start_maintenance(every_s=0.05)
         await asyncio.sleep(0.2)
-        aufgabe.cancel()
+        await s.stop_tasks(aufgaben)
 
         uebrig = s.throttle._con.execute("select count(*) from login_attempt").fetchone()[0]
         assert uebrig == 0, (

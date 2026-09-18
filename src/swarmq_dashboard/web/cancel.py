@@ -67,7 +67,18 @@ class SwarmQCanceller:
         self._backend = None
 
     async def cancel(self, task_id: str) -> bool:
-        """Den Merker setzen. ``False`` heisst: lief schon."""
-        if self._app is None:
+        """Den Merker setzen. ``False`` heisst: lief schon.
+
+        Verbindet sich beim ersten Gebrauch selbst. Vorher hatte ``connect()``
+        im ganzen Dienst **keinen Aufrufer**: jede Stornierung scheiterte, und
+        die Ansicht meldete einen Backend-Ausfall, den es nicht gab.
+
+        Traege und nicht beim Hochfahren, aus demselben Grund wie beim
+        DLQ-Admin: wer nur hinsieht, soll nichts bezahlen. Gemessen kostete
+        der Aufbau beim Start zwei Sekunden je Dienst -- eine Verbindung, die
+        die meisten Sitzungen nie brauchen.
+        """
+        await self.connect()
+        if self._app is None:   # pragma: no cover -- connect() wirft vorher
             raise StreamUnavailable("das Backend ist nicht verbunden")
         return bool(await self._app.cancel(task_id))  # type: ignore[attr-defined]

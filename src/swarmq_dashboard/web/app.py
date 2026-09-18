@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from typing import Any
 
@@ -32,7 +32,7 @@ from swarmq_dashboard.accounts import AccountStore
 from swarmq_dashboard.audit import AuditLog
 from swarmq_dashboard.broker import BrokerObserver, BrokerUnavailable
 from swarmq_dashboard.config import DashboardConfig
-from swarmq_dashboard.directory.reader import StreamReader
+from swarmq_dashboard.directory.reader import DEFAULT_BATCH, StreamReader
 from swarmq_dashboard.directory.schema import connect
 from swarmq_dashboard.directory.writer import DirectoryWriter
 from swarmq_dashboard.dlq import DlqService, SwarmQDlqAdmin
@@ -68,6 +68,20 @@ SESSION_STORE_NAME = "sessions"
 #: Grosszuegig -- die Rueckkehr eines Dienstes darf ein paar Sekunden spaeter
 #: sichtbar werden, aber nicht erst nach einem Neustart.
 DEFAULT_MAINTENANCE_S = 10.0
+#: Wartezeit zwischen zwei Durchlaeufen, **wenn nichts mehr zu holen war**.
+#: Ein voller Stapel fuehrt sofort zum naechsten Durchlauf -- sonst braeuchte
+#: ein Rueckstand von zehntausend Ereignissen bei Stapelgroesse 500 zwanzig
+#: Sekunden, in denen die Ansicht alt ist und nicht sagt, warum.
+DEFAULT_INGEST_S = 0.5
+#: Frist fuer eine einzelne Erreichbarkeitspruefung. Ohne sie haelt ein
+#: Dienst, der die Verbindung annimmt und dann schweigt, den ganzen Takt auf
+#: -- gemessen sechs Sekunden je Durchlauf gegen ein totes Backend, und in
+#: dieser Zeit laeuft weder die Aufbewahrung noch die Anzeige nach. Eine
+#: ueberschrittene Frist ist kein Fehler des Dienstes, sondern eine Auskunft
+#: ueber ihn, und sie steht so im Bericht.
+PROBE_TIMEOUT_S = 2.0
+#: Wie lange das Herunterfahren auf einen auslaufenden Takt wartet.
+STOP_TIMEOUT_S = 5.0
 
 
 class UnknownStore(LookupError):
@@ -170,6 +184,7 @@ class Services:
         canceller: Canceller | None = None,
         broker: Any | None = None,
         dlq_admin: Any | None = None,
+        stream: Any | None = None,
     ) -> None:
         self._config = config
         self._hasher = hasher
@@ -216,9 +231,21 @@ class Services:
         self._backend_url = config.backend_url
         self._broker_url = config.broker_url
 
+        #: Gesetzt, sobald der Dienst herunterfaehrt. Die Takte sehen darauf
+        #: und kehren zurueck, **statt** abgebrochen zu werden: ein Abbruch
+        #: beendet die Aufgabe, nicht den Arbeitsfaden, in dem gerade eine
+        #: SQLite-Anweisung laeuft. Wird die Verbindung darunter geschlossen,
+        #: stuerzt der Prozess ab -- nachgemessen, ein Speicherzugriffsfehler
+        #: mitten im Einlesen.
+        self._halt = False
+        #: Weckt die schlafenden Takte beim Herunterfahren. Ein blosses
+        #: ``asyncio.sleep(every_s)`` laesst sie bis zu einem vollen Takt --
+        #: im Betrieb zehn Sekunden -- weiterschlafen, und das Herunterfahren
+        #: wartet so lange. Gemessen kostete das jeden Test fuenf Sekunden.
+        self._wecker = asyncio.Event()
         self.reader: StreamReader | None = None
         self.services_directory_writer: DirectoryWriter | None = None
-        self._stream: ValkeyStreamClient | None = None
+        self._stream: ValkeyStreamClient | None = stream
         self._backend: ValkeyStreamClient | None = None
         self._broker: Any | None = broker
 
@@ -227,6 +254,12 @@ class Services:
             "accounts": "noch nicht geoeffnet",
             "takt_refresh": None,
             "takt_purge": None,
+            "takt_ingest": "noch nicht gelaufen",
+            # Die drei Teile der Pflege einzeln: faellt einer aus, sollen die
+            # anderen weiterlaufen **und** der Ausfall benannt sein.
+            "pflege_retention": None,
+            "pflege_throttle": None,
+            "pflege_sessions": None,
             "stream": "noch nicht verbunden",
             "backend": "noch nicht verbunden",
             "broker": "noch nicht verbunden",
@@ -277,9 +310,13 @@ class Services:
         try:
             con = connect(self._config.directory_file)
             self.services_directory_writer = DirectoryWriter(con)
+            # Die Naht zur Live-Schicht. Sie wird hier gesetzt und nicht im
+            # Leser gebaut: der Leser soll nichts von der Weboberflaeche
+            # wissen.
             self.reader = StreamReader(
                 _NochNichtVerbunden(), self.services_directory_writer, stream_key=TASK_STREAM
             )
+            self.reader.melder = self._live_melden
             self._gruende["directory"] = None
         except Exception as exc:
             # Ohne Verzeichnis ist das Dashboard fast nutzlos -- aber "fast"
@@ -308,7 +345,10 @@ class Services:
     ) -> tuple[ValkeyStreamClient | None, str | None]:
         client = vorhanden if vorhanden is not None else ValkeyStreamClient(url)
         try:
-            await client.connect()
+            await asyncio.wait_for(client.connect(), timeout=PROBE_TIMEOUT_S)
+        except TimeoutError:
+            await _leise_schliessen(client)
+            return None, f"antwortet nicht innerhalb von {PROBE_TIMEOUT_S:.0f} s"
         except StreamUnavailable as exc:
             await _leise_schliessen(client)
             return None, str(exc)
@@ -337,14 +377,54 @@ class Services:
         if self._broker is None:
             self._broker = BrokerObserver(self._broker_url)
         try:
-            await self._broker.connect()
+            await asyncio.wait_for(self._broker.connect(), timeout=PROBE_TIMEOUT_S)
             self._gruende["broker"] = None
+        except TimeoutError:
+            # Eine ueberschrittene Frist ist kein Fehler des Dienstes, sondern
+            # eine Auskunft ueber ihn -- und sie muss dastehen. Ohne die Frist
+            # hielt ein Broker, der die Verbindung annimmt und dann schweigt,
+            # den ganzen Takt auf: gemessen sechs Sekunden je Durchlauf, in
+            # denen weder die Anzeige nachlief noch die Aufbewahrung ablief.
+            self._gruende["broker"] = (
+                f"der Broker antwortet nicht innerhalb von {PROBE_TIMEOUT_S:.0f} s"
+            )
         except BrokerUnavailable as exc:
             self._gruende["broker"] = str(exc)
 
+    async def _schlafen(self, sekunden: float) -> None:
+        """Warten -- aber nicht laenger, als der Dienst da ist."""
+        with suppress(TimeoutError):
+            await asyncio.wait_for(self._wecker.wait(), timeout=sekunden)
+
+    async def stop_tasks(self, aufgaben: list[asyncio.Task[None]]) -> None:
+        """Die Takte anhalten, **bevor** etwas geschlossen wird.
+
+        Erst freundlich: ``_halt`` setzen und die Aufgaben auslaufen lassen.
+        Ein Abbruch beendet nur die Aufgabe, nicht den Arbeitsfaden, in dem
+        gerade eine SQLite-Anweisung laeuft -- und die Verbindung darunter zu
+        schliessen war ein Speicherzugriffsfehler, kein Fehlerbild mit
+        Meldung. Erst wenn eine Aufgabe die Frist ueberzieht, wird sie
+        abgebrochen; dann ist der Absturz immer noch moeglich, aber er ist
+        nicht mehr der Normalfall.
+        """
+        self._halt = True
+        self._wecker.set()
+        if aufgaben:
+            await asyncio.wait(aufgaben, timeout=STOP_TIMEOUT_S)
+        for aufgabe in aufgaben:
+            if not aufgabe.done():
+                aufgabe.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await aufgabe
+
     async def shutdown(self) -> None:
         """Alles schliessen, auch das, was nie hochkam. Wirft nie."""
-        for teil in (self._stream, self._backend, self._broker, self._dlq_admin):
+        self._halt = True
+        self._wecker.set()
+        # Der Canceller gehoert dazu: er haelt eine eigene Valkey-Verbindung,
+        # und ohne ihn leckte je Lebenszyklus eine.
+        for teil in (self._stream, self._backend, self._broker, self._dlq_admin,
+                     self.canceller):
             await _leise_schliessen(teil)
         self._stream = self._backend = None
         self._broker = None
@@ -374,48 +454,152 @@ class Services:
         self.throttle = None
         self._sitzungsspeicher = None
 
-    def start_maintenance(self, *, every_s: float = DEFAULT_MAINTENANCE_S) -> asyncio.Task[None]:
-        """Die Taktaufgabe starten: Erreichbarkeit nachfuehren und aufraeumen.
+    def start_maintenance(self, *, every_s: float = DEFAULT_MAINTENANCE_S
+                          ) -> list[asyncio.Task[None]]:
+        """Die Takte starten: Erreichbarkeit nachfuehren und aufraeumen.
 
-        Zwei Dinge in einem Takt, weil beide dieselbe Begruendung haben --
-        etwas, das der Dienst von sich aus tun muss, weil es sonst niemand tut:
+        Beide haben dieselbe Begruendung -- etwas, das der Dienst von sich aus
+        tun muss, weil es sonst niemand tut:
 
-        * ``refresh()`` rief ausser ``startup()`` **niemand**. Der Modulkopf
-          verspricht das Gegenteil, und ohne den Takt bleibt die Anzeige nach
-          der Rueckkehr eines Dienstes dauerhaft auf "nicht erreichbar" --
-          worauf der Betreiber das Dashboard neu startet, also genau das tut,
-          was der Absatz verhindern wollte.
-        * ``purge()`` hatte ueberhaupt keinen Aufrufer. Hochgerechnet 673 MiB
-          in einer Woche, in der Datei, die laut KTD8 nicht geloescht werden
-          darf.
+        * ``refresh()`` rief ausser ``startup()`` **niemand**. Ohne den Takt
+          bleibt die Anzeige nach der Rueckkehr eines Dienstes dauerhaft auf
+          "nicht erreichbar" -- worauf der Betreiber das Dashboard neu
+          startet, also genau das tut, was der Absatz verhindern wollte.
+        * ``purge()`` und ``reader.maintain()`` hatten ueberhaupt keinen
+          Aufrufer. Ohne das erste waechst die Kontendatei (hochgerechnet
+          673 MiB in einer Woche), ohne das zweite laeuft die
+          Aufbewahrungsfrist nie ab -- und damit bleibt der Klartext der
+          Kundenargumente liegen, entgegen R7a.
+
+        **Zwei getrennte Aufgaben**, nicht zwei Schritte in einer. Vorher
+        liefen sie nacheinander; jeder Schritt war zwar einzeln gegen
+        Ausnahmen gekapselt, aber nicht gegen **Dauer**. Gemessen: gegen einen
+        toten Broker braucht ``refresh()` sekundenlang, und das Aufraeumen kam
+        in keinem einzigen Takt an die Reihe. Damit haette die Trennung genau
+        den Ausfall zurueckgeholt, gegen den sie eingezogen wurde -- nur
+        unsichtbar, weil kein Fehler entsteht. Getrennte Aufgaben koennen sich
+        nicht gegenseitig aushungern.
+        """
+        return [
+            self._takt(self.refresh, "refresh", every_s),
+            self._takt(self._aufraeumen, "purge", every_s),
+        ]
+
+    def _takt(self, schritt: Callable[[], Awaitable[None]], name: str,
+              every_s: float) -> asyncio.Task[None]:
+        """Eine wiederkehrende Aufgabe, die nie an einem Fehler endet."""
+
+        async def lauf() -> None:
+            while not self._halt:
+                await self._schlafen(every_s)
+                if self._halt:
+                    return
+                try:
+                    await schritt()
+                    self._gruende[f"takt_{name}"] = None
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    # Ein Fehler beendet den Takt nicht -- sonst steht die
+                    # Anzeige nach der ersten Stoerung fuer immer. Er
+                    # verschwindet aber auch nicht: der Bericht nennt ihn.
+                    self._gruende[f"takt_{name}"] = str(exc)
+
+        return asyncio.ensure_future(lauf())
+
+    def start_ingest(self, *, every_s: float = DEFAULT_INGEST_S) -> asyncio.Task[None]:
+        """Den Strom-Leser antreiben -- die Naht, ohne die nichts geschieht.
+
+        Aus der Pruefung von Stufe D: ``poll_once`` hatte im ganzen Dienst
+        **keinen Aufrufer**. Der Leser wurde gebaut, bekam seine Quelle
+        eingehaengt, und las nie. Das Verzeichnis blieb leer, jede Seite
+        dauerhaft ohne Zeile, der Neuaufbau ewig "laeuft" -- und die
+        Kopfzeile meldete dabei "Strom: aktuell". Alle Tests waren gruen,
+        weil jeder von ihnen ``poll_once`` selbst rief.
+
+        Ein eigener Takt und nicht im Pflegetakt: das Einlesen ist die
+        Hauptarbeit und braucht einen halben Takt, das Aufraeumen kommt alle
+        zehn Sekunden. In einen Topf geworfen waere die Ansicht entweder
+        zehn Sekunden alt oder das Aufraeumen liefe zwanzigmal zu oft.
         """
 
         async def takt() -> None:
-            while True:
-                await asyncio.sleep(every_s)
-                # Jeder Schritt einzeln gekapselt: zusammen legte ein dauerhaft
-                # fehlschlagendes ``refresh()`` das Aufraeumen still mit --
-                # gemessen null Aufraeum-Durchlaeufe bei zwoelf Takten. Genau
-                # der Ausfall, gegen den diese Aufgabe eingezogen wurde, kaeme
-                # damit zurueck, und zwar unsichtbar.
-                for schritt, name in ((self.refresh, "refresh"), (self._aufraeumen, "purge")):
-                    try:
-                        await schritt()
-                        self._gruende[f"takt_{name}"] = None
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as exc:
-                        # Ein Fehler beendet den Takt nicht -- sonst steht die
-                        # Anzeige nach der ersten Stoerung fuer immer. Er
-                        # verschwindet aber auch nicht: der Bericht nennt ihn.
-                        self._gruende[f"takt_{name}"] = str(exc)
+            while not self._halt:
+                try:
+                    gelesen = await self._einlesen()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    self._gruende["takt_ingest"] = str(exc)
+                    gelesen = 0
+                else:
+                    self._gruende["takt_ingest"] = None
+                # Voller Stapel heisst: da ist noch mehr. Dann sofort weiter,
+                # statt den Rueckstand im Halbsekundentakt abzutragen.
+                if gelesen < DEFAULT_BATCH:
+                    await self._schlafen(every_s)
 
         return asyncio.ensure_future(takt())
 
+    async def _einlesen(self) -> int:
+        if self.reader is None:
+            return 0
+        return await self.reader.poll_once()
+
+    async def _live_melden(self, ereignisse: list[tuple[str | None, Any]]) -> None:
+        """Was eingearbeitet wurde, an die offenen Ansichten weitergeben (R13).
+
+        Der Sender war gebaut und hatte ebenfalls keinen Aufrufer; die
+        Live-Schicht lieferte darum nur Herzschlaege. Gemeldet wird je
+        Ereignis Art und Task -- mehr braucht die Ansicht nicht, um die
+        betroffene Zeile nachzuladen, und weniger waere ein Wecken ohne
+        Auskunft.
+        """
+        for _sid, ev in ereignisse:
+            await self.publisher.publish(
+                ev.type, {"task_id": str(ev.payload.get("task_id") or ""),
+                          "worker_id": str(ev.payload.get("worker_id") or ""),
+                          "ts": ev.ts}
+            )
+
     async def _aufraeumen(self) -> None:
-        """Abgelaufene Sitzungen und verfallene Bremszaehler entfernen."""
+        """Die Frist anwenden, abgelaufene Sitzungen und Bremszaehler entfernen.
+
+        Die Aufbewahrung stand vorher in keinem Takt: ``reader.maintain`` und
+        damit ``writer.expire`` hatten keinen Aufrufer. Gemessen ueberlebte
+        eine dreissig Tage alte Zeile samt Klartext vierzig Pflegelaeufe.
+        Damit war R7a gebrochen -- und die Kopfzeile nannte trotzdem sieben
+        Tage. Die Frist ist die einzige technische Begrenzung, unter der die
+        Klartext-Entscheidung aus KD11 vertretbar ist.
+
+        **Jeder Schritt einzeln gekapselt**, aus demselben Grund, aus dem die
+        Takte getrennt laufen: zusammen legte ein scheiterndes ``maintain``
+        -- etwa weil der Strom nicht verbunden ist -- das Aufraeumen der
+        Sitzungen still mit. Der erste Entwurf dieser Methode tat genau das,
+        und die Testreihe zeigte es sofort.
+        """
+        for schritt, name in (
+            (self._frist_anwenden, "retention"),
+            (self._bremse_aufraeumen, "throttle"),
+            (self._sitzungen_aufraeumen, "sessions"),
+        ):
+            try:
+                await schritt()
+                self._gruende[f"pflege_{name}"] = None
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._gruende[f"pflege_{name}"] = str(exc)
+
+    async def _frist_anwenden(self) -> None:
+        if self.reader is not None:
+            await self.reader.maintain(retention_s=self._config.retention_days * 86400.0)
+
+    async def _bremse_aufraeumen(self) -> None:
         if self.throttle is not None:
             await asyncio.to_thread(self.throttle.purge)
+
+    async def _sitzungen_aufraeumen(self) -> None:
         if self._sitzungsspeicher is not None:
             # Wie der Bremsen-purge in einen Faden: gemessen 0,18 s bei
             # 200.000 abgelaufenen Zeilen, und Granian faehrt einen Arbeiter.
@@ -509,10 +693,12 @@ def create_app(
     *,
     hasher: PasswordHasher | None = None,
     maintenance_every_s: float = DEFAULT_MAINTENANCE_S,
+    ingest_every_s: float = DEFAULT_INGEST_S,
     throttle_scale: float = 1.0,
     canceller: Canceller | None = None,
     broker: Any | None = None,
     dlq_admin: Any | None = None,
+    stream: Any | None = None,
 ) -> Litestar:
     """Die Anwendung bauen. Der Lebenszyklus haelt die Aussenverbindungen.
 
@@ -521,7 +707,8 @@ def create_app(
     genau das war der Fehler bei ``refresh()``, das nur von Hand gerufen wurde.
     """
     services = Services(config, hasher=hasher, throttle_scale=throttle_scale,
-                        canceller=canceller, broker=broker, dlq_admin=dlq_admin)
+                        canceller=canceller, broker=broker, dlq_admin=dlq_admin,
+                        stream=stream)
     # Die Registratur zeigt auf den Speicher des Dienstes, statt einen
     # eigenen zu halten: sonst bliebe eine vierte Verbindung auf die
     # Kontendatei offen, die niemand schliesst und deren abgelaufene Zeilen
@@ -532,13 +719,16 @@ def create_app(
     async def lebenszyklus(app: Litestar) -> AsyncGenerator[None]:
         await services.startup()
         app.state.services = services
-        takt = services.start_maintenance(every_s=maintenance_every_s)
+        # Der Einlese-Takt ist die Hauptarbeit: ohne ihn liest der Dienst den
+        # Strom nie und das Verzeichnis bleibt leer.
+        aufgaben = [services.start_ingest(every_s=ingest_every_s),
+                    *services.start_maintenance(every_s=maintenance_every_s)]
         try:
             yield
         finally:
-            takt.cancel()
-            with suppress(asyncio.CancelledError):
-                await takt
+            # Erst anhalten, dann schliessen. Andersherum schliesst der
+            # Dienst eine Verbindung, auf der noch geschrieben wird.
+            await services.stop_tasks(aufgaben)
             await services.shutdown()
 
     @get("/api/status", sync_to_thread=False)

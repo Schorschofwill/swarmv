@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Awaitable, Callable
 from functools import partial
 from typing import Any, Protocol
 
@@ -62,6 +63,11 @@ class StreamReader:
         self._source = source
         self._key = stream_key
         self._batch = batch
+        #: Wird nach jedem eingearbeiteten Stapel mit dessen Ereignissen
+        #: gerufen -- die Naht zur Live-Schicht (R13). Der Leser kennt sie
+        #: nicht; er meldet nur, dass etwas geschehen ist. Ohne diese Naht
+        #: lieferte der Live-Kanal nur Herzschlaege.
+        self.melder: Callable[[list[tuple[str | None, Any]]], Awaitable[None]] | None = None
         self._behind = False
         self._gap: tuple[str, str] | None = None
         self._dropped = 0
@@ -179,6 +185,10 @@ class StreamReader:
         await asyncio.to_thread(
             self._einarbeiten, ereignisse, ausgefallen, eintraege[-1][0], len(eintraege)
         )
+        # Erst **nach** dem Einarbeiten melden: eine Ansicht, die auf die
+        # Meldung hin nachlaedt, soll die Zeile schon finden.
+        if self.melder is not None and ereignisse:
+            await self.melder(ereignisse)
         return len(eintraege)
 
     # -- Der blockierende Teil, je in einem Arbeitsthread ------------------

@@ -26,7 +26,7 @@ from collections.abc import Callable
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote
+from urllib.parse import parse_qs, unquote
 
 from litestar.connection import ASGIConnection
 from litestar.enums import ScopeType
@@ -449,7 +449,44 @@ def new_csrf_token() -> str:
     return secrets.token_urlsafe(32)
 
 
-def csrf_guard(connection: ASGIConnection[Any, Any, Any, Any], _: BaseRouteHandler) -> None:
+#: Inhaltsarten, in denen ein Formular sein Merkmal mitschickt.
+_FORMULAR = ("application/x-www-form-urlencoded", "multipart/form-data")
+#: Obergrenze fuer den Koerper, den der Waechter zum Suchen des Merkmals
+#: durchsieht. Ein Formular dieser Oberflaeche ist wenige hundert Byte gross;
+#: alles darueber ist kein Formular, und es soll nicht in der Hand eines
+#: Aufrufers liegen, wie viel der Waechter zerlegt.
+MAX_FORMULAR_BYTES = 64 * 1024
+
+
+async def _aus_dem_formular(connection: ASGIConnection[Any, Any, Any, Any]) -> str:
+    """Das Merkmal aus einem gewoehnlichen Formular holen.
+
+    Nur bei Formular-Inhaltsarten: bei allem anderen wird der Koerper gar
+    nicht erst angefasst.
+    """
+    art = connection.headers.get("content-type", "")
+    if not any(art.startswith(a) for a in _FORMULAR):
+        return ""
+    try:
+        roh = await connection.body()   # type: ignore[attr-defined]
+    except Exception:
+        return ""
+    if not roh or len(roh) > MAX_FORMULAR_BYTES:
+        return ""
+    if art.startswith(_FORMULAR[0]):
+        werte = parse_qs(roh.decode("utf-8", "replace"), keep_blank_values=True)
+        return str((werte.get(CSRF_FIELD) or [""])[0])
+    # Mehrteilig: das Feld steht als eigener Abschnitt. Litestars Zerleger
+    # liefert es fertig, und er puffert ebenfalls.
+    try:
+        formular = await connection.form()   # type: ignore[attr-defined]
+    except Exception:
+        return ""
+    wert = formular.get(CSRF_FIELD)
+    return wert if isinstance(wert, str) else ""
+
+
+async def csrf_guard(connection: ASGIConnection[Any, Any, Any, Any], _: BaseRouteHandler) -> None:
     """Schreibende Anfragen brauchen ein **sitzungsgebundenes** Merkmal (R23).
 
     Warum nicht die CSRF-Schicht des Rahmens: sie prueft doppeltes Absenden
@@ -479,14 +516,26 @@ def csrf_guard(connection: ASGIConnection[Any, Any, Any, Any], _: BaseRouteHandl
             return
 
     erwartet = connection.session.get(SESSION_CSRF_KEY) if connection.session else None
-    # **Nur** die Kopfzeile, nicht das Cookie. Das Merkmal-Cookie traegt nach
-    # der Anmeldung denselben Wert wie die Sitzung, und der Browser schickt es
-    # bei jeder Anfrage von selbst mit -- ein Rueckfall darauf verglich den
-    # Sitzungswert mit einer Kopie seiner selbst. Uebrig bliebe allein die
-    # Seitenbindung, und die traegt nicht gegen eine Nachbardomaene. Der
-    # Aufrufer muss das Merkmal **aktiv** mitschicken; genau darin besteht der
-    # Schutz. (Der Anfragekoerper kommt hier nicht in Frage: ihn im Waechter
-    # zu lesen verbrauchte den Datenstrom, bevor der Handler ihn sieht.)
-    gesendet = connection.headers.get(CSRF_HEADER)
+    # Kopfzeile **oder** Formularfeld -- und beides gegen den Wert in der
+    # **Sitzung**, nie gegen das Cookie. Das Merkmal-Cookie traegt nach der
+    # Anmeldung denselben Wert wie die Sitzung, und der Browser schickt es von
+    # selbst mit; ein Rueckfall darauf verglich den Sitzungswert mit einer
+    # Kopie seiner selbst. Uebrig bliebe allein die Seitenbindung, und die
+    # traegt nicht gegen eine Nachbardomaene.
+    #
+    # Das Formularfeld zuzulassen schwaecht das **nicht**: geprueft wird
+    # weiterhin gegen die Sitzung, und eine fremde Seite kennt deren Wert
+    # nicht. Die Kopfzeile allein war dagegen ein Schutz, der die eigene
+    # Oberflaeche aussperrte -- ein gewoehnliches ``<form method="post">``
+    # setzt keine Kopfzeilen, und ohne ein Skript, das jede Absendung
+    # abfaengt, endete jede Aktion mit 403. Genau so war es: Stornieren,
+    # Worker entfernen, Sichten, Wiedereinreihen, Leeren und Abmelden waren
+    # im Browser unbenutzbar, waehrend alle Tests gruen blieben -- sie
+    # schickten durchgehend die Kopfzeile.
+    #
+    # Den Koerper hier zu lesen ist gefahrlos: Litestar puffert ihn, der
+    # Handler bekommt ihn unversehrt (nachgemessen). Eine frueherer Kommentar
+    # an dieser Stelle behauptete das Gegenteil.
+    gesendet = connection.headers.get(CSRF_HEADER) or await _aus_dem_formular(connection)
     if not isinstance(erwartet, str) or not gesendet or not gleich(erwartet, gesendet):
         raise PermissionDeniedException(detail="CSRF-Merkmal fehlt oder passt nicht zur Sitzung")
