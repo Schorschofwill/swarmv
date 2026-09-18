@@ -22,6 +22,8 @@ from typing import Any
 
 from argon2 import PasswordHasher
 from litestar import Litestar, get
+from litestar.channels import ChannelsPlugin
+from litestar.channels.backends.memory import MemoryChannelsBackend
 from litestar.middleware.session.server_side import ServerSideSessionConfig
 from litestar.stores.base import Store
 from litestar.stores.registry import StoreRegistry
@@ -44,6 +46,7 @@ from swarmq_dashboard.web.auth import (
     session_guard,
 )
 from swarmq_dashboard.web.routes.login import login, login_form, logout
+from swarmq_dashboard.web.stream import LIVE_CHANNEL, LivePublisher, live
 from swarmq_dashboard.web.templates import statische_dateien, template_config
 
 #: Name, unter dem der Sitzungsspeicher registriert wird.
@@ -161,6 +164,21 @@ class Services:
         #: Der Audit-Strom (R27). Er haengt am Ereignisstrom, nicht an der
         #: Kontendatei -- und er darf fehlen, ohne eine Aktion aufzuhalten.
         self.audit = AuditLog(None)
+        #: Die Kanal-Verteilung der Live-Schicht und ihr Sender. Der Deckel
+        #: verhindert das unbegrenzte Wachsen einer stehengebliebenen Ansicht
+        #: (KTD6); **bemerkt** wird ein Verlust ueber die Folgenummern, weil
+        #: der Rahmen den Ueberlauf ohne Rueckmeldung verwirft.
+        self.live = ChannelsPlugin(
+            backend=MemoryChannelsBackend(history=0),
+            channels=[LIVE_CHANNEL],
+            subscriber_max_backlog=config.backlog_cap,
+            # ``dropleft`` haelt die **juengsten** Nachrichten: eine Ansicht
+            # will den aktuellen Stand, nicht den aeltesten. Und zusammen mit
+            # dem Anfangswert der Folgenummer faellt der Verlust sofort auf,
+            # nicht erst bei der naechsten Nachricht.
+            subscriber_backlog_strategy="dropleft",
+        )
+        self.publisher = LivePublisher(self.live)
         self.accounts: AccountStore | None = None
         self.throttle: LoginThrottle | None = None
         #: Der Speicher aus der Registratur -- eine vierte Verbindung auf die
@@ -197,6 +215,7 @@ class Services:
         """
         self._verzeichnis_oeffnen()
         self._konten_oeffnen()
+        await self.live._on_startup()
         await self.refresh()
 
     def _konten_oeffnen(self) -> None:
@@ -294,6 +313,10 @@ class Services:
         # wuchsen sie linear auf dreissig -- und das Herunterfahren ist
         # ohnehin nicht abgeschlossen, solange die letzten Schreibvorgaenge
         # nicht zusammengefuehrt sind.
+        try:
+            await self.live._on_shutdown()
+        except Exception:
+            pass
         for lokal in (self.accounts, self.throttle, self._sitzungsspeicher):
             if lokal is not None:
                 try:
@@ -493,7 +516,7 @@ def create_app(
     # Sitzung angenommen. R23 verlangt aber ein **sitzungsgebundenes**
     # Merkmal. ``csrf_guard`` liefert das; es steht in der Sitzung selbst.
     return Litestar(
-        route_handlers=[zustand, login_form, login, logout, statische_dateien()],
+        route_handlers=[zustand, login_form, login, logout, live, statische_dateien()],
         template_config=template_config(),
         lifespan=[lebenszyklus],
         stores=build_store_registry(weiche),

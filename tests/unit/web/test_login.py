@@ -59,6 +59,9 @@ Test-Liste (AGENTS.md):
 
 === ZYKLUS 11: Audit (U10, R27) ===
 32. Ein fehlendes Audit haelt die Anmeldung nicht auf, verschwindet aber nicht.
+
+=== ZYKLUS 12: Die Live-Verbindung (U12, R23) ===
+33. Die Live-Verbindung braucht eine Sitzung.
     (Dass die Eintraege wirklich entstehen, prueft die Integrationsreihe --
     ohne echten Strom ist das Audit leer, und jede Zusicherung darauf haelte
     trivial.)
@@ -829,3 +832,17 @@ async def test_ein_fehlendes_audit_haelt_die_anmeldung_nicht_auf(tmp_path: Path)
         assert (await c.get("/api/status")).status_code == 200
         assert app.state.services.audit.lost > 0, "der nicht geschriebene Eintrag wurde verschwiegen"
         assert (await c.get("/api/status")).json()["audit"]["lost"] > 0
+
+
+# --- Zyklus 12: Die Live-Verbindung (U12, R23, R32) ---------------------
+
+
+async def test_die_live_verbindung_braucht_eine_sitzung(tmp_path: Path) -> None:
+    """R23 nimmt die Live-Verbindung ausdruecklich **nicht** von der
+    Anmeldepflicht aus. Ein offener Ereignisstrom ohne Sitzung waere das
+    groesste Leck der ganzen Oberflaeche -- er traegt alles, was die Seiten
+    zeigen, und zwar fortlaufend.
+    """
+    async with _klient(_mit_konto(tmp_path)) as c:
+        antwort = await c.get("/live", follow_redirects=False)
+        assert antwort.status_code in (302, 303, 401), antwort.status_code
