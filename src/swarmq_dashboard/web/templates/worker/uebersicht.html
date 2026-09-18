@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block titel %}Worker{% endblock %}
+{% block inhalt %}
+
+{#- Genau einmal, nicht an jeder Zelle: wiederholt waere der Hinweis Laerm und
+    verdeckte, was **da** ist (R33, AE15). -#}
+<p class="leiste chip chip--neutral"><span class="dot dot--neutral"></span>
+  {{ ohne_kontrollkanal }}</p>
+
+{%- if gruppen %}
+{%- for g in gruppen %}
+<section class="card">
+  <h2>{{ g.name }}</h2>
+  <p class="muted">
+    {{ g.verbunden|length }} von {{ g.worker|length }} verbunden
+    {%- if g.eingeschraenkt %} ·
+    <span class="chip chip--wartet"><span class="dot dot--wartet"></span>
+      eingeschraenkt: fuer mindestens einen Worker gibt es nur das letzte Signal</span>
+    {%- endif %}
+  </p>
+
+  <table class="tabelle">
+    <thead><tr>
+      <th>Worker</th><th>Slot</th><th>Zustand</th><th>Quelle</th>
+      <th>Zuletzt gesehen</th><th>Nebenlaeufig</th><th></th>
+    </tr></thead>
+    <tbody>
+      {%- for w in g.worker %}
+      <tr id="worker-{{ w.worker_id }}">
+        <td class="mono">{{ w.worker_id }}</td>
+        <td class="mono num">{{ w.slot if w.slot is not none else '--' }}</td>
+        <td>
+          {%- if w.connected(now=jetzt) %}
+          <span class="chip chip--ok"><span class="dot dot--ok"></span> verbunden</span>
+          {%- else %}
+          <span class="chip chip--fehler"><span class="dot dot--fehler"></span> getrennt</span>
+          {%- endif %}
+        </td>
+        {#- Die Quelle gehoert zur Aussage (KTD10): "getrennt" heisst je nach
+            Quelle etwas anderes, und das Lebenszeichen schweigt ohne
+            Metrik-Port ohne Fehlermeldung. -#}
+        <td class="muted">nach {{ quellenname[w.source] }}
+          <span class="mono">({{ '%.0f'|format(w.stale_after_s) }} s Frist)</span></td>
+        <td class="mono">{{ zeitpunkt(w.last_seen_at) }}</td>
+        <td class="mono num">{{ w.concurrency if w.concurrency is not none else '--' }}</td>
+        <td>
+          {%- if not w.connected(now=jetzt) %}
+          <form method="post" action="/worker/{{ w.worker_id }}/remove">
+            <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
+            <button class="btn btn--leise">Entfernen</button>
+          </form>
+          {%- endif %}
+        </td>
+      </tr>
+      {%- endfor %}
+    </tbody>
+  </table>
+
+</section>
+{%- endfor %}
+{%- else %}
+{% with titel=leer_titel, ursache=leer_ursache %}{% include "leerzustand.html" %}{% endwith %}
+{%- endif %}
+
+{%- if queues %}
+<section class="card">
+  <h2>Queues</h2>
+  <table class="tabelle">
+    <thead><tr><th>Queue</th><th>Wartend</th><th>Konsumenten</th><th></th></tr></thead>
+    <tbody>
+      {%- for q in queues %}
+      <tr>
+        <td class="mono">{{ q.name }}</td>
+        {%- if q.stats.error %}
+        {#- Eine Null hier laese sich als "kein Rueckstau" -- die
+            gefaehrlichste stille Falschaussage dieser Seite. -#}
+        <td colspan="3"><span class="chip chip--fehler"><span class="dot dot--fehler"></span>
+          nicht abgefragt: {{ q.stats.error }}</span></td>
+        {%- else %}
+        <td class="mono num">{{ q.stats.depth }}</td>
+        <td class="mono num">{{ q.stats.consumers }}</td>
+        <td>
+          {%- if q.ohne_hook %}
+          <span class="chip chip--wartet"><span class="dot dot--wartet"></span>
+            {{ q.ohne_hook }} Konsumenten ohne Hook{% if not q.bekannt %} --
+            der Strom kennt keinen Worker fuer diese Queue{% endif %}</span>
+          {%- endif %}
+        </td>
+        {%- endif %}
+      </tr>
+      {%- endfor %}
+    </tbody>
+  </table>
+</section>
+{%- endif %}
+
+{% endblock %}

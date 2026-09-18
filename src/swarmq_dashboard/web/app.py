@@ -48,6 +48,7 @@ from swarmq_dashboard.web.auth import (
 from swarmq_dashboard.web.cancel import Canceller, SwarmQCanceller
 from swarmq_dashboard.web.routes.login import login, login_form, logout
 from swarmq_dashboard.web.routes.tasks import cancel, detail, liste
+from swarmq_dashboard.web.routes.worker import entfernen, uebersicht
 from swarmq_dashboard.web.stream import LIVE_CHANNEL, LivePublisher, live
 from swarmq_dashboard.web.templates import statische_dateien, template_config
 
@@ -157,6 +158,7 @@ class Services:
         hasher: PasswordHasher | None = None,
         throttle_scale: float = 1.0,
         canceller: Canceller | None = None,
+        broker: Any | None = None,
     ) -> None:
         self._config = config
         self._hasher = hasher
@@ -201,7 +203,7 @@ class Services:
         self.services_directory_writer: DirectoryWriter | None = None
         self._stream: ValkeyStreamClient | None = None
         self._backend: ValkeyStreamClient | None = None
-        self._broker: BrokerObserver | None = None
+        self._broker: Any | None = broker
 
         self._gruende: dict[str, str | None] = {
             "directory": "noch nicht geoeffnet",
@@ -294,6 +296,25 @@ class Services:
             await _leise_schliessen(client)
             return None, str(exc)
         return client, None
+
+    async def queue_stats(self, queues: list[str]) -> dict[str, Any]:
+        """Tiefe und Konsumenten je Queue -- oder je Queue ein Fehlgrund.
+
+        Nie eine leere Antwort und nie eine Null, wo eine Auskunft fehlt: eine
+        Null laese sich als "kein Rueckstau", und das ist die gefaehrlichste
+        stille Falschaussage der Worker-Seite (R18, R14).
+        """
+        from swarmq_dashboard.broker import QueueStats
+
+        if not queues:
+            return {}
+        if self._broker is None:
+            grund = self._gruende["broker"] or "der Broker ist nicht verbunden"
+            return {q: QueueStats(queue=q, error=grund) for q in queues}
+        try:
+            return dict(await self._broker.stats_many(queues))
+        except Exception as exc:
+            return {q: QueueStats(queue=q, error=str(exc)) for q in queues}
 
     async def _broker_pruefen(self) -> None:
         if self._broker is None:
@@ -468,6 +489,7 @@ def create_app(
     maintenance_every_s: float = DEFAULT_MAINTENANCE_S,
     throttle_scale: float = 1.0,
     canceller: Canceller | None = None,
+    broker: Any | None = None,
 ) -> Litestar:
     """Die Anwendung bauen. Der Lebenszyklus haelt die Aussenverbindungen.
 
@@ -476,7 +498,7 @@ def create_app(
     genau das war der Fehler bei ``refresh()``, das nur von Hand gerufen wurde.
     """
     services = Services(config, hasher=hasher, throttle_scale=throttle_scale,
-                        canceller=canceller)
+                        canceller=canceller, broker=broker)
     # Die Registratur zeigt auf den Speicher des Dienstes, statt einen
     # eigenen zu halten: sonst bliebe eine vierte Verbindung auf die
     # Kontendatei offen, die niemand schliesst und deren abgelaufene Zeilen
@@ -528,7 +550,7 @@ def create_app(
     # Merkmal. ``csrf_guard`` liefert das; es steht in der Sitzung selbst.
     return Litestar(
         route_handlers=[zustand, login_form, login, logout, live, liste, detail,
-                        cancel, statische_dateien()],
+                        cancel, uebersicht, entfernen, statische_dateien()],
         template_config=template_config(),
         lifespan=[lebenszyklus],
         stores=build_store_registry(weiche),

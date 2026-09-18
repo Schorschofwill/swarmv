@@ -121,6 +121,23 @@ class WorkerRegistry:
             gruppen.setdefault(w.group or KEINE_GRUPPE, []).append(w)
         return gruppen
 
+    def known_queues(self) -> list[str]:
+        """Alle Queues, von denen das Verzeichnis weiss.
+
+        **Nicht nur die der bekannten Worker**: R18 schliesst den Fall
+        ausdruecklich ein, dass der Strom gar keinen Worker kennt -- dann sind
+        alle Konsumenten ohne Hook, und genau dann braeuchte man die Auskunft
+        am dringendsten. Die Queues der Tasks kommen darum dazu; sie belegen,
+        dass dort ueberhaupt gearbeitet wird.
+        """
+        aus_workern = {q for w in self.all() for q in (w.queues or [])}
+        aus_tasks = {
+            str(z[0]) for z in self._con.execute(
+                "select distinct queue from task where queue is not null"
+            )
+        }
+        return sorted(aus_workern | aus_tasks)
+
     def remove(self, worker_id: str) -> bool:
         """Einen Worker entfernen (R19). ``False`` heisst: gab es nicht.
 
