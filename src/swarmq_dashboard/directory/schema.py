@@ -16,7 +16,7 @@ import sqlite3
 from pathlib import Path
 
 #: Tabellen und Sichten, die eine vollstaendige Datei traegt.
-TABLES = {"task", "signal", "task_fts", "progress"}
+TABLES = {"task", "signal", "task_fts", "progress", "worker"}
 
 #: Wartefrist auf gesperrte Schreibvorgaenge. Gemessen: ohne sie scheitern
 #: unter Last 99 % der Vorgaenge, mit ihr keiner bis 16 gleichzeitige Schreiber.
@@ -105,6 +105,28 @@ create trigger if not exists task_fts_au after update on task begin
     insert into task_fts(rowid, task_name, args_text)
     values (new.rowid, new.task_name, new.args_text);
 end;
+
+-- Wer laeuft, seit wann, und **woher wir das wissen** (KTD10). Die Quelle
+-- gehoert zur Aussage: das Lebenszeichen setzt einen Metrik-Port und ein
+-- optionales Paket voraus und schweigt sonst ohne Fehlermeldung -- sein
+-- Ausbleiben darf nicht als "getrennt" gelesen werden.
+create table if not exists worker (
+    worker_id    text primary key,
+    worker_group text,
+    slot         integer,
+    queues       text,
+    all_queues   text,
+    concurrency  integer,
+    pool         text,
+    started_at   real,
+    last_seen_at real not null,
+    -- 1 = irgendein Signal, 2 = Lebenszeichen, 3 = Supervisor. Wird nur
+    -- gehoben, nie gesenkt -- sonst faellt die Ansicht nach jedem
+    -- gewoehnlichen Signal auf die schwaechste Aussage zurueck.
+    source       integer not null default 1
+) without rowid;
+
+create index if not exists worker_group_idx on worker(worker_group);
 
 -- Lesefortschritt im Strom und der Zustand des Neuaufbaus (R8).
 create table if not exists progress (

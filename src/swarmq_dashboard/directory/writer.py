@@ -27,6 +27,7 @@ import sqlite3
 import time
 from typing import Any
 
+from swarmq_dashboard.directory.workers import quelle_fuer
 from swarmq_dashboard.events import Event, Origin
 
 #: Ereignisart -> Status, den sie setzt. Nur Ausgaenge stehen hier; alles
@@ -139,6 +140,10 @@ class DirectoryWriter:
                 if ev.type == LOST_EVENT:
                     self._mark_gap(ev, in_transaktion=True)
                     continue
+                # Jedes Ereignis mit einer Worker-Kennung fuehrt auch das
+                # Worker-Register nach -- **vor** der Task-Pruefung, denn
+                # Stammdaten und Lebenszeichen tragen gar keinen Task.
+                self._worker_nachfuehren(ev)
                 task_id = ev.payload.get("task_id")
                 if not isinstance(task_id, str) or not task_id:
                     continue  # Worker-Stammdaten, Scheduler-Signale: kein Task
@@ -185,6 +190,51 @@ class DirectoryWriter:
             (task_id, ev.type, ev.ts, stream_id,
              json.dumps(ev.payload, ensure_ascii=False, default=repr)),
         )
+
+    def _worker_nachfuehren(self, ev: Event) -> None:
+        """Das Worker-Register aus einem Ereignis ergaenzen (R14, R19).
+
+        Zwei Regeln, und beide haben denselben Grund wie die
+        Aufwaerts-Ergaenzung der Task-Zeilen:
+
+        * Ein bekannter Wert wird nie geleert. Ein gewoehnliches Task-Signal
+          traegt keine Gruppe -- sie deswegen zu loeschen hiesse, den Worker
+          nach dem ersten Task aus seiner Gruppe zu verlieren. Das leistet
+          die Auswahl unten: nur was die Nutzlast wirklich mitbringt, wird
+          geschrieben. (Ein ``coalesce`` stand hier zusaetzlich und konnte von
+          keiner Mutationsprobe gekippt werden -- es schuetzte nichts, was die
+          Auswahl nicht schon schuetzt.)
+        * Die Quelle wird nur **gehoben** (KTD10). Sonst faellt die Ansicht
+          nach jedem gewoehnlichen Signal auf die schwaechste Aussage zurueck
+          und meldet sich als eingeschraenkt, obwohl das Lebenszeichen laeuft.
+        """
+        wid = ev.payload.get("worker_id") or ev.source
+        if not isinstance(wid, str) or not wid or wid == "app":
+            return
+        quelle = int(quelle_fuer(ev.type))
+        self._con.execute(
+            "insert into worker(worker_id, last_seen_at, source) values (?,?,?) "
+            "on conflict(worker_id) do update set "
+            "last_seen_at = max(worker.last_seen_at, excluded.last_seen_at), "
+            "source = max(worker.source, excluded.source)",
+            (wid, ev.ts, quelle),
+        )
+        felder: dict[str, Any] = {}
+        for spalte, schluessel in (("worker_group", "group"), ("slot", "slot"),
+                                   ("concurrency", "concurrency"), ("pool", "pool"),
+                                   ("started_at", "started_at")):
+            wert = ev.payload.get(schluessel)
+            if wert is not None and not isinstance(wert, dict | list):
+                felder[spalte] = wert
+        for spalte in ("queues", "all_queues"):
+            wert = ev.payload.get(spalte)
+            if isinstance(wert, list):
+                felder[spalte] = json.dumps(wert, ensure_ascii=False)
+        if felder:
+            satz = ", ".join(f"{k}=?" for k in felder)
+            self._con.execute(
+                f"update worker set {satz} where worker_id=?", (*felder.values(), wid)
+            )
 
     def mark_cancel_requested(self, task_id: str) -> None:
         """Festhalten, dass jemand die Stornierung angefordert hat (R12a).
