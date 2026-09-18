@@ -32,6 +32,8 @@ import sqlite3
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
+from swarmq_dashboard.directory.schema import GuardedConnection
+
 #: Kuerzestes Fragment, das ein Trigramm-Index finden kann.
 MIN_FRAGMENT = 3
 #: Zeilen je Seite, wenn nichts anderes verlangt wird.
@@ -147,7 +149,7 @@ def _decode(cursor: str) -> tuple[float, str] | None:
 class DirectoryQueries:
     """Lesender Zugang zum Verzeichnis. Aendert nichts."""
 
-    def __init__(self, con: sqlite3.Connection) -> None:
+    def __init__(self, con: GuardedConnection) -> None:
         self._con = con
         self._con.row_factory = sqlite3.Row
 

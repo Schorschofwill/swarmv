@@ -11,9 +11,13 @@ zusammen, wuerde sein Loeschen das Team aussperren.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sqlite3
+import threading
+from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 #: Tabellen und Sichten, die eine vollstaendige Datei traegt.
 TABLES = {"task", "signal", "task_fts", "progress", "worker", "gap"}
@@ -155,7 +159,96 @@ create table if not exists progress (
 """
 
 
-def connect(path: str | Path) -> sqlite3.Connection:
+class _Ergebnis:
+    """Das Ergebnis einer Abfrage, **innerhalb** des Riegels eingesammelt.
+
+    Ein nackter Cursor waere hier die Falle: seine Zeilen holt der Aufrufer
+    erst spaeter, also ausserhalb des Riegels, und genau dabei kam der
+    ``IndexError`` heraus. Hier sind die Zeilen schon da.
+    """
+
+    __slots__ = ("_zeilen", "rowcount")
+
+    def __init__(self, zeilen: list[Any], rowcount: int) -> None:
+        self._zeilen = zeilen
+        self.rowcount = rowcount
+
+    def fetchone(self) -> Any:
+        return self._zeilen[0] if self._zeilen else None
+
+    def fetchall(self) -> list[Any]:
+        return self._zeilen
+
+    def __iter__(self) -> Iterator[Any]:
+        return iter(self._zeilen)
+
+
+class GuardedConnection:
+    """Die Verbindung des Verzeichnisses samt Riegel.
+
+    ``check_same_thread=False`` erlaubt den Gebrauch aus mehreren Faeden --
+    sicher macht es ihn nicht. Der Dienst schiebt die blockierende Arbeit mit
+    ``to_thread`` in einen Arbeitsfaden und liest den Zustandsbericht auf der
+    Ereignisschleife, und zwar bei **jedem** Seitenaufruf. Ohne Riegel kippte
+    etwa jeder vierte Lauf, mit zwei verschiedenen Fehlern: ``IndexError``
+    beim Lesen des Fortschritts und ``InterfaceError`` beim Schreiben. Die
+    Kontendatei hat fuer genau diesen Fall seit je einen Riegel; das
+    Verzeichnis hatte keinen.
+
+    Der Riegel sitzt **in der Verbindung** und nicht in jeder Methode des
+    Schreibers: so ist keine der vierzig Aufrufstellen zu aendern, und eine
+    neue kann ihn nicht vergessen.
+    """
+
+    def __init__(self, con: sqlite3.Connection) -> None:
+        self._con = con
+        # ``RLock``: ``apply`` haelt ihn ueber die ganze Transaktion und ruft
+        # darin Methoden, die ihn erneut nehmen.
+        self._riegel = threading.RLock()
+
+    @contextlib.contextmanager
+    def exklusiv(self) -> Iterator[None]:
+        """Den Riegel ueber mehrere Anweisungen halten.
+
+        Fuer Transaktionen: ein Stapel ist eine Transaktion, und ein fremder
+        Schreibvorgang mittendrin liefe in ihr mit.
+        """
+        with self._riegel:
+            yield
+
+    def execute(self, sql: str, parameters: Any = ()) -> _Ergebnis:
+        with self._riegel:
+            cur = self._con.execute(sql, parameters)
+            zeilen = cur.fetchall() if cur.description is not None else []
+            return _Ergebnis(zeilen, cur.rowcount)
+
+    def executescript(self, sql: str) -> None:
+        with self._riegel:
+            self._con.executescript(sql)
+
+    def commit(self) -> None:
+        with self._riegel:
+            self._con.commit()
+
+    def close(self) -> None:
+        with self._riegel:
+            self._con.close()
+
+    def set_trace_callback(self, rueckruf: Any) -> None:
+        with self._riegel:
+            self._con.set_trace_callback(rueckruf)
+
+    @property
+    def row_factory(self) -> Any:
+        return self._con.row_factory
+
+    @row_factory.setter
+    def row_factory(self, wert: Any) -> None:
+        with self._riegel:
+            self._con.row_factory = wert
+
+
+def connect(path: str | Path) -> GuardedConnection:
     """Datei oeffnen oder anlegen, Schema sicherstellen, Pragmas setzen.
 
     Idempotent: ein zweites Oeffnen laesst vorhandene Daten unberuehrt.
@@ -193,7 +286,7 @@ def connect(path: str | Path) -> sqlite3.Connection:
         # 200 offene Zeiger.
         con.close()
         raise
-    return con
+    return GuardedConnection(con)
 
 
 def _sichern(pfad: Path) -> None:

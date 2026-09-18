@@ -28,6 +28,7 @@ import sqlite3
 import time
 from typing import Any
 
+from swarmq_dashboard.directory.schema import GuardedConnection
 from swarmq_dashboard.directory.workers import quelle_fuer
 from swarmq_dashboard.events import Event, Origin
 
@@ -71,7 +72,7 @@ def _sort_id(stream_id: str | None, ev: Event) -> str:
 class DirectoryWriter:
     """Nimmt Ereignisse entgegen und fuehrt das Verzeichnis nach."""
 
-    def __init__(self, con: sqlite3.Connection) -> None:
+    def __init__(self, con: GuardedConnection) -> None:
         self._con = con
         self._con.row_factory = sqlite3.Row
         #: Ereignisse, die die Datenbank nicht annahm. Kein stiller Verlust:
@@ -135,38 +136,43 @@ class DirectoryWriter:
         # eigene Transaktion: gemessen 197 ms statt 68 ms fuer tausend
         # Ereignisse. Und der Stapel waere nicht atomar, obwohl der Leser
         # seine Fortschrittsmarke erst danach setzt.
-        self._con.execute("begin")
-        try:
-            for stream_id, ev in events:
-                if ev.type == LOST_EVENT:
-                    self._mark_gap(ev, in_transaktion=True)
-                    continue
-                # Jedes Ereignis mit einer Worker-Kennung fuehrt auch das
-                # Worker-Register nach -- **vor** der Task-Pruefung, denn
-                # Stammdaten und Lebenszeichen tragen gar keinen Task.
-                self._worker_nachfuehren(ev)
-                task_id = ev.payload.get("task_id")
-                if not isinstance(task_id, str) or not task_id:
-                    continue  # Worker-Stammdaten, Scheduler-Signale: kein Task
-                try:
-                    self._upsert(task_id, ev, _sort_id(stream_id, ev))
-                except sqlite3.Error:
-                    # Ein einzelnes missgestaltetes Ereignis darf die
-                    # Einspeisung nicht anhalten. Ohne diesen Schutz blieb die
-                    # Fortschrittsmarke stehen, der Leser las ewig denselben
-                    # Stapel, und *alle* spaeteren Tasks fehlten im
-                    # Verzeichnis -- der "liest sich wie nicht gelaufen"-Irrtum
-                    # in seiner schlimmsten Form. Der Zaehler ist die Spur;
-                    # die Nutzlast wird nicht mitgefuehrt, sie traegt
-                    # Klartext-Argumente (R7a).
-                    self.rejected += 1
-                    self.bump_lost(rejected=1)
-                    continue
-                beruehrt += 1
-            self._con.execute("commit")
-        except BaseException:
-            self._con.execute("rollback")
-            raise
+        # Die ganze Transaktion unter **einem** Riegel: die Verbindung nimmt
+        # ihn zwar je Anweisung, aber ein fremder Schreibvorgang mitten in
+        # einem Stapel liefe in dessen Transaktion mit -- und ein Rueckruf
+        # riss ihn dann mit zurueck.
+        with self._con.exklusiv():
+            self._con.execute("begin")
+            try:
+                for stream_id, ev in events:
+                    if ev.type == LOST_EVENT:
+                        self._mark_gap(ev, in_transaktion=True)
+                        continue
+                    # Jedes Ereignis mit einer Worker-Kennung fuehrt auch das
+                    # Worker-Register nach -- **vor** der Task-Pruefung, denn
+                    # Stammdaten und Lebenszeichen tragen gar keinen Task.
+                    self._worker_nachfuehren(ev)
+                    task_id = ev.payload.get("task_id")
+                    if not isinstance(task_id, str) or not task_id:
+                        continue  # Worker-Stammdaten, Scheduler-Signale: kein Task
+                    try:
+                        self._upsert(task_id, ev, _sort_id(stream_id, ev))
+                    except sqlite3.Error:
+                        # Ein einzelnes missgestaltetes Ereignis darf die
+                        # Einspeisung nicht anhalten. Ohne diesen Schutz blieb die
+                        # Fortschrittsmarke stehen, der Leser las ewig denselben
+                        # Stapel, und *alle* spaeteren Tasks fehlten im
+                        # Verzeichnis -- der "liest sich wie nicht gelaufen"-Irrtum
+                        # in seiner schlimmsten Form. Der Zaehler ist die Spur;
+                        # die Nutzlast wird nicht mitgefuehrt, sie traegt
+                        # Klartext-Argumente (R7a).
+                        self.rejected += 1
+                        self.bump_lost(rejected=1)
+                        continue
+                    beruehrt += 1
+                self._con.execute("commit")
+            except BaseException:
+                self._con.execute("rollback")
+                raise
         return beruehrt
 
     def _upsert(self, task_id: str, ev: Event, stream_id: str) -> None:

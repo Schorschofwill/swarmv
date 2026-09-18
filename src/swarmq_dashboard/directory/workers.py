@@ -25,6 +25,8 @@ import json
 import sqlite3
 from dataclasses import dataclass, field
 
+from swarmq_dashboard.directory.schema import GuardedConnection
+
 #: Frist ohne Supervisor-Rueckmeldung: Gnadenfrist 30 s + Terminierung 5 s +
 #: Abtastung 5 s.
 SUPERVISOR_STALE_S = 40.0
@@ -95,7 +97,7 @@ class Worker:
 class WorkerRegistry:
     """Lesender Zugang zum Worker-Register."""
 
-    def __init__(self, con: sqlite3.Connection) -> None:
+    def __init__(self, con: GuardedConnection) -> None:
         self._con = con
         self._con.row_factory = sqlite3.Row
 
