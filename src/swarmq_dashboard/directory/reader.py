@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from functools import partial
 from typing import Any, Protocol
 
 from swarmq_dashboard.directory.writer import DirectoryWriter
@@ -112,6 +113,11 @@ class StreamReader:
             "rebuilding": self.rebuilding,
             "behind": self._behind,
             "gap": self._gap,
+            # Die **festgehaltenen** Luecken, nicht der gerade laufende
+            # Rueckstand. ``behind`` ist nach einem Neustart mit eingeholtem
+            # Strom wieder falsch -- die Luecke von gestern bleibt trotzdem
+            # eine (R4a).
+            "gaps": self.writer.gap_count(),
             "dropped": self._dropped,
             # Ereignisse, die die Datenbank nicht annahm, und ein noch nicht
             # eingeloestes Loeschversprechen (R7a). Beides gehoert in die
@@ -238,6 +244,15 @@ class StreamReader:
         von = _as_tuple(position)[0] / 1000.0
         bis = _as_tuple(aeltester)[0] / 1000.0
         await asyncio.to_thread(self.writer.mark_incomplete, von, bis)
+        # Und dauerhaft festhalten. ``mark_incomplete`` trifft nur die Zeilen,
+        # die es noch gibt -- die weggeschnittenen Tasks haben gar keine, und
+        # gerade sie sind der Grund fuer die Meldung. Ohne diesen Schritt war
+        # die Luecke nach einem Neustart vergessen, und eine Suche ueber die
+        # Spanne meldete "keine Treffer" ueber einen Zeitraum, der nie gelesen
+        # wurde.
+        await asyncio.to_thread(
+            partial(self.writer.record_gap, von, bis, quelle="stream_trim")
+        )
 
     # -- Pflege ----------------------------------------------------------
 

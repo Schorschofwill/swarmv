@@ -1,6 +1,6 @@
 """Schema und Verbindungseinstellungen des Verzeichnisses.
 
-Eine Datei, zwei Tabellen und ein Volltextindex. Die Einstellungen der
+Eine Datei, ihre Tabellen und ein Volltextindex. Die Einstellungen der
 Verbindung sind keine Feinabstimmung, sondern tragen je eine Zusage aus dem
 Plan -- der Kommentar an jedem Pragma sagt welche.
 
@@ -16,7 +16,7 @@ import sqlite3
 from pathlib import Path
 
 #: Tabellen und Sichten, die eine vollstaendige Datei traegt.
-TABLES = {"task", "signal", "task_fts", "progress", "worker"}
+TABLES = {"task", "signal", "task_fts", "progress", "worker", "gap"}
 
 #: Wartefrist auf gesperrte Schreibvorgaenge. Gemessen: ohne sie scheitern
 #: unter Last 99 % der Vorgaenge, mit ihr keiner bis 16 gleichzeitige Schreiber.
@@ -67,6 +67,25 @@ create index if not exists task_first_seen on task(first_seen_at desc, task_id d
 create index if not exists task_status    on task(status);
 create index if not exists task_name_idx  on task(task_name);
 create index if not exists task_worker    on task(worker_id);
+
+-- Zeitspannen, aus denen Ereignisse fehlen (R4a, U12a).
+--
+-- Eigene Tabelle und nicht bloss ``task.incomplete``: die Markierung an der
+-- Zeile trifft nur **ueberlebende** Zeilen. Die verlorenen Tasks haben
+-- definitionsgemaess gar keine Zeile, und dann meldet ``mark_incomplete``
+-- schlicht 0 -- die Luecke waere bekannt und trotzdem unsichtbar. Und weil
+-- sie hier steht statt im Arbeitsspeicher des Lesers, ueberlebt sie einen
+-- Neustart.
+create table if not exists gap (
+    von         real not null,
+    bis         real not null,
+    quelle      text not null,
+    erkannt_am  real not null,
+    primary key (von, bis, quelle)
+) without rowid;
+-- Die Suche fragt "schneidet der Filterzeitraum eine Luecke?" -- also
+-- ueberlappende Spannen, nicht Gleichheit.
+create index if not exists gap_span on gap(bis, von);
 
 create table if not exists signal (
     task_id   text not null,

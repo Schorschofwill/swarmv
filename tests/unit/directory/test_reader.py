@@ -166,6 +166,11 @@ async def test_rueckstand_markiert_die_zeitspanne(tmp_path: Path) -> None:
 
     assert r.behind is True, "der Rueckstand wurde nicht erkannt"
     assert r.writer.row("a")["incomplete"] == 1, "die Zeile vor der Luecke ist nicht markiert"
+    # Und **dauerhaft**, nicht nur im Arbeitsspeicher (U12a). Die Markierung
+    # an der Zeile trifft nur, was ueberlebt hat; die weggeschnittenen Tasks
+    # haben gar keine Zeile, und gerade sie sind der Grund fuer die Meldung.
+    # Ohne den Eintrag war die Luecke nach einem Neustart vergessen.
+    assert r.writer.gap_count() == 1, "die Luecke ueberlebt keinen Neustart"
 
 
 async def test_ohne_rueckstand_wird_nichts_markiert(tmp_path: Path) -> None:
@@ -177,6 +182,7 @@ async def test_ohne_rueckstand_wird_nichts_markiert(tmp_path: Path) -> None:
     await r.poll_once()
     assert r.behind is False
     assert r.writer.row("a")["incomplete"] == 0
+    assert r.writer.gap_count() == 0, "Fehlalarm: eine Luecke ohne Rueckstand"
 
 
 async def test_rueckstand_erscheint_im_zustandsbericht(tmp_path: Path) -> None:

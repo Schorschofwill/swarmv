@@ -30,6 +30,7 @@ import math
 import re
 import sqlite3
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 
 #: Kuerzestes Fragment, das ein Trigramm-Index finden kann.
 MIN_FRAGMENT = 3
@@ -47,6 +48,29 @@ _TOO_SHORT = (
     f"Suchbegriffe brauchen mindestens {MIN_FRAGMENT} Zeichen -- "
     "kuerzer kann der Trigramm-Index nichts finden."
 )
+
+
+def _lesbar(ts: float) -> str:
+    return datetime.fromtimestamp(ts, tz=UTC).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _luecken_hinweis(luecken: list[sqlite3.Row]) -> str:
+    """Die Rueckmeldung zu einer Suche, die eine Luecke schneidet (R4a).
+
+    Der Hinweis nennt die Spanne, nicht bloss "unvollstaendig": ohne sie
+    liesse sich nicht sagen, ob der gesuchte Task betroffen ist. Und er sagt
+    ausdruecklich, was fehlen **kann** -- nicht, dass etwas fehlt: ob in der
+    Spanne ueberhaupt ein Task lief, weiss niemand mehr. Genau das ist der
+    Punkt.
+    """
+    von = min(float(z["von"]) for z in luecken)
+    bis = max(float(z["bis"]) for z in luecken)
+    zahl = (f"In {len(luecken)} Zeitspannen zwischen" if len(luecken) > 1
+            else "In der Zeitspanne von")
+    return (f"{zahl} {_lesbar(von)} und {_lesbar(bis)} sind Ereignisse "
+            "verlorengegangen. Dort gelaufene Tasks koennen in dieser Liste "
+            "fehlen -- eine leere oder kurze Liste heisst fuer diesen Zeitraum "
+            "nicht, dass nichts passiert ist.")
 
 
 @dataclass(frozen=True)
@@ -196,7 +220,14 @@ class DirectoryQueries:
         # Anschluss nur, wenn die Seite voll ist: eine halbe Seite heisst, dass
         # nichts mehr kommt.
         weiter = _encode(zeilen[-1]) if len(zeilen) == limit else None
-        return Page(rows=zeilen, next_cursor=weiter)
+        # Der Hinweis haengt am **Filterzeitraum**, nicht an den Treffern: die
+        # verlorenen Tasks haben keine Zeile, also kann keine Zeile auf sie
+        # hinweisen. Ohne gesetzten Filter gilt die ganze Reichweite -- den
+        # Hinweis dann zu unterschlagen hiesse, ihn ausgerechnet im
+        # haeufigsten Aufruf wegzulassen.
+        luecken = self.gaps(since=f.since, until=f.until)
+        hinweis = _luecken_hinweis(luecken) if luecken else None
+        return Page(rows=zeilen, next_cursor=weiter, note=hinweis)
 
     # -- Einzelne Task ----------------------------------------------------
 
@@ -216,6 +247,29 @@ class DirectoryQueries:
         return zeilen
 
     # -- Zustand ----------------------------------------------------------
+
+    def gaps(self, *, since: float | None = None, until: float | None = None
+             ) -> list[sqlite3.Row]:
+        """Festgehaltene Luecken, die den Zeitraum schneiden (R4a, U12a).
+
+        Ohne Grenzen: alle. Zwei Spannen schneiden sich, wenn jede vor dem
+        Ende der anderen beginnt -- die uebliche Ueberlappungsbedingung, und
+        sie ist einschliesslich: eine Luecke, die genau am Filterrand endet,
+        betrifft den Rand noch.
+        """
+        bedingungen: list[str] = []
+        werte: list[object] = []
+        if since is not None:
+            bedingungen.append("bis >= ?")
+            werte.append(since)
+        if until is not None:
+            bedingungen.append("von <= ?")
+            werte.append(until)
+        wo = (" where " + " and ".join(bedingungen)) if bedingungen else ""
+        zeilen: list[sqlite3.Row] = self._con.execute(
+            f"select * from gap{wo} order by von", werte
+        ).fetchall()
+        return zeilen
 
     def reach(self) -> float | None:
         """Zeitpunkt des aeltesten Eintrags -- wie weit die Ansicht zurueckreicht (R8)."""

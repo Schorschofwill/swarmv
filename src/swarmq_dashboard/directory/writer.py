@@ -23,6 +23,7 @@ Zwei Regeln folgen daraus, und beide haben einen Test:
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 import time
 from typing import Any
@@ -273,6 +274,58 @@ class DirectoryWriter:
         if not isinstance(von, int | float) or not isinstance(bis, int | float):
             return
         self.mark_incomplete(float(von), float(bis), in_transaktion=in_transaktion)
+        self.record_gap(float(von), float(bis), quelle="hook_lost",
+                        in_transaktion=in_transaktion)
+
+    def gap_count(self) -> int:
+        """Wie viele Luecken festgehalten sind (R4a).
+
+        Fuer die Kopfzeile. ``behind`` allein trug das nicht: es sagt, ob der
+        Leser **gerade** hinterherhaengt, und ist nach einem Neustart und
+        einem eingeholten Strom wieder falsch -- obwohl die Luecke bleibt.
+        """
+        return int(self._con.execute("select count(*) from gap").fetchone()[0])
+
+    def record_gap(self, von: float, bis: float, *, quelle: str,
+                   now: float | None = None, in_transaktion: bool = False) -> bool:
+        """Eine Zeitspanne festhalten, aus der Ereignisse fehlen (R4a, U12a).
+
+        Das Gegenstueck zu ``mark_incomplete`` und der wichtigere Teil: jene
+        Markierung trifft nur **ueberlebende** Zeilen. Die verlorenen Tasks
+        haben gar keine Zeile, und dann meldet sie schlicht 0 -- die Luecke
+        waere bekannt und trotzdem unsichtbar. Hier steht sie fuer sich, und
+        weil sie in der Datei steht, ueberlebt sie einen Neustart.
+
+        Ueberlappende und angrenzende Spannen **derselben Quelle** werden
+        zusammengelegt. Der Leser prueft seinen Rueckstand in jedem Durchlauf;
+        ohne das Zusammenlegen waechst die Tabelle bei anhaltendem Rueckstand
+        um einen Eintrag je Takt, und die Meldung spraeche von tausend
+        Luecken, wo es eine ist.
+
+        ``False`` heisst: die Spanne war unbrauchbar. Eine rueckwaerts
+        laufende oder nicht endliche Spanne schnitte **jede** Suche und
+        stuende dauerhaft auf der Seite -- und die Nutzlast kommt von aussen.
+        """
+        if not (math.isfinite(von) and math.isfinite(bis)) or bis < von:
+            return False
+        vorhanden = self._con.execute(
+            "select von, bis from gap where quelle=? and bis >= ? and von <= ?",
+            (quelle, von, bis),
+        ).fetchall()
+        if vorhanden:
+            von = min([von, *(float(z["von"]) for z in vorhanden)])
+            bis = max([bis, *(float(z["bis"]) for z in vorhanden)])
+            self._con.execute(
+                "delete from gap where quelle=? and bis >= ? and von <= ?",
+                (quelle, von, bis),
+            )
+        self._con.execute(
+            "insert or replace into gap(von, bis, quelle, erkannt_am) values (?,?,?,?)",
+            (von, bis, quelle, now if now is not None else time.time()),
+        )
+        if not in_transaktion:
+            self._con.commit()
+        return True
 
     # -- Aufbewahrung ----------------------------------------------------
 
@@ -304,6 +357,10 @@ class DirectoryWriter:
         self._con.execute(
             "delete from signal where task_id not in (select task_id from task)"
         )
+        # Luecken mit derselben Frist. Sonst meldete das Dashboard ewig eine
+        # Luecke in einem Zeitraum, aus dem es ohnehin nichts mehr zeigt --
+        # ein Hinweis, der nie verschwindet, wird ueberlesen (R9).
+        self._con.execute("delete from gap where bis < ?", (older_than,))
         self._con.commit()
         if entfernt:
             # Nur wenn wirklich etwas abgelaufen ist. Gemessen kostete ein

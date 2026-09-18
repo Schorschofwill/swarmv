@@ -501,3 +501,27 @@ async def test_stornieren_ohne_sitzung_und_ohne_merkmal(tmp_path: Path) -> None:
         assert ohne_merkmal.status_code == 403
     finally:
         await c.__aexit__(None, None, None)
+
+
+async def test_die_liste_benennt_eine_geschnittene_luecke(tmp_path: Path) -> None:
+    """R4a, U12a. Der Fall aus der Pruefung von Stufe B.
+
+    Gefiltert auf einen Zeitraum, aus dem der Laengendeckel alles
+    weggeschnitten hat, bevor der Leser dort war. "Keine Treffer" hiesse dann
+    "ist nichts passiert" -- ueber einen Zeitraum, der nie gelesen wurde.
+    """
+    config = _config(tmp_path)
+    _verzeichnis_fuellen(config)
+    basis = 1_700_000_000.0
+    w = DirectoryWriter(connect(config.directory_file))
+    w.record_gap(basis + 200, basis + 700, quelle="stream_trim")
+    w.close()
+
+    c = await _angemeldet(config)
+    try:
+        antwort = await c.get(f"/tasks?since={basis + 300}&until={basis + 600}")
+        assert antwort.status_code == 200
+        assert "verlorengegangen" in antwort.text, "die Luecke wird verschwiegen"
+        assert "2023-11-14" in antwort.text, "die Spanne wird nicht genannt"
+    finally:
+        await c.__aexit__(None, None, None)

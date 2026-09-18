@@ -59,7 +59,7 @@ def _zustand(**kw: object) -> dict[str, object]:
         "stream": {"ok": True, "reason": None, "stale": False, "last_event_at": 1_700_000_000.0,
                    "retention_days": 7},
         "directory": {"ok": True, "reason": None, "rebuilding": False, "behind": False,
-                      "rejected": 0, "dropped": 0, "erasure_pending": False,
+                      "gaps": 0, "rejected": 0, "dropped": 0, "erasure_pending": False,
                       "oldest_entry": 1_700_000_000.0},
         "accounts": {"ok": True, "reason": None},
         "audit": {"lost": 0},
@@ -246,3 +246,19 @@ def test_jede_zustandsart_hat_eine_regel() -> None:
     vorhanden = _css_klassen()
     for art in set(_ZUSTANDSART.values()) | {"is-ok", "is-wait", "is-fail"}:
         assert art in vorhanden, f"die Zustandsart {art!r} hat keine Regel"
+
+
+def test_die_kopfzeile_nennt_die_zahl_der_luecken() -> None:
+    """R4a. Die festgehaltene Zahl, nicht der laufende Rueckstand.
+
+    ``behind`` sagt, ob der Leser **gerade** hinterherhaengt; nach einem
+    Neustart mit eingeholtem Strom ist es wieder falsch. Die Luecke von
+    gestern bleibt trotzdem eine, und die Kopfzeile muss sie kennen.
+    """
+    verzeichnis = {"ok": True, "reason": None, "rebuilding": False, "behind": False,
+                   "gaps": 2, "rejected": 0, "dropped": 0, "erasure_pending": False,
+                   "oldest_entry": 1_700_000_000.0}
+    html = render("base.html", status=_zustand(directory=verzeichnis),
+                  account="ops", aktiv="tasks")
+    assert "Luecke" in html, "die Kopfzeile schweigt ueber die Luecken"
+    assert "2" in html

@@ -462,7 +462,12 @@ class Services:
 
     def _verzeichnis_bericht(self) -> dict[str, Any]:
         if self.reader is None:
-            return {"ok": False, "reason": self._gruende["directory"], "rebuilding": True}
+            # ``gaps`` und ``behind`` auch hier: die Kopfzeile fragt danach,
+            # und eine fehlende Angabe waere in einer strengen Vorlage ein
+            # Absturz -- ausgerechnet in dem Fall, in dem ohnehin schon etwas
+            # fehlt.
+            return {"ok": False, "reason": self._gruende["directory"],
+                    "rebuilding": True, "behind": False, "gaps": 0}
         bericht = self.reader.status()
         bericht["ok"] = True
         bericht["reason"] = None
