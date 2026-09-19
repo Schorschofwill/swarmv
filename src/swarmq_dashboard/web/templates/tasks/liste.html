@@ -41,9 +41,16 @@
 {#- Zwei stehende Hinweise. Sie stehen auch dann da, wenn gerade keine
     betroffene Zeile sichtbar ist: die Abwesenheit einer solchen Zeile ist
     selbst keine Aussage. -#}
+{#- ``zeitpunkt(None)`` gibt "noch nie" -- als Zeitpunkt richtig, in
+    diesem Satz falsch: "Die Suche reicht zurück bis noch nie" behauptet
+    eine Reichweite, die es nicht gibt. -#}
 <p class="notice">
+  {%- if reichweite is none %}
+  Das Verzeichnis ist leer -- die Suche hat noch keine Reichweite.
+  {%- else %}
   Die Suche reicht zurück bis {{ zeitpunkt(reichweite) }} -- älteres steht
   nicht mehr im Verzeichnis.
+  {%- endif %}
 </p>
 <p class="notice">{{ herkunft_hinweis }}</p>
 

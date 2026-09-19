@@ -731,3 +731,116 @@ def test_jede_farbpaarung_der_oberflaeche_ist_lesbar() -> None:
             if wert < _SCHWELLE:
                 schwach.append(f"{wo} ({fassung}, {vorn} auf {hinten}): {wert:.2f}:1")
     assert not schwach, "unter 4,5:1 -- " + "; ".join(schwach)
+
+
+# --- Zyklus 8: Saetze, Zahlen und was die Rueckfrage kostet -------------
+
+
+async def test_die_rueckfrage_kostet_keinen_koerper() -> None:
+    """``no-cache`` heisst "vor dem Benutzen nachfragen".
+
+    Die Zusage im Kommentar daneben lautet, dass diese Rueckfrage eine
+    Antwort ohne Koerper kostet. Ohne ETag stimmt sie nicht: dann liefert der
+    Dienst bei **jedem** Seitenaufruf das ganze Stylesheet, die beiden
+    Skripte und die Schriften neu -- gemessen 186 KB, fuer eine Seite, die
+    ein Team den ganzen Tag offen hat und deren Live-Kanal sie regelmaessig
+    neu holt.
+    """
+    import tempfile
+    from pathlib import Path as _Path
+
+    from argon2 import PasswordHasher
+    from litestar.testing import AsyncTestClient
+
+    from swarmq_dashboard.config import DashboardConfig
+    from swarmq_dashboard.web.app import create_app
+
+    d = _Path(tempfile.mkdtemp())
+    config = DashboardConfig(
+        broker_url="amqp://guest:guest@127.0.0.1:1/", backend_url="valkey://127.0.0.1:1/0",
+        stream_url="valkey://127.0.0.1:1/1", retention_days=7, unconfirmed_after_s=15.0,
+        disconnected_after_s=40.0, session_idle_s=1800.0, backlog_cap=300,
+        stream_stale_after_s=120.0, data_dir=d / "sqd-data",
+    )
+    app = create_app(config, hasher=PasswordHasher(time_cost=2, memory_cost=1024,
+                                                   parallelism=1))
+    async with AsyncTestClient(app=app, base_url="https://t.local") as c:
+        for pfad in ("/static/app.css", "/static/live.js"):
+            erste = await c.get(pfad)
+            marke = erste.headers.get("etag", "")
+            assert marke, f"{pfad} kommt ohne ETag -- die Rueckfrage kostet alles"
+            zweite = await c.get(pfad, headers={"If-None-Match": marke})
+            assert zweite.status_code == 304, (
+                f"{pfad}: {zweite.status_code} statt 304, "
+                f"{len(zweite.content)} Bytes Koerper"
+            )
+            assert not zweite.content, f"{pfad}: 304 mit Koerper"
+
+
+def test_ein_task_ohne_verzeichnis_bekommt_keinen_zeitpunkt_angedichtet() -> None:
+    """"Die Suche reicht zurück bis noch nie."
+
+    ``zeitpunkt(None)`` gibt "noch nie" -- richtig als Zeitpunkt, falsch in
+    diesem Satz. Ein leeres Verzeichnis hat keine Reichweite, und der Satz
+    muss das sagen, statt eine zu behaupten.
+    """
+    html = render(
+        "tasks/liste.html", status=_zustand(), account="ops", aktiv="tasks",
+        filter=type("F", (), {"text": "", "status": "", "task_name": "", "worker_id": ""})(),
+        zeitraeume=[(None, "beliebig")], seit="", reichweite=None,
+        herkunft_hinweis="H", hinweis="", zeilen=[], weiter=None,
+        leer_titel="T", leer_ursache="U", csrf_token="t",
+    )
+    text = " ".join(re.sub(r"<[^>]+>", " ", html).split())
+    assert "reicht zurück bis noch nie" not in text, text[:300]
+    assert "Das Verzeichnis ist leer" in text, text[:300]
+
+
+def test_ein_mehrzeiliger_fehler_bleibt_mehrzeilig() -> None:
+    """Ein Traceback ist das Erste, was man auf der Detailseite sucht.
+
+    ``<dd class="mono">`` faltet jede Zeile zu einer einzigen -- aus zwanzig
+    Zeilen Traceback wird ein Fliesstextabsatz ohne Einrueckung, in dem die
+    Zeile mit dem Dateinamen nicht mehr zu finden ist.
+    """
+    css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+    regel = re.search(r"\n  \.fehlertext \{([^}]*)\}", css)
+    assert regel, "keine .fehlertext-Regel im Stylesheet"
+    assert re.search(r"white-space:\s*pre-wrap", regel.group(1)), regel.group(1)
+    quelle = (TEMPLATE_DIR / "tasks" / "detail.html").read_text(encoding="utf-8")
+    assert "fehlertext" in quelle, "die Detailseite benutzt die Regel nicht"
+
+
+def test_gleichnamige_knoepfe_nennen_ihr_ziel() -> None:
+    """Zwoelf Knoepfe "Sichten" untereinander.
+
+    Wer die Seite per Knopfliste abgeht -- ein Vorleseprogramm bietet genau
+    das an -- hoerte zwoelfmal dasselbe Wort und wusste bei keinem, welche
+    Queue er damit anfasst. Der Zusatz steht in ``.sr-only``: sichtbar
+    beantwortet die Zeile die Frage schon.
+
+    Geprueft wird die **gerenderte** Seite, nicht die Vorlage: erst beim
+    Rendern entstehen aus einer Schleife zwoelf gleichlautende Knoepfe. Eine
+    erste Fassung dieses Tests suchte in der Quelle nach ``sr-only`` in der
+    Naehe und liess sich vom Kommentar darueber taeuschen.
+    """
+    class _Stats:
+        def __init__(self, tiefe: int) -> None:
+            self.exists, self.error, self.dead_letter = True, None, tiefe
+
+    html = render(
+        "dlq/uebersicht.html", status=_zustand(), account="ops", aktiv="dlq",
+        csrf_token="t", meldung="", gesichtet=None, hinweis="", weiter=None,
+        tasks=[], sicht_warnung="W", unvollstaendig_hinweis="U",
+        leer_titel="T", leer_ursache="U", queues_leer_ursache="Q",
+        queues=[{"queue": f"q{i}", "stats": _Stats(i), "busy": False} for i in range(3)],
+    )
+    namen = [
+        " ".join(re.sub(r"<[^>]+>", " ", inhalt).split())
+        for inhalt in re.findall(r"<button\b[^>]*>(.*?)</button>", html, re.S)
+    ]
+    doppelt = sorted({n for n in namen if namen.count(n) > 1})
+    assert not doppelt, (
+        "mehrere Knoepfe mit demselben Namen -- welcher welche Queue "
+        f"anfasst, ist nicht zu hoeren: {doppelt}"
+    )

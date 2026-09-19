@@ -15,7 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from jinja2 import (
     Environment,
@@ -24,11 +24,16 @@ from jinja2 import (
     select_autoescape,
 )
 from litestar.datastructures import CacheControlHeader
+from litestar.enums import ScopeType
+from litestar.middleware import ASGIMiddleware
 from litestar.plugins.jinja import JinjaTemplateEngine
 from litestar.router import Router
 from litestar.static_files import create_static_files_router
 from litestar.template.config import TemplateConfig
 from markupsafe import Markup, escape
+
+if TYPE_CHECKING:
+    from litestar.types import ASGIApp, Message, Receive, Scope, Send
 
 TEMPLATE_DIR = Path(__file__).parent
 STATIC_DIR = Path(__file__).parent.parent / "static"
@@ -190,6 +195,69 @@ def _engine_callback(engine: JinjaTemplateEngine) -> None:
     engine.engine.globals["bereiche"] = BEREICHE
 
 
+class NurWennGeaendert(ASGIMiddleware):
+    """Beantwortet eine Rueckfrage mit 304 statt mit der ganzen Datei.
+
+    ``no-cache`` heisst "vor dem Benutzen nachfragen", nicht "nicht
+    speichern". Litestar schickt zu jeder statischen Datei ein ETag, wertet
+    ``If-None-Match`` aber nicht aus -- die Rueckfrage kostete damit jedes
+    Mal die ganze Antwort. Gemessen sind das 186 KB je Seitenaufruf
+    (Stylesheet, HTMX, Idiomorph, ``live.js``, Schriften), auf einer Seite,
+    die ein Team den ganzen Tag offen hat.
+
+    Die Pruefung ist die schwache (RFC 9110, 13.1.2): ``If-None-Match``
+    vergleicht Zeichenketten, und ein ``W/``-Vorsatz spielt dabei keine
+    Rolle.
+    """
+
+    scopes = (ScopeType.HTTP,)
+
+    async def handle(self, scope: Scope, receive: Receive, send: Send,
+                     next_app: ASGIApp) -> None:
+        angefragt = {
+            wert.strip().removeprefix("W/")
+            for kopf, roh in scope["headers"]
+            if kopf == b"if-none-match"
+            for wert in roh.decode("latin-1").split(",")
+        }
+        if not angefragt:
+            await next_app(scope, receive, send)
+            return
+
+        passt = False
+
+        async def pruefen(nachricht: Message) -> None:
+            nonlocal passt
+            if nachricht["type"] == "http.response.start":
+                if nachricht["status"] != 200:
+                    await send(nachricht)
+                    return
+                marke = next(
+                    (roh.decode("latin-1").strip().removeprefix("W/")
+                     for kopf, roh in nachricht["headers"] if kopf == b"etag"),
+                    None,
+                )
+                passt = marke is not None and ("*" in angefragt or marke in angefragt)
+                if not passt:
+                    await send(nachricht)
+                    return
+                # Kein ``content-length`` und kein Koerper: eine 304 mit
+                # Laengenangabe bringt manchen Klienten dazu, auf Bytes zu
+                # warten, die nie kommen.
+                await send({
+                    "type": "http.response.start",
+                    "status": 304,
+                    "headers": [(k, v) for k, v in nachricht["headers"]
+                                if k not in (b"content-length", b"content-type")],
+                })
+                await send({"type": "http.response.body", "body": b"", "more_body": False})
+                return
+            if not passt:
+                await send(nachricht)
+
+        await next_app(scope, receive, pruefen)
+
+
 def statische_dateien() -> Router:
     """Router fuer Stylesheet, Skripte und Schriften.
 
@@ -210,4 +278,5 @@ def statische_dateien() -> Router:
         # nach einem Deploy tagelang das alte ``live.js`` faehrt, ohne es zu
         # merken. Mit ETag kostet die Rueckfrage eine Antwort ohne Koerper.
         cache_control=CacheControlHeader(no_cache=True),
+        middleware=[NurWennGeaendert()],
     )

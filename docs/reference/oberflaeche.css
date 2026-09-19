@@ -366,6 +366,12 @@
   /* In einer Tabellenzelle bringt die Zelle ihre Polsterung schon mit. */
   td .args { padding: 0; }
 
+  /* Ein Traceback ist das Erste, was man auf der Detailseite sucht. Ohne
+     ``pre-wrap`` faltet ``<dd>`` seine zwanzig Zeilen zu einem Absatz ohne
+     Einrueckung -- die Zeile mit dem Dateinamen ist darin nicht mehr zu
+     finden. ``anywhere``, weil eine Modulzeile keine Leerzeichen hat. */
+  .fehlertext { white-space: pre-wrap; overflow-wrap: anywhere; }
+
   /* Queue-Reiter der Dead-Letter-Seite (R28) */
   .qtab {
     display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 12px;

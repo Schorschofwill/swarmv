@@ -45,7 +45,11 @@
     <div><dt>Wiederholungen</dt><dd class="mono">{{ task['retry_count'] }}</dd></div>
     <div><dt>Herkunft</dt><dd class="mono">{{ task['origin'] }}</dd></div>
     {%- if task['error'] %}
-    <div><dt>Fehler</dt><dd class="mono">{{ task['error'] }}</dd></div>
+    {#- ``pre-wrap``: ein Traceback ist das Erste, was man hier sucht, und
+        ``<dd class="mono">`` faltete seine zwanzig Zeilen zu einem Absatz
+        ohne Einrueckung -- die Zeile mit dem Dateinamen war darin nicht
+        mehr zu finden. -#}
+    <div><dt>Fehler</dt><dd class="mono fehlertext">{{ task['error'] }}</dd></div>
     {%- endif %}
   </dl>
 </section>

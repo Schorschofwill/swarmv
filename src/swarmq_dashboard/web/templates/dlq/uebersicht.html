@@ -45,12 +45,19 @@
           <form method="post" action="/dlq/{{ z.queue|urlencode }}/peek">
             <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
             <input type="hidden" name="bestaetigt" value="sichten">
-            <button class="btn btn-sm">Sichten</button>
+            {#- Zwoelf Knoepfe "Sichten" untereinander: wer die Seite per
+                Knopfliste abgeht -- ein Vorleseprogramm bietet genau das an
+                -- hoerte zwoelfmal dasselbe Wort. Der Zusatz steht in
+                ``.sr-only``, weil die Zeile die Frage sichtbar schon
+                beantwortet. -#}
+            <button class="btn btn-sm">Sichten<span class="sr-only">
+              -- {{ z.queue }}.XQ</span></button>
           </form>
           {%- endif %}
           <form method="post" action="/dlq/{{ z.queue|urlencode }}/requeue-all">
             <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
-            <button class="btn btn-sm">Alle wieder einreihen</button>
+            <button class="btn btn-sm">Alle wieder einreihen<span class="sr-only">
+              -- {{ z.queue }}.XQ</span></button>
           </form>
           {#- R30, AE12: der Knopf wiederholt Queue **und** Zahl -- und
               nennt die Queue, die wirklich geleert wird. "in reports" waere
@@ -125,7 +132,8 @@
           <form method="post" action="/dlq/{{ gesichtet.queue|urlencode }}/requeue">
             <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
             <input type="hidden" name="task_id" value="{{ e['task_id'] }}">
-            <button class="btn btn-sm">Wieder einreihen</button>
+            <button class="btn btn-sm">Wieder einreihen<span class="sr-only">
+              -- {{ e['task_id'] or 'ohne Kennung' }}</span></button>
           </form>
         </td>
       </tr>
