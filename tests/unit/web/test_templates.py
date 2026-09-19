@@ -645,3 +645,89 @@ def test_jede_seite_beginnt_mit_einem_sprungverweis() -> None:
         "der Sprungverweis steht hinter der Navigation -- dann ueberspringt "
         "er sie nicht"
     )
+
+
+def test_eine_breite_tabelle_schiebt_die_seite_nicht_auseinander() -> None:
+    """Gemessen bei 1024 px: die Worker-Tabelle ist 792 px breit, ihre Karte
+    745 -- die Tabelle stand 50 px ueber dem Kartenrand, und das Dokument war
+    1035 px breit bei 1009 px Fenster. Die ganze Seite liess sich waagerecht
+    schieben, Navigation und Kopfzeile mit.
+
+    ``.card-table`` ist der Behaelter, der das auffangen soll; ohne
+    ``overflow-x`` faengt er nichts auf.
+    """
+    css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+    regel = re.search(r"\n  \.card-table \{([^}]*)\}", css)
+    assert regel, "keine .card-table-Regel im Stylesheet"
+    assert re.search(r"overflow-x:\s*auto", regel.group(1)), (
+        f"die Tabelle laeuft aus ihrer Karte heraus: {regel.group(1)}"
+    )
+
+
+# --- Zyklus 7: Lesbarkeit als Zahl, nicht als Gefuehl --------------------
+
+#: Vorder- und Hintergrund jeder Paarung, die in der Oberflaeche wirklich
+#: vorkommt -- und die Stelle, an der sie steht. Die Werte sind Namen von
+#: Farbtoken aus ``@layer tokens``.
+_PAARE = [
+    ("--ink", "--surface", "Fliesstext auf der Karte"),
+    ("--ink-2", "--surface", "zweite Schriftstufe"),
+    ("--muted", "--surface", "Meta-Zeile der Karte"),
+    ("--dim", "--surface", "Quelle eines Workers, \"nicht gemessen\""),
+    ("--muted", "--ground", "Meta-Zeile auf dem Seitengrund"),
+    ("--dim", "--ground", "gedaempftes auf dem Seitengrund"),
+    ("--ok-text", "--ok-bg", "Marke \"verbunden\""),
+    ("--run-text", "--run-bg", "Marke \"laufend\""),
+    ("--wait-text", "--wait-bg", "Marke \"wiederholung\""),
+    ("--fail-text", "--fail-bg", "Marke \"gescheitert\""),
+    # Der Grund einer Stoerung steht als ``.muted`` **in** der roten Marke.
+    # Gemessen von axe-core: 4,15:1 -- unter der Schwelle, und ausgerechnet
+    # an dem Satz, der im Vorfall sagt, was kaputt ist.
+    ("--muted", "--fail-bg", "Fehlgrund in der Stoerungsmarke"),
+    ("--muted", "--wait-bg", "Zusatz in der Wartemarke"),
+    ("--muted", "--ok-bg", "Zusatz in der Gutmarke"),
+    ("--on-brand", "--brand", "aktiver Navigationseintrag"),
+]
+#: WCAG AA fuer Text unter 18,5 px. Die Oberflaeche schreibt 11,5 bis 14 px.
+_SCHWELLE = 4.5
+
+
+def _token(css: str, name: str) -> tuple[str, str]:
+    """Die helle und die dunkle Seite eines ``light-dark()``-Tokens."""
+    treffer = re.search(
+        rf"{re.escape(name)}:\s*light-dark\((#[0-9A-Fa-f]{{6}}),\s*(#[0-9A-Fa-f]{{6}})\)",
+        css,
+    )
+    assert treffer, f"{name} ist kein light-dark()-Token mehr"
+    return treffer.group(1), treffer.group(2)
+
+
+def _kontrast(vorn: str, hinten: str) -> float:
+    def hell(farbe: str) -> float:
+        teile = []
+        for i in (1, 3, 5):
+            c = int(farbe[i:i + 2], 16) / 255
+            teile.append(c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4)
+        return 0.2126 * teile[0] + 0.7152 * teile[1] + 0.0722 * teile[2]
+
+    a, b = hell(vorn), hell(hinten)
+    return (max(a, b) + 0.05) / (min(a, b) + 0.05)
+
+
+def test_jede_farbpaarung_der_oberflaeche_ist_lesbar() -> None:
+    """Farbe ist in dieser Oberflaeche nie Schmuck: sie traegt den Zustand.
+
+    Eine Paarung unter 4,5:1 heisst, dass ein Teil der Leser die Aussage
+    nicht bekommt -- und zwar genau im Vorfall, wenn die roten Marken
+    auftauchen. Geprueft werden **beide** Fassungen: die dunkle ist nicht
+    weniger echt, seit ``data-theme`` sie nicht mehr abschaltet.
+    """
+    css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+    schwach: list[str] = []
+    for vorn, hinten, wo in _PAARE:
+        for fassung, i in (("hell", 0), ("dunkel", 1)):
+            v, h = _token(css, vorn)[i], _token(css, hinten)[i]
+            wert = _kontrast(v, h)
+            if wert < _SCHWELLE:
+                schwach.append(f"{wo} ({fassung}, {vorn} auf {hinten}): {wert:.2f}:1")
+    assert not schwach, "unter 4,5:1 -- " + "; ".join(schwach)

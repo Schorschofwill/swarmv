@@ -30,6 +30,10 @@
 /* ------------------------------------------------------------------ */
 @layer tokens {
   :root {
+    /* ``light dark``: jedes ``light-dark()`` unten haengt daran. Die beiden
+       Regeln am Ende dieses Layers uebersteuern es, wenn jemand eine Fassung
+       fest waehlt -- die Vorlage setzte ``data-theme`` lange fest auf
+       "light", und damit war die dunkle Fassung unerreichbar. */
     color-scheme: light dark;
 
     /* Flächen und Linien */
@@ -44,7 +48,11 @@
     /* Schrift */
     --ink:         light-dark(#17181A, #E9E9E4);
     --ink-2:       light-dark(#3C3E39, #B9BBB2);
-    --muted:       light-dark(#6E7068, #9A9C94);
+    /* ``#6E7068`` ergab auf den drei getoenten Flaechen 4,15 bis 4,35:1 --
+       und genau dort steht der Fehlgrund einer Stoerungsmarke. Vier Stufen
+       dunkler reicht fuer alle sechs Flaechen, auf denen ``.muted``
+       vorkommt (mindestens 4,54:1). */
+    --muted:       light-dark(#686A62, #9A9C94);
     /* ``#8A8C83`` auf der hellen Flaeche sind 2,6:1 -- unter jeder
        Lesbarkeitsschwelle, und ``.dim`` traegt die Quelle eines Workers und
        das Wort "nicht gemessen". Jetzt 4,6:1 bzw. 5,1:1. */
@@ -84,11 +92,6 @@
     --font-mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', monospace;
   }
 
-  /* ``light dark`` als Vorgabe: ohne sie gilt ``light``, und jedes
-     ``light-dark()`` unten loest auf die helle Seite auf -- auch auf einem
-     System, das ausdruecklich dunkel angefordert hat. Die beiden Regeln
-     darunter uebersteuern das, wenn jemand eine Fassung fest waehlt. */
-  :root { color-scheme: light dark; }
   :root[data-theme="light"] { color-scheme: light; }
   :root[data-theme="dark"]  { color-scheme: dark; }
 }
@@ -209,7 +212,12 @@
      Polsterung -- ihre Bausteine tragen sie --, und ohne diesen Behaelter
      klebt die Kopfzeile der Tabelle an der Kante. Das Mockup fuehrt genau
      diese Werte. */
-  .card-table { padding: 10px 2px 4px; }
+  /* ``overflow-x``: bei 1024 px ist die Worker-Tabelle 792 px breit und
+     ihre Karte 745 -- ohne diesen Riegel stand die Tabelle ueber dem
+     Kartenrand, das Dokument war breiter als das Fenster, und die ganze
+     Seite liess sich waagerecht schieben, Navigation und Kopfzeile mit.
+     Jetzt schiebt nur die Tabelle, und nur in ihrer Karte. */
+  .card-table { padding: 10px 2px 4px; overflow-x: auto; }
 
   /* Karteninhalt, der einfach Platz braucht: ein Formular, ein Absatz, eine
      Reihe Knoepfe. */
