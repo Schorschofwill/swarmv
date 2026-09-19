@@ -105,7 +105,7 @@
   </div>
 </section>
 {%- if weiter %}
-<a class="btn btn-sm" href="/tasks?{{ weiterlink(filter, weiter) }}">Weitere</a>
+<a class="btn btn-sm" href="/tasks?{{ weiterlink(filter, weiter, seit) }}">Weitere</a>
 {%- endif %}
 {%- else %}
 {% with titel=leer_titel, ursache=leer_ursache %}{% include "leerzustand.html" %}{% endwith %}

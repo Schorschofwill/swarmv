@@ -13,7 +13,10 @@
   <main class="signin-card card">
     <h1 class="signin-title">swarmq</h1>
     {%- if fehler %}
-    <p class="tag is-fail"><span class="tag-dot"></span> {{ fehler }}</p>
+    {#- ``.notice.is-fail`` statt ``.tag``: eine Zustandsmarke ist 21 px hoch
+        und fuer **ein Wort** gemacht; ein Satz laeuft aus ihr heraus.
+        ``role="alert"`` sagt es einem Vorleseprogramm sofort. -#}
+    <p class="notice is-fail" role="alert"><span class="tag-dot"></span> {{ fehler }}</p>
     {%- endif %}
     <form method="post" action="/login">
       <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">

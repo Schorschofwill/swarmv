@@ -25,7 +25,7 @@ from argon2 import PasswordHasher
 from litestar import Litestar, Request, get
 from litestar.channels import ChannelsPlugin
 from litestar.channels.backends.memory import MemoryChannelsBackend
-from litestar.exceptions import NotAuthorizedException
+from litestar.exceptions import HTTPException, NotAuthorizedException
 from litestar.exceptions.responses import create_exception_response
 from litestar.middleware.session.server_side import ServerSideSessionConfig
 from litestar.response import Redirect, Response
@@ -65,7 +65,7 @@ from swarmq_dashboard.web.routes.login import login, login_form, logout
 from swarmq_dashboard.web.routes.tasks import cancel, detail, liste
 from swarmq_dashboard.web.routes.worker import entfernen, uebersicht
 from swarmq_dashboard.web.stream import LIVE_CHANNEL, LivePublisher, live
-from swarmq_dashboard.web.templates import statische_dateien, template_config
+from swarmq_dashboard.web.templates import render, statische_dateien, template_config
 
 #: Name, unter dem der Sitzungsspeicher registriert wird.
 SESSION_STORE_NAME = "sessions"
@@ -842,8 +842,27 @@ def create_app(
             return Redirect("/login", status_code=HTTP_303_SEE_OTHER)
         return create_exception_response(request, exc)
 
+    def fehlerseite(request: Request[Any, Any, Any],
+                    exc: HTTPException) -> Response[Any]:
+        """Ein Fehler, der wie das Dashboard aussieht -- fuer Menschen.
+
+        Rohes JSON ist fuer ein Programm richtig und fuer einen Browser eine
+        Sackgasse. Wer einer Kennung aus einem Ticket folgt, deren Task aus
+        der Aufbewahrung gefallen ist, trifft den 404 im **Normalfall**.
+        """
+        if "text/html" not in request.headers.get("accept", ""):
+            return create_exception_response(request, exc)
+        titel = {404: "Nicht gefunden", 403: "Nicht erlaubt",
+                 405: "So nicht erreichbar"}.get(exc.status_code, "Etwas ging schief")
+        return Response(
+            content=render("fehler.html", code=exc.status_code, titel=titel,
+                           detail=exc.detail or titel),
+            media_type="text/html", status_code=exc.status_code,
+        )
+
     return Litestar(
-        exception_handlers={NotAuthorizedException: zur_anmeldung},
+        exception_handlers={NotAuthorizedException: zur_anmeldung,
+                            HTTPException: fehlerseite},
         route_handlers=[zustand, login_form, login, logout, live, liste, detail,
                         cancel, uebersicht, entfernen, dlq_uebersicht, sichten,
                         wiedereinreihen, alle_wiedereinreihen, leeren,

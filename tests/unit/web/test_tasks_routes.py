@@ -690,3 +690,43 @@ async def test_eine_kennung_mit_raute_bleibt_anklickbar(tmp_path: Path) -> None:
         assert "reports.build" in antwort.text
     finally:
         await c.__aexit__(None, None, None)
+
+
+async def test_der_zeitraum_ueberlebt_das_blaettern(tmp_path: Path) -> None:
+    """Sonst sucht man ab Seite zwei in einem anderen Zeitraum als gewaehlt.
+
+    Gemessen vor der Korrektur: Seite 1 mit "letzter Tag" zeigte 50 Zeilen
+    von heute, Seite 2 lieferte 20 von vor fuenf Tagen -- und die Leiste
+    stellte sich wieder auf "beliebig". Der Stufe-D-Review hatte das schon
+    gemeldet; beim Bau des Zeitraumfilters habe ich die Uebergabe nicht
+    nachgezogen.
+    """
+    config = _config(tmp_path)
+    jetzt = time.time()
+    w = DirectoryWriter(connect(config.directory_file))
+    w.apply([(f"{i}000-0", Event(
+        type="task_enqueue", ts=jetzt - (0 if i < 60 else 5 * 86400) - i,
+        source="app", origin=Origin.ENQUEUE,
+        payload={"task_id": f"{'neu' if i < 60 else 'alt'}{i:03d}",
+                 "task_name": "x", "queue": "reports", "args": [], "kwargs": {}}))
+        for i in range(80)])
+    w._con.execute("insert into progress(key, value) values ('rebuild_done','1') "
+                   "on conflict(key) do nothing")
+    w._con.commit()
+    w.close()
+
+    c = await _angemeldet(config)
+    try:
+        erste = (await c.get("/tasks?seit=1")).text
+        verweis = re.search(r'href="/tasks\?([^"]+)"', erste)
+        assert verweis, "kein Weiter-Verweis"
+        assert "seit=1" in verweis.group(1), (
+            f"der Zeitraum fehlt im Weiter-Verweis: {verweis.group(1)}"
+        )
+        zweite = (await c.get("/tasks?" + verweis.group(1).replace("&amp;", "&"))).text
+        assert "alt0" not in zweite, "Seite zwei zeigt Zeilen ausserhalb des Zeitraums"
+        assert 'value="1" selected' in zweite or '="1"selected' in zweite.replace(" ", ""), (
+            "die Leiste steht auf Seite zwei wieder auf 'beliebig'"
+        )
+    finally:
+        await c.__aexit__(None, None, None)

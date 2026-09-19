@@ -296,8 +296,10 @@ async def test_sichten_ohne_bestaetigung_ruehrt_nichts_an(tmp_path: Path) -> Non
     admin = FakeAdmin()
     c = await _angemeldet(config, broker=FakeBroker(), admin=admin)
     try:
+        # Post/Redirect/Get: die Abweisung steht nach der Umleitung auf der
+        # Seite, nicht in der Antwort auf das Formular.
         antwort = await c.post("/dlq/reports/peek", headers={"x-csrftoken": _merkmal(c)},
-                               follow_redirects=False)
+                               follow_redirects=True)
         assert antwort.status_code == 200
         assert "Bestätigung" in antwort.text, "die Abweisung wird nicht benannt"
         assert admin.aufrufe == [], "ohne Bestaetigung wurde gesichtet"
@@ -518,5 +520,40 @@ async def test_ohne_bekannte_queue_steht_die_ursache_da(tmp_path: Path) -> None:
         assert "nicht beantwortet" in text, (
             "die Seite laesst die leere Tabelle als Entwarnung stehen")
         assert admin.aufrufe == []
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+async def test_die_liste_bricht_nicht_stillschweigend_ab(tmp_path: Path) -> None:
+    """Neben einer Broker-Tiefe von Hunderttausenden stand eine Liste, die
+    bei fuenfzig endete -- ohne ein Wort.
+
+    Der stehende Hinweis daneben erklaert nur, warum sie **kuerzer als der
+    Broker** sein kann (Worker ohne Hook, Luecken im Strom). Dass hier
+    zusaetzlich abgeschnitten wurde, sagte nichts, und die restlichen
+    Zeilen waren ueber die Oberflaeche nicht erreichbar.
+    """
+    config = _config(tmp_path)
+    w = DirectoryWriter(connect(config.directory_file))
+    w.apply([(f"{i}000-0", Event(
+        type="task_dlq", ts=1_700_000_000.0 + i, source="phx-w1:0", origin=Origin.PICKUP,
+        payload={"task_id": f"dl{i:03d}", "task_name": "reports.build",
+                 "queue": "reports", "error": "kaputt", "duration_ms": 1.0}))
+        for i in range(120)])
+    w._con.execute("insert into progress(key, value) values ('rebuild_done','1') "
+                   "on conflict(key) do nothing")
+    w._con.commit()
+    w.close()
+
+    c = await _angemeldet(config, broker=FakeBroker(), admin=FakeAdmin())
+    try:
+        text = (await c.get("/dlq")).text
+        assert "Weitere" in text, "die Liste bricht ab, ohne es zu sagen"
+        zweite = await c.get("/dlq?cursor=" + re.search(
+            r'href="/dlq\?cursor=([^"]+)"', text).group(1))  # type: ignore[union-attr]
+        assert zweite.status_code == 200
+        assert "dl060" in zweite.text or "dl059" in zweite.text, (
+            "die zweite Seite zeigt nicht die naechsten Zeilen"
+        )
     finally:
         await c.__aexit__(None, None, None)

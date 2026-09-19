@@ -25,12 +25,13 @@ bleibt der Weg zu genau diesen Nachrichten.
 from __future__ import annotations
 
 from typing import Annotated, Any
+from urllib.parse import urlencode
 
 from litestar import Request, get, post
 from litestar.enums import RequestEncodingType
 from litestar.exceptions import NotFoundException
 from litestar.params import Body, FromPath
-from litestar.response import Template
+from litestar.response import Redirect, Template
 
 from swarmq_dashboard.directory.queries import DirectoryQueries, Filter
 from swarmq_dashboard.directory.workers import WorkerRegistry
@@ -75,6 +76,22 @@ def _queues(request: Request[Any, Any, Any]) -> list[str]:
     return WorkerRegistry(schreiber._con).known_queues()
 
 
+def _zurueck(queue: str, meldung: str, *, gesichtet: str = "") -> Redirect:
+    """Nach einer Handlung umleiten (Post/Redirect/Get).
+
+    Die Antwort unmittelbar zu rendern hinterliess die Handlungsadresse in
+    der Adresszeile. Drei Folgen, alle gemessen: F5 loest "Formular erneut
+    senden?" aus und reiht ein zweites Mal um; ``live.js`` frischt mit einem
+    ``GET`` auf eine reine ``POST``-Route auf und bekommt 405, womit die
+    Live-Ansicht stillsteht, ohne es zu sagen; und die Adresse ins Ticket
+    kopiert ergibt beim Gegenueber eine Fehlerseite.
+    """
+    teile = {"meldung": meldung}
+    if gesichtet:
+        teile["gesichtet"] = gesichtet
+    return Redirect(f"/dlq?{urlencode(teile)}", status_code=303)
+
+
 async def _seite(
     request: Request[Any, Any, Any],
     *,
@@ -91,9 +108,20 @@ async def _seite(
     umsonst bezahlt zu haben.
     """
     services = request.app.state.services
+    if not meldung:
+        meldung = request.query_params.get("meldung", "")
+    if gesichtet is None and (q := request.query_params.get("gesichtet")):
+        gesichtet = services.dlq.hole_sichtung(q)
     queues = _queues(request)
     stats = await services.queue_stats(queues)
-    seite = _abfragen(request).search(Filter(status=DLQ_STATUS))
+    # Mit Anschlussmarke: die Liste bricht bei ``DEFAULT_LIMIT`` ab, und das
+    # ohne ein Wort zu sagen war eine stille Falschaussage -- neben einer
+    # Broker-Tiefe von 123 470 stand eine Liste, die bei 50 endete. Der
+    # stehende Hinweis daneben erklaert nur, warum sie **kuerzer als der
+    # Broker** sein kann, nicht dass hier zusaetzlich abgeschnitten wurde.
+    seite = _abfragen(request).search(
+        Filter(status=DLQ_STATUS), cursor=request.query_params.get("cursor")
+    )
 
     zeilen = [
         {
@@ -108,6 +136,7 @@ async def _seite(
         context={
             "queues": zeilen,
             "tasks": seite.rows,
+            "weiter": seite.next_cursor,
             "hinweis": seite.note,
             "meldung": meldung,
             "gesichtet": gesichtet,
@@ -207,30 +236,30 @@ async def sichten(
     request: Request[Any, Any, Any],
     queue: FromPath[str],
     data: Annotated[dict[str, Any], Body(media_type=RequestEncodingType.URL_ENCODED)],
-) -> Template:
+) -> Redirect:
     """Ausdrueckliches Sichten (R28a).
 
     Die Bestaetigung im Formular ist kein Zierrat: die Wirkung ist zu gross
     fuer einen Fehlklick, und ein Knopf allein ist ein Fehlklick.
     """
     if str(data.get("bestaetigt", "")) != "sichten":
-        return await _seite(
-            request,
-            meldung="Nicht gesichtet: die Bestätigung fehlte. " + SICHT_WARNUNG,
-        )
+        return _zurueck(queue, "Nicht gesichtet: die Bestätigung fehlte. "
+                        + SICHT_WARNUNG)
+    dienst = request.app.state.services.dlq
     try:
-        ergebnis = await request.app.state.services.dlq.peek(queue)
+        ergebnis = await dienst.peek(queue)
     except DlqBusy as exc:
         # Kein Fehler, sondern eine Auskunft: jemand anderes ist schon dabei,
         # und ein zweiter Durchlauf wuerde dieselben Nachrichten doppelt
         # umreihen.
-        return await _seite(request, meldung=str(exc))
+        return _zurueck(queue, str(exc))
     await _vermerken(
         request, queue,
         f"gesichtet, {ergebnis.gelesen} Nachrichten gelesen und umgereiht"
         if not ergebnis.error else f"Sichten fehlgeschlagen: {ergebnis.error}",
     )
-    return await _seite(request, gesichtet=ergebnis)
+    dienst.merke_sichtung(ergebnis)
+    return _zurueck(queue, "", gesichtet=queue)
 
 
 @post("/dlq/{queue:str}/requeue")
@@ -238,26 +267,26 @@ async def wiedereinreihen(
     request: Request[Any, Any, Any],
     queue: FromPath[str],
     data: Annotated[dict[str, Any], Body(media_type=RequestEncodingType.URL_ENCODED)],
-) -> Template:
+) -> Redirect:
     """Eine einzelne Nachricht zurueck in die Arbeits-Queue (R29)."""
     task_id = str(data.get("task_id", "")).strip()
     if not task_id:
-        return await _seite(request, meldung="Nicht eingereiht: es fehlte die Kennung.")
+        return _zurueck(queue, "Nicht eingereiht: es fehlte die Kennung.")
     ergebnis = await request.app.state.services.dlq.requeue(queue, task_id)
     bericht = _bericht(ergebnis, f"Wiedereinreihen von {task_id}")
     await _vermerken(request, queue, bericht)
-    return await _seite(request, meldung=bericht)
+    return _zurueck(queue, bericht)
 
 
 @post("/dlq/{queue:str}/requeue-all")
 async def alle_wiedereinreihen(
     request: Request[Any, Any, Any], queue: FromPath[str]
-) -> Template:
+) -> Redirect:
     """Alles zurueck in die Arbeits-Queue (R29)."""
     ergebnis = await request.app.state.services.dlq.requeue_all(queue)
     bericht = _bericht(ergebnis, "Wiedereinreihen aller Nachrichten")
     await _vermerken(request, queue, bericht)
-    return await _seite(request, meldung=bericht)
+    return _zurueck(queue, bericht)
 
 
 @post("/dlq/{queue:str}/purge")
@@ -265,7 +294,7 @@ async def leeren(
     request: Request[Any, Any, Any],
     queue: FromPath[str],
     data: Annotated[dict[str, Any], Body(media_type=RequestEncodingType.URL_ENCODED)],
-) -> Template:
+) -> Redirect:
     """Die Dead-Letter-Queue leeren (R30).
 
     Die einzige Handlung im Dashboard, die Daten endgültig vernichtet. Sie
@@ -275,13 +304,11 @@ async def leeren(
     try:
         erwartet = int(str(data.get("erwartet", "")).strip())
     except ValueError:
-        return await _seite(
-            request, meldung="Nicht geleert: die Zahl war keine Zahl.",
-        )
+        return _zurueck(queue, "Nicht geleert: die Zahl war keine Zahl.")
     ergebnis = await request.app.state.services.dlq.purge(
         queue, bestaetigung=str(data.get("bestaetigung", "")), erwartet=erwartet,
     )
     bericht = (f"Leeren abgewiesen: {ergebnis.error}" if ergebnis.error
                else f"Geleert: {ergebnis.moved} Nachrichten endgültig entfernt.")
     await _vermerken(request, queue, bericht)
-    return await _seite(request, meldung=bericht)
+    return _zurueck(queue, bericht)

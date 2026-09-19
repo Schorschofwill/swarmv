@@ -34,6 +34,8 @@ from swarmq_dashboard.web.templates import render
 #: Unterscheidung waere dieselbe Aufzaehlung, die die Pruefung in
 #: ``accounts`` mit gleichen Antwortzeiten verhindert (R22).
 LOGIN_FAILED = "Konto oder Passwort stimmt nicht."
+#: Abgelaufenes Formular -- eigener Satz, weil der Weg ein anderer ist.
+CSRF_ABGELAUFEN = "Das Anmeldeformular ist abgelaufen. Bitte neu laden."
 
 
 def _herkunft(request: Request[Any, Any, Any]) -> str:
@@ -87,6 +89,29 @@ def login_form(request: Request[Any, Any, Any]) -> Response[str]:
     )
 
 
+def _anmeldeseite(request: Request[Any, Any, Any], fehler: str, *,
+                  status: int) -> Response[str]:
+    """Die Anmeldeseite **mit** dem Fehler -- nicht ein nackter Satz.
+
+    Vorher kam hier eine Antwort aus 33 Bytes ``text/plain``: kein
+    ``<html>``, keine Sprache, kein Titel, kein Formular, kein Weg zurueck.
+    Wer sich im Vorfall vertippt, landete auf einer weissen Seite und musste
+    die Zurueck-Taste finden. Der Fehlerzweig der Vorlage war die ganze Zeit
+    da und unerreichbar.
+
+    Das Merkmal wird dabei **nicht** erneuert: sonst passte das Cookie des
+    zweiten Versuchs nicht mehr zum Formular des ersten.
+    """
+    vorhanden = request.cookies.get(CSRF_COOKIE) or ""
+    merkmal = vorhanden if vorhanden else new_csrf_token()
+    return Response(
+        content=render("anmeldung.html", csrf_token=merkmal, fehler=fehler),
+        media_type="text/html",
+        status_code=status,
+        cookies=[_merkmal_cookie(merkmal, secure=_sicher(request))],
+    )
+
+
 def _sicher(request: Request[Any, Any, Any]) -> bool:
     """Ob die Cookies ``Secure`` tragen -- dieselbe Einstellung wie die
     Sitzung. Vorgabe ist ``True``; nur ``serve --insecure-http`` senkt sie."""
@@ -136,8 +161,7 @@ async def login(
     aus_dem_feld = data.get(CSRF_FIELD) or ""
     aus_dem_cookie = request.cookies.get(CSRF_COOKIE) or ""
     if not aus_dem_feld or not gleich(aus_dem_feld, aus_dem_cookie):
-        return Response(content="Das Anmeldeformular ist abgelaufen. Bitte neu laden.",
-                        media_type="text/plain", status_code=403)
+        return _anmeldeseite(request, CSRF_ABGELAUFEN, status=403)
 
     konto = normalisierter_kontoname(data.get("account") or "")
     passwort = data.get("password") or ""
@@ -179,7 +203,7 @@ async def login(
     # R22: "der Betreiber sieht Fehlanmeldungen im Audit". Festgehalten wird
     # der **versuchte** Kontoname -- er ist die Spur, die den Angriff zeigt.
     await services.audit.record("login", account=konto, target=herkunft, outcome="abgewiesen")
-    return Response(content=LOGIN_FAILED, media_type="text/plain", status_code=401)
+    return _anmeldeseite(request, LOGIN_FAILED, status=401)
 
 
 @post("/logout")

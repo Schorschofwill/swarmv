@@ -158,6 +158,15 @@
       {%- endfor %}
     </tbody>
   </table>
+  </div>
+  {%- if weiter %}
+  {#- Ohne diesen Fuss endete die Liste bei fuenfzig, ohne es zu sagen. -#}
+  <div class="card-foot">
+    <span>{{ tasks|length }} Zeilen — es sind mehr.</span>
+    <div class="grow"></div>
+    <a class="btn" href="/dlq?cursor={{ weiter|urlencode }}">Weitere</a>
+  </div>
+  {%- endif %}
   {%- else %}
   {% with titel=leer_titel, ursache=leer_ursache %}{% include "leerzustand.html" %}{% endwith %}
   {%- endif %}

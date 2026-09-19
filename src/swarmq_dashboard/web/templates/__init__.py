@@ -120,7 +120,7 @@ def zustandsart(status: str | None) -> str:
     return _ZUSTANDSART.get(status or "", "is-idle")
 
 
-def weiterlink(f: object, cursor: str) -> str:
+def weiterlink(f: object, cursor: str, seit: str = "") -> str:
     """Die Adresszeile fuer die naechste Seite, mit allen Filtern."""
     from urllib.parse import urlencode
 
@@ -129,6 +129,12 @@ def weiterlink(f: object, cursor: str) -> str:
         "status": getattr(f, "status", ""),
         "task_name": getattr(f, "task_name", ""),
         "worker_id": getattr(f, "worker_id", ""),
+        # **Der Zeitraum muss mit.** Ohne ihn zeigte Seite zwei einer auf
+        # "letzter Tag" eingeschraenkten Suche Zeilen von vor fuenf Tagen,
+        # und die Leiste stellte sich wieder auf "beliebig" -- wer blaettert,
+        # sucht ab Seite zwei in einem anderen Zeitraum, als er gewaehlt hat,
+        # und merkt es nicht.
+        "seit": seit,
         "cursor": cursor,
     }
     return urlencode({k: v for k, v in teile.items() if v})

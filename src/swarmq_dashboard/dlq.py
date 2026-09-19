@@ -22,6 +22,7 @@ der Dauerzustand der Seite; das Sichten ist die Ausnahme.
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -96,9 +97,37 @@ class DlqService:
     niemand mehr.
     """
 
+    #: Wie lange eine Sichtung nach der Umleitung noch abzuholen ist.
+    SICHTUNG_FRIST_S = 300.0
+
     def __init__(self, admin: DlqAdmin) -> None:
         self._admin = admin
         self._riegel: dict[str, asyncio.Lock] = {}
+        #: Die letzte Sichtung je Queue -- kurz, im Prozess, einmal abholbar.
+        #:
+        #: Sie muss irgendwo liegen, weil die Handlung jetzt umleitet
+        #: (Post/Redirect/Get): sonst stuende die Handlungsadresse in der
+        #: Adresszeile, F5 reihte ein zweites Mal um, und die Live-Ansicht
+        #: liefe mit einem ``GET`` auf eine reine ``POST``-Route.
+        #:
+        #: **Nicht** in der Sitzung: die liegt in der Kontendatei, und dort
+        #: hat nichts zu suchen, was aus Nachrichten stammt. Hier steht
+        #: ohnehin nur Kennung, Name, Queue und Groesse -- keine Argumente.
+        self._sichtungen: dict[str, tuple[float, PeekResult]] = {}
+
+    def merke_sichtung(self, ergebnis: PeekResult) -> None:
+        self._sichtungen[ergebnis.queue] = (time.monotonic(), ergebnis)
+
+    def hole_sichtung(self, queue: str) -> PeekResult | None:
+        """Einmal abholen. Danach ist sie weg -- ein Neuladen zeigt sie
+        nicht noch einmal, denn sie beschreibt einen vergangenen Augenblick."""
+        eintrag = self._sichtungen.pop(queue, None)
+        if eintrag is None:
+            return None
+        wann, ergebnis = eintrag
+        if time.monotonic() - wann > self.SICHTUNG_FRIST_S:
+            return None
+        return ergebnis
 
     def _lock(self, queue: str) -> asyncio.Lock:
         """Ein Riegel **je Queue**, nicht einer fuer alles: zwei Teams duerfen

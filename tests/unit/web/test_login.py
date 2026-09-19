@@ -653,7 +653,11 @@ async def test_der_fehlschlag_sagt_nicht_woran_es_lag(tmp_path: Path) -> None:
             a = await _anmelden(c, konto=konto, passwort=passwort)
             antworten.append((a.status_code, a.text))
     codes = {c for c, _ in antworten}
-    texte = {t for _, t in antworten}
+    # Das Merkmal ist je Antwort zufaellig -- das verraet nichts ueber das
+    # Konto und muss darum aus dem Vergleich heraus. Alles andere muss
+    # zeichengleich sein: ein Unterschied waere die Auskunft, welche Konten
+    # es gibt und welche gesperrt sind.
+    texte = {re.sub(r'value="[^"]*"', 'value="X"', t) for _, t in antworten}
     assert codes == {401}, f"verschiedene Statuscodes: {codes}"
     assert len(texte) == 1, f"verschiedene Antworttexte: {texte}"
     assert "gibt" not in texte.pop().lower().replace("stimmt", ""), "der Text nennt den Grund"
