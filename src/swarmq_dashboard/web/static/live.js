@@ -27,7 +27,16 @@
     offen = null;
     if (document.hidden) return;          /* ein verdeckter Reiter holt nichts */
     if (!window.htmx) { location.reload(); return; }
-    window.htmx.ajax("GET", location.href, { target: "body", swap: "morph" });
+    /* **innerHTML**, nicht outerHTML. "morph" allein bedeutet bei Idiomorph
+       morphStyle:"outerHTML" -- das Ziel wird *ersetzt*. Ziel ist <body>,
+       und HTMX streift beim Zerlegen der Antwort die <head>/<body>-Huelle
+       ab: nach dem ersten Ereignis gab es kein <body> mehr. Damit fiel die
+       ganze Schale weg (sie haengt an body), document.body war null, und
+       jedes weitere Ereignis warf -- die Seite zeigte fuer immer den alten
+       Stand und sah dabei aktuell aus. In einem echten Browser gemessen. */
+    window.htmx.ajax("GET", location.href, {
+      target: "body", swap: "morph:innerHTML",
+    });
   }
 
   function anstossen() {

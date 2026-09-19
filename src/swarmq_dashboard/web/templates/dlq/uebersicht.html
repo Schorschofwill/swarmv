@@ -22,14 +22,19 @@
       {%- for z in queues %}
       <tr>
         <td class="mono">{{ z.queue }}</td>
-        <td class="mono">
+        <td class="mono right">
           {%- if z.stats and z.stats.error %}
           {#- Niemals eine Null, wo eine Auskunft fehlt: eine Null laese sich
               als "keine gescheiterte Arbeit" -- die gefaehrlichste stille
               Falschaussage dieser Seite. -#}
-          <span class="tag is-fail"><span class="tag-dot"></span>
-            unbekannt: {{ z.stats.error }}</span>
-          {%- else %}{{ z.stats.dead_letter if z.stats else 0 }}
+          <span class="tag is-fail" title="{{ z.stats.error }}">
+            <span class="tag-dot"></span> unbekannt</span>
+          {%- elif z.stats and z.stats.exists %}{{ z.stats.dead_letter }}
+          {%- else %}
+          {#- Weder Fehler noch vorhanden: nie gemessen. Die Zeile sagte hier
+              "0" und der Knopf daneben "Zahl unbekannt" -- ein Widerspruch
+              in einer einzigen Zeile. -#}
+          <span class="dim">nicht gemessen</span>
           {%- endif %}
         </td>
         <td class="actions">
@@ -60,7 +65,7 @@
           <form method="post" action="/dlq/{{ z.queue|urlencode }}/purge">
             <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
             <input type="hidden" name="bestaetigung" value="{{ z.queue }}">
-            {%- if z.stats and not z.stats.error %}
+            {%- if z.stats and z.stats.exists and not z.stats.error %}
             <input type="hidden" name="erwartet" value="{{ z.stats.dead_letter }}">
             <button class="btn btn-destructive">
               {{ z.stats.dead_letter }} Nachrichten in {{ z.queue }}.XQ endgültig löschen
@@ -143,11 +148,11 @@
     <tbody>
       {%- for z in tasks %}
       <tr>
-        <td class="mono trunc"><a href="/tasks/{{ z['task_id']|urlencode }}">{{ z['task_id'] }}</a></td>
+        <td class="mono"><a class="trunc" href="/tasks/{{ z['task_id']|urlencode }}">{{ z['task_id'] }}</a></td>
         <td class="mono">{{ z['task_name'] or '--' }}</td>
         <td class="mono">{{ z['queue'] or '--' }}</td>
-        <td class="mono args trunc">{{ z['args_text'] or '--' }}</td>
-        <td class="mono args trunc">{{ z['error'] or '--' }}</td>
+        <td class="mono"><span class="args trunc">{{ z['args_text'] or '--' }}</span></td>
+        <td class="mono"><span class="args trunc">{{ z['error'] or '--' }}</span></td>
         <td class="mono">{{ zeitpunkt(z['last_seen_at']) }}</td>
       </tr>
       {%- endfor %}

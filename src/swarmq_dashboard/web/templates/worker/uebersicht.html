@@ -117,8 +117,17 @@
         <td colspan="3"><span class="tag is-fail"><span class="tag-dot"></span>
           nicht abgefragt: {{ q.stats.error }}</span></td>
         {%- else %}
-        <td class="mono num">{{ q.stats.depth }}</td>
-        <td class="mono num">{{ q.stats.consumers }}</td>
+        {#- ``exists=False`` traegt keinen Fehlgrund und ist trotzdem keine
+            Messung: die Queue gibt es am Broker nicht, oder ihr Name wurde
+            oertlich abgelehnt. Als Null erschien sie bisher als "kein
+            Rueckstau" -- waehrend die Gruppenzeile drei Zeilen hoeher
+            "nicht gemessen" sagte. -#}
+        {%- if q.stats.exists %}
+        <td class="mono num right">{{ q.stats.depth }}</td>
+        <td class="mono num right">{{ q.stats.consumers }}</td>
+        {%- else %}
+        <td class="dim" colspan="2">nicht gemessen: am Broker nicht vorhanden</td>
+        {%- endif %}
         <td>
           {%- if q.ohne_hook %}
           <span class="tag is-wait"><span class="tag-dot"></span>

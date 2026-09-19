@@ -88,11 +88,11 @@
             unvollständig</div>
           {%- endif %}
         </td>
-        <td class="mono trunc"><a href="/tasks/{{ z['task_id']|urlencode }}">{{ z['task_id'] }}</a></td>
+        <td class="mono"><a class="trunc" href="/tasks/{{ z['task_id']|urlencode }}">{{ z['task_id'] }}</a></td>
         <td class="mono">{{ z['task_name'] or '--' }}</td>
         <td class="mono">{{ z['queue'] or '--' }}</td>
-        <td class="mono args trunc">{{ z['args_text'] or '--' }}</td>
-        <td class="mono trunc">{{ z['worker_id'] or '--' }}</td>
+        <td class="mono"><span class="args trunc">{{ z['args_text'] or '--' }}</span></td>
+        <td class="mono"><span class="trunc">{{ z['worker_id'] or '--' }}</span></td>
         <td class="mono">
           {%- if z['enqueued_at'] %}{{ zeitpunkt(z['enqueued_at']) }}
           {%- else %}<span class="dim" title="{{ herkunft_hinweis }}">erst beim Aufgreifen</span>

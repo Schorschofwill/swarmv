@@ -78,7 +78,7 @@ class FakeBroker:
 
     async def stats_many(self, queues: list[str]) -> dict[str, QueueStats]:
         self.gefragt = list(queues)
-        return {q: self.stats.get(q, QueueStats(queue=q)) for q in queues}
+        return {q: self.stats.get(q, QueueStats(queue=q, exists=True)) for q in queues}
 
 
 class FakeAdmin:
@@ -185,7 +185,8 @@ def _tiefenzelle(html: str, queue: str) -> str:
     """
     zeile = html[html.find(f'<td class="mono">{queue}</td>'):]
     assert zeile, f"keine Zeile fuer {queue}"
-    naechste = zeile.find('<td class="mono">', 1)
+    naechste = zeile.find('<td class="mono right">', 1)
+    assert naechste > 0, f"keine Tiefenzelle fuer {queue}"
     return " ".join(zeile[naechste:zeile.find("</td>", naechste)].split())
 
 

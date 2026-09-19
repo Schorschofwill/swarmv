@@ -283,7 +283,7 @@ class StummerBroker:
     async def close(self) -> None: ...
 
     async def stats_many(self, queues: list[str]) -> dict[str, QueueStats]:
-        return {q: self.stats.get(q, QueueStats(queue=q)) for q in queues}
+        return {q: self.stats.get(q, QueueStats(queue=q, exists=True)) for q in queues}
 
 
 def _verzeichnis(config: DashboardConfig) -> None:
