@@ -14,8 +14,22 @@
   "use strict";
   if (!window.EventSource) return;
 
+  /* Global, weil die Morph-Erweiterung ihren Einstellungsteil als Ausdruck
+     auswertet und nur an ``window`` herankommt. */
+  window.__sqdBewahreEingabe = function (alt) {
+    if (!alt || !alt.tagName) return true;
+    var art = alt.tagName;
+    if (art !== "INPUT" && art !== "SELECT" && art !== "TEXTAREA") return true;
+    if (alt.type === "hidden") return true;          /* Merkmal muss mit */
+    if (alt === document.activeElement) return false;
+    if (art === "SELECT") return alt.selectedIndex !== alt.__sqdStart;
+    return alt.value !== alt.defaultValue;
+  };
+
   var quelle = new EventSource("/live");
   var offen = null;
+  var laeuft = false;
+  var verpasst = false;
   /* Ein Vorfall erzeugt Ereignisse im Dutzend. Ohne Sammelfrist holte die
      Seite fuer jedes einzelne den vollen Stand -- der Bildschirm eines
      Teammitglieds waere dann die Last, die den Dienst umwirft. */
@@ -25,7 +39,7 @@
 
   function nachholen() {
     offen = null;
-    if (document.hidden) return;          /* ein verdeckter Reiter holt nichts */
+    if (document.hidden) { verpasst = true; return; }
     if (!window.htmx) { location.reload(); return; }
     /* **innerHTML**, nicht outerHTML. "morph" allein bedeutet bei Idiomorph
        morphStyle:"outerHTML" -- das Ziel wird *ersetzt*. Ziel ist <body>,
@@ -34,31 +48,46 @@
        ganze Schale weg (sie haengt an body), document.body war null, und
        jedes weitere Ereignis warf -- die Seite zeigte fuer immer den alten
        Stand und sah dabei aktuell aus. In einem echten Browser gemessen. */
-    window.htmx.ajax("GET", location.href, {
-      target: "body", swap: "morph:innerHTML",
-    });
+    laeuft = true;
+    var fertig = function () { laeuft = false; };
+    try {
+      var zusage = window.htmx.ajax("GET", location.href, {
+        /* Der Rueckruf haelt halbfertige Eingaben fest. Ohne ihn loeschte
+           jedes Nachladen, was gerade getippt war: Idiomorph gleicht
+           ``value`` an die Serverfassung an, und die ist leer. Wer im
+           Vorfall nach einer Kennung sucht, konnte nicht tippen -- alle
+           400 ms war das Feld wieder leer. Die Erweiterung wertet den Teil
+           nach "morph:" als Ausdruck aus, darum der Weg ueber ``window``. */
+        target: "body", swap: "morph:{morphStyle:'innerHTML',callbacks:{beforeNodeMorphed:window.__sqdBewahreEingabe}}",
+      });
+      if (zusage && zusage.then) zusage.then(fertig, fertig); else fertig();
+    } catch (e) {
+      fertig();
+    }
   }
 
   function anstossen() {
-    if (offen === null) offen = window.setTimeout(nachholen, SAMMELFRIST_MS);
+    /* ``laeuft`` verhindert **Gleichzeitigkeit**, die Frist nur die Rate.
+       Ohne ihn liefen bei anhaltendem Strom beliebig viele volle
+       Seitenabrufe nebeneinander -- gemessen bis zu acht --, und auf der
+       Startseite haengt an jedem die Broker-Abfrage im Anfrageweg. */
+    if (offen !== null || laeuft) { verpasst = true; return; }
+    offen = window.setTimeout(nachholen, SAMMELFRIST_MS);
   }
 
   /* Verlust im Rueckstau: der Teilstand waere eine Luege, also ganz neu.
-     Aber **gedrosselt** wie alles andere. Ungedrosselt gemessen: 20
-     Neuladevorgaenge in drei Sekunden fuer eine einzige Ansicht -- jeder ein
-     voller Seitenaufruf, und auf der Startseite haengt daran die
-     Broker-Abfrage im Anfrageweg. Die Ops-Oberflaeche legte damit im
-     Vorfall Last auf denselben Broker, dessen Vorfall sie zeigt. Und weil
-     die neu geladene Seite sofort wieder in derselben Lage steht, kam sie
-     gar nicht zur Ruhe.
-
-     Die Frist ist laenger als die der gewoehnlichen Ereignisse: ein
-     Neuladen kostet mehr, und ein Rueckstau loest sich nicht in 400 ms. */
+     Gedrosselt wie alles andere -- ungedrosselt gemessen: 20 Neuladevorgaenge
+     in drei Sekunden fuer eine einzige Ansicht. Und im verdeckten Reiter gar
+     nicht: acht Hintergrundreiter luden sonst bei jeder Luecke achtmal die
+     ganze Seite. */
   var neuladen_offen = null;
   quelle.addEventListener("reload", function () {
     if (neuladen_offen !== null) return;
-    neuladen_offen = window.setTimeout(function () { location.reload(); },
-                                       NEULADEN_FRIST_MS);
+    neuladen_offen = window.setTimeout(function () {
+      neuladen_offen = null;
+      if (document.hidden) { verpasst = true; return; }
+      location.reload();
+    }, NEULADEN_FRIST_MS);
   });
 
   /* Sitzung zu Ende (R32). Die Ansicht darf dann nicht stehenbleiben und
@@ -68,18 +97,45 @@
     location.assign("/login");
   });
 
-  /* Alles Uebrige ist ein Task- oder Worker-Ereignis. Der Herzschlag traegt
-     keine Aenderung und stoesst darum nichts an -- er haelt nur die
-     Verbindung offen und beweist, dass sie noch steht. */
+  /* **Alles Uebrige** stoesst an -- ausser dem Herzschlag, der keine
+     Aenderung traegt, und den beiden Arten oben.
+     Frueher stand hier eine Aufzaehlung der bekannten Arten. Sie war gegen
+     eine offene Menge gebaut und verlor: ``worker_online``,
+     ``worker_shutdown``, ``supervisor_report`` und ``scheduler_heartbeat``
+     fehlten darin, und ``onmessage`` als Auffanglinie feuerte nie, weil der
+     Server **jeder** Nachricht einen Ereignisnamen gibt. Ein Worker, der
+     hochkam oder herunterfuhr, aktualisierte die Uebersicht nicht. */
+  var STILL = { heartbeat: 1, reload: 1, session_ended: 1 };
+  var echt_dispatch = quelle.dispatchEvent.bind(quelle);
+  quelle.dispatchEvent = function (ereignis) {
+    if (ereignis && ereignis.type && !STILL[ereignis.type]) anstossen();
+    return echt_dispatch(ereignis);
+  };
   quelle.onmessage = anstossen;
-  ["task_enqueue", "task_pickup", "task_started", "task_completed",
-   "task_failed", "task_cancelled", "task_dlq", "task_expired",
-   "task_rejected", "task_retrying", "worker_heartbeat", "sqd_worker_meta",
-   "sqd_events_lost"].forEach(function (art) {
-    quelle.addEventListener(art, anstossen);
+
+  /* Ein abgerissener Kanal war im Browser unsichtbar: ``EventSource`` stellt
+     bei einem HTTP-Fehler **endgueltig** ein, die Ansicht blieb offen und
+     sah aktuell aus. Die Marken der Kopfzeile helfen nicht -- sie
+     beschreiben den Server zum Renderzeitpunkt, nicht diese Verbindung. */
+  quelle.addEventListener("error", function () {
+    if (quelle.readyState === 2) kennzeichne("Live-Verbindung abgerissen — die Seite zeigt einen alten Stand.");
+    else kennzeichne("Live-Verbindung unterbrochen — wird neu aufgebaut.");
   });
+  quelle.addEventListener("open", function () { kennzeichne(null); });
+
+  function kennzeichne(text) {
+    var stelle = document.querySelector("[data-live-zustand]");
+    if (!stelle) return;
+    stelle.textContent = text || "";
+    stelle.hidden = !text;
+  }
 
   document.addEventListener("visibilitychange", function () {
-    if (!document.hidden && offen === null) anstossen();
+    /* Nur nachholen, wenn waehrend der Verdeckung wirklich etwas kam.
+       Vorher loeste jeder Reiterwechsel einen vollen Seitenabruf aus. */
+    if (!document.hidden && verpasst && offen === null && !laeuft) {
+      verpasst = false;
+      anstossen();
+    }
   });
 })();

@@ -185,6 +185,23 @@ def sse_payload(nachricht: dict[str, Any]) -> ServerSentEventMessage:
     )
 
 
+def _letzte_kennung(request: Request[Any, Any, Any]) -> int | None:
+    """Die Folgenummer, bei der die Ansicht stehengeblieben ist.
+
+    Aus ``Last-Event-ID`` (der Browser schickt sie bei der Wiederverbindung)
+    oder aus ``?last`` fuer die erste Verbindung nach einem Neuladen. Alles,
+    was keine Zahl ist, wird verworfen -- der Wert kommt von aussen, und
+    eine unbrauchbare Angabe darf nicht dazu fuehren, dass die Ansicht
+    dauerhaft einen Verlust meldet.
+    """
+    roh = request.headers.get("last-event-id") or request.query_params.get("last") or ""
+    try:
+        wert = int(roh)
+    except (TypeError, ValueError):
+        return None
+    return wert if wert >= 0 else None
+
+
 @get("/live", opt={"no_csrf": True})
 async def live(request: Request[Any, Any, Any]) -> ServerSentEvent:
     """Der Live-Strom einer offenen Ansicht (R13, R13a, R32).
@@ -209,13 +226,24 @@ async def live(request: Request[Any, Any, Any]) -> ServerSentEvent:
         zustand = speicher.state_of(konto)
         return zustand is not None and not zustand.locked
 
+    # ``Last-Event-ID`` schickt der Browser bei jeder Wiederverbindung von
+    # selbst -- ``EventSource`` verbindet nach einem Abriss allein neu. Ohne
+    # sie begann der Strom bei der **gerade aktuellen** Folgenummer: alles,
+    # was waehrend der Trennung veroeffentlicht wurde, war weder zugestellt
+    # noch als Luecke gemeldet. Gemessen: 25 s getrennt, zwei Ereignisse
+    # still verschluckt. Der Docstring unten verspricht ausdruecklich das
+    # Gegenteil -- "gleich wo er entstand: ... oder bei einer
+    # Wiederverbindung".
+    letzte = _letzte_kennung(request)
+    start = letzte if letzte is not None else services.publisher.current_seq
+
     async def strom() -> AsyncGenerator[ServerSentEventMessage]:
         async with services.live.start_subscription([LIVE_CHANNEL]) as abo:
             async for nachricht in live_events(
                 abo,
                 heartbeat_s=DEFAULT_HEARTBEAT_S,
                 still_valid=gilt_noch,
-                start_seq=services.publisher.current_seq,
+                start_seq=start,
             ):
                 yield sse_payload(nachricht)
 
