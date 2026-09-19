@@ -128,15 +128,26 @@ async def test_reine_anwendung_schreibt_ohne_handverdrahtung(
     c = ValkeyStreamClient(stream_url)
     await c.connect()
     try:
+        # **Nach Art zaehlen, nicht nach Stromlaenge.** Die Anwendung
+        # schreibt nicht nur Einreihungen: der Scheduler von swarmq legt in
+        # unregelmaessigen Abstaenden ein ``scheduler_heartbeat`` dazu. Die
+        # erste Fassung mass die Laenge des Stroms und verlangte dann von
+        # **jedem** Eintrag die Herkunft "einreihung" -- der Test fiel damit
+        # ungefaehr jeden zehnten Lauf um, je nachdem, ob der Herzschlag in
+        # die fuenf Sekunden fiel. Ein Test, der manchmal besteht, prueft
+        # nichts (AGENTS.md).
         deadline = asyncio.get_running_loop().time() + 5.0
+        einreihungen: list[object] = []
         while asyncio.get_running_loop().time() < deadline:
-            if await c.length(STREAM) >= 3:
+            gelesen = [decode(r) for r in await c.read_all(STREAM)]
+            einreihungen = [e for e in gelesen if e.type == ENQUEUE_EVENT]
+            if len(einreihungen) >= 3:
                 break
             await asyncio.sleep(0.1)
-        n = await c.length(STREAM)
-        assert n >= 3, f"nur {n} von 3 Einreihungen erreichten den Strom"
-        gelesen = [decode(r) for r in await c.read_all(STREAM)]
-        assert all(e.origin is Origin.ENQUEUE for e in gelesen)
+        assert len(einreihungen) == 3, (
+            f"nur {len(einreihungen)} von 3 Einreihungen erreichten den Strom"
+        )
+        assert all(e.origin is Origin.ENQUEUE for e in einreihungen)
     finally:
         # Erst den Puffer beenden, dann loeschen -- sonst schreibt stop() noch
         # in einen Strom, den der Test fuer geleert haelt.
