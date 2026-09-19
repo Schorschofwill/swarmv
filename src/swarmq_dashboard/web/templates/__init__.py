@@ -72,6 +72,27 @@ def zeitpunkt(ts: float | None) -> str:
     return datetime.fromtimestamp(ts, tz=UTC).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def zahl(wert: int | None) -> str:
+    """Eine Zahl mit deutscher Tausendertrennung. ``None`` heisst "kein Wert".
+
+    ``1200`` und ``12000`` unterscheiden sich um eine Stelle, und der
+    Rueckstau einer Queue ist die Zahl, auf die im Vorfall zuerst geschaut
+    wird. "Ist das jetzt zwoelfhundert oder zwoelftausend" kostet genau dort
+    eine Sekunde.
+
+    ``None`` wird **nicht** zu ``0``: eine Null, wo eine Auskunft fehlt, ist
+    die gefaehrlichste stille Falschaussage dieser Oberflaeche.
+    """
+    if wert is None:
+        return "--"
+    if not isinstance(wert, int) or isinstance(wert, bool):
+        # ``Gruppe.belegt()`` gibt "2 von 4" zurueck, nicht 2. Ohne diese
+        # Pruefung antwortete die Worker-Seite mit 500 und einer Meldung
+        # ueber Formatangaben -- die sagt nicht, was los ist.
+        raise TypeError(f"zahl() erwartet eine ganze Zahl oder None, nicht {wert!r}")
+    return f"{wert:,}".replace(",", ".")
+
+
 def marke(name: str, zustand: dict[str, Any], strom: bool = False) -> str:
     """Eine Zustandsmarke der Kopfzeile: Punkt **und** Wort (R26).
 
@@ -80,9 +101,15 @@ def marke(name: str, zustand: dict[str, Any], strom: bool = False) -> str:
     ausdruecklich nicht "aktuell": ein stehender Strom liesse sich sonst als
     ruhiges System lesen.
     """
+    #: Ein Grund aus der Bibliothek ist englisch ("Error 111 connecting
+    #: to ..."); ein Vorleseprogramm spricht ihn sonst deutsch aus, und aus
+    #: "connecting" wird etwas, das niemand wiedererkennt. Der Zeitpunkt
+    #: daneben ist deutsch formatiert und bleibt es.
+    sprache = ""
     if not zustand.get("ok"):
         art, wort = "is-fail", _NICHT_ERREICHBAR
         grund = zustand.get("reason") or ""
+        sprache = ' lang="en"'
     elif strom and zustand.get("stale"):
         art, wort = "is-wait", _VERZOEGERT
         grund = f"zuletzt {zeitpunkt(zustand.get('last_event_at'))}"
@@ -93,7 +120,7 @@ def marke(name: str, zustand: dict[str, Any], strom: bool = False) -> str:
         art, wort = "is-ok", _ERREICHBAR
         grund = ""
 
-    zusatz = f' <span class="muted">{escape(grund)}</span>' if grund else ""
+    zusatz = f' <span class="muted"{sprache}>{escape(grund)}</span>' if grund else ""
     return Markup(
         f'<span class="tag {art}" title="{escape(name)}">'
         f'<span class="tag-dot"></span> {escape(name)}: {wort}{zusatz}</span>'
@@ -153,6 +180,7 @@ def _environment() -> Environment:
     )
     env.globals["marke"] = marke
     env.globals["zeitpunkt"] = zeitpunkt
+    env.globals["zahl"] = zahl
     env.globals["weiterlink"] = weiterlink
     env.globals["zustandsart"] = zustandsart
     env.globals["bereiche"] = BEREICHE
@@ -190,6 +218,7 @@ def _engine_callback(engine: JinjaTemplateEngine) -> None:
     engine.engine.undefined = StrictUndefined
     engine.engine.globals["marke"] = marke
     engine.engine.globals["zeitpunkt"] = zeitpunkt
+    engine.engine.globals["zahl"] = zahl
     engine.engine.globals["weiterlink"] = weiterlink
     engine.engine.globals["zustandsart"] = zustandsart
     engine.engine.globals["bereiche"] = BEREICHE

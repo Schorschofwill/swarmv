@@ -844,3 +844,57 @@ def test_gleichnamige_knoepfe_nennen_ihr_ziel() -> None:
         "mehrere Knoepfe mit demselben Namen -- welcher welche Queue "
         f"anfasst, ist nicht zu hoeren: {doppelt}"
     )
+
+
+def test_grosse_zahlen_sind_auf_einen_blick_lesbar() -> None:
+    """``1200`` und ``12000`` unterscheiden sich um eine Stelle.
+
+    Der Rueckstau einer Queue ist die Zahl, auf die im Vorfall zuerst
+    geschaut wird, und "ist das jetzt zwoelfhundert oder zwoelftausend"
+    kostet genau dort eine Sekunde. Deutsche Schreibung: Punkt als
+    Tausendertrennung.
+    """
+    from swarmq_dashboard.web.templates import zahl
+
+    assert zahl(0) == "0"
+    assert zahl(999) == "999"
+    assert zahl(1200) == "1.200"
+    assert zahl(1234567) == "1.234.567"
+    # Kein Wert ist **nicht** null: eine Null, wo eine Auskunft fehlt, ist
+    # die gefaehrlichste stille Falschaussage dieser Oberflaeche.
+    assert zahl(None) == "--"
+
+    # ``Gruppe.belegt()`` gibt "2 von 4" zurueck, nicht 2. Der erste Einbau
+    # schickte das durch ``zahl`` -- die Worker-Seite antwortete mit 500,
+    # und die Meldung sprach von Formatangaben. Wer sie liest, soll lesen,
+    # was wirklich los ist.
+    with pytest.raises(TypeError, match="ganze Zahl"):
+        zahl("2 von 4")  # type: ignore[arg-type]
+
+    class _Stats:
+        exists, error, depth, consumers, dead_letter = True, None, 12000, 3, 4200
+
+    html = render(
+        "worker/uebersicht.html", status=_zustand(), account="ops", aktiv="worker",
+        csrf_token="t", gruppen=[], queues=[{"name": "reports", "stats": _Stats(),
+                                             "ohne_hook": 0, "bekannt": True}],
+        jetzt=1_700_000_000.0, quellenname={}, ohne_kontrollkanal="K",
+        leer_titel="T", leer_ursache="U",
+    )
+    assert ">12.000<" in html, "der Rueckstau steht ungetrennt da"
+
+
+def test_fremdsprachiger_text_ist_als_solcher_ausgezeichnet() -> None:
+    """"Error 111 connecting to 127.0.0.1:1" in einer Seite mit ``lang="de"``.
+
+    Ein Vorleseprogramm spricht den Satz dann mit deutscher Aussprache --
+    aus "connecting" wird etwas, das niemand wiedererkennt. Die Gruende
+    kommen aus aio-pika und valkey und sind englisch.
+    """
+    weg = _zustand(broker={"ok": False, "reason": "Error 111 connecting to 127.0.0.1"})
+    html = render("base.html", status=weg, account="ops", aktiv="worker")
+    treffer = re.search(r'<span class="muted"[^>]*>Error 111', html)
+    assert treffer, f"der Grund steht nicht mehr in .muted: {html[:200]}"
+    assert 'lang="en"' in treffer.group(0), (
+        f"der englische Grund ist nicht ausgezeichnet: {treffer.group(0)}"
+    )

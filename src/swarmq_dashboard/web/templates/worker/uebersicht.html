@@ -21,7 +21,7 @@
         Seitenende: ohne Kontrollkanal ist er die einzige Antwort auf
         "staut es sich?" (R14 Satz 2), und die Frage entsteht hier. -#}
     {%- if g.wartend is not none %}
-    · {{ g.wartend }} wartende Nachrichten
+    · {{ zahl(g.wartend) }} wartende Nachrichten
     {%- else %}
     · wartende Nachrichten unbekannt
     {%- endif %}
@@ -75,7 +75,7 @@
             <span class="mono">({{ '%.0f'|format(w.stale_after_s) }} s)</span></div>
         </td>
         <td class="mono num right">{{ g.belegt(w) }}</td>
-        <td class="mono num right">{{ g.erledigt(w) }}</td>
+        <td class="mono num right">{{ zahl(g.erledigt(w)) }}</td>
         <td class="mono right">{{ laufzeit(w.started_at, now=jetzt) }}</td>
         <td class="mono">{{ zeitpunkt(w.last_seen_at) }}</td>
         <td>
@@ -126,15 +126,15 @@
             Rueckstau" -- waehrend die Gruppenzeile drei Zeilen hoeher
             "nicht gemessen" sagte. -#}
         {%- if q.stats.exists %}
-        <td class="mono num right">{{ q.stats.depth }}</td>
-        <td class="mono num right">{{ q.stats.consumers }}</td>
+        <td class="mono num right">{{ zahl(q.stats.depth) }}</td>
+        <td class="mono num right">{{ zahl(q.stats.consumers) }}</td>
         {%- else %}
         <td class="dim" colspan="2">nicht gemessen: am Broker nicht vorhanden</td>
         {%- endif %}
         <td>
           {%- if q.ohne_hook %}
           <span class="notice is-wait"><span class="tag-dot"></span>
-            {{ q.ohne_hook }} Konsumenten ohne Hook{% if not q.bekannt %} --
+            {{ zahl(q.ohne_hook) }} Konsumenten ohne Hook{% if not q.bekannt %} --
             der Strom kennt keinen Worker für diese Queue{% endif %}</span>
           {%- endif %}
         </td>
