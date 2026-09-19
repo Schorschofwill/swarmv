@@ -6,10 +6,10 @@
     die Bibliothek setzt nur einen Merker, und ob ein Worker ihn bemerkt,
     weiss erst der Ausgang (R12a). -#}
 {%- if hinweis == "beendet" %}
-<p class="tag is-idle"><span class="tag-dot"></span>
+<p class="notice is-idle" role="status"><span class="tag-dot"></span>
   Der Task ist bereits beendet -- eine Stornierung wäre gegenstandslos. Es wurde nichts geschrieben.</p>
 {%- elif hinweis == "backend" %}
-<p class="tag is-fail"><span class="tag-dot"></span>
+<p class="notice is-fail" role="alert"><span class="tag-dot"></span>
   Das Backend ist nicht erreichbar -- die Stornierung wurde <strong>nicht</strong> angefordert.</p>
 {%- endif %}
 
@@ -18,7 +18,7 @@
   {%- if task['cancel_requested_at'] and task['status'] not in beendet %}
   {#- "angefordert", nicht "storniert": ein rechnender Task bemerkt die
       Anforderung moeglicherweise nie (R12a). -#}
-  <p class="card-meta"><span class="tag is-wait"><span class="tag-dot"></span>
+  <p class="card-meta"><span class="notice is-wait"><span class="tag-dot"></span>
     Stornierung angefordert um {{ zeitpunkt(task['cancel_requested_at']) }} --
     ob der Task sie bemerkt, zeigt erst sein Ausgang.</span></p>
   {%- endif %}
@@ -39,10 +39,10 @@
       {%- endif %}</dd></div>
     <div><dt>Gestartet</dt><dd class="mono">{{ zeitpunkt(task['started_at']) }}</dd></div>
     <div><dt>Beendet</dt><dd class="mono">{{ zeitpunkt(task['ended_at']) }}</dd></div>
-    <div><dt>Laufzeit</dt><dd class="mono num">
+    <div><dt>Laufzeit</dt><dd class="mono">
       {%- if task['duration_ms'] %}{{ '%.0f'|format(task['duration_ms']) }} ms{% else %}--{% endif %}</dd></div>
     <div><dt>Worker</dt><dd class="mono">{{ task['worker_id'] or '--' }}</dd></div>
-    <div><dt>Wiederholungen</dt><dd class="mono num">{{ task['retry_count'] }}</dd></div>
+    <div><dt>Wiederholungen</dt><dd class="mono">{{ task['retry_count'] }}</dd></div>
     <div><dt>Herkunft</dt><dd class="mono">{{ task['origin'] }}</dd></div>
     {%- if task['error'] %}
     <div><dt>Fehler</dt><dd class="mono">{{ task['error'] }}</dd></div>
@@ -66,7 +66,7 @@
   {%- if signale %}
   <div class="card-table">
   <table>
-    <thead><tr><th>Signal</th><th>Zeitpunkt</th></tr></thead>
+    <thead><tr><th scope="col">Signal</th><th scope="col">Zeitpunkt</th></tr></thead>
     <tbody>
       {%- for s in signale %}
       <tr><td class="mono">{{ s['type'] }}</td><td class="mono">{{ zeitpunkt(s['ts']) }}</td></tr>

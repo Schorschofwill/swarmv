@@ -7,6 +7,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Anmelden · swarmq</title>
+  {% include "sinnbild.html" %}
   <link rel="stylesheet" href="/static/app.css">
 </head>
 <body class="signin">
@@ -20,12 +21,21 @@
     {%- endif %}
     <form method="post" action="/login">
       <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
-      <label class="formfield">Konto
-        <input name="account" autocomplete="username" autofocus required>
-      </label>
-      <label class="formfield">Passwort
-        <input name="password" type="password" autocomplete="current-password" required>
-      </label>
+      {#- ``.formfield`` ist der **Behaelter**, nicht die Beschriftung: die
+          Vorlage gestaltet ``.formfield > label`` und ``.formfield > input``.
+          Als ``<label class="formfield">`` griff keine der beiden Regeln --
+          "Konto" und "Passwort" standen ungestaltet als nackter Text vor
+          einem Feld ohne Breite. ``for``/``id`` statt Verschachtelung, damit
+          ein Vorleseprogramm das Paar auch dann kennt. -#}
+      <div class="formfield">
+        <label for="f-account">Konto</label>
+        <input id="f-account" name="account" autocomplete="username" autofocus required>
+      </div>
+      <div class="formfield">
+        <label for="f-password">Passwort</label>
+        <input id="f-password" name="password" type="password"
+               autocomplete="current-password" required>
+      </div>
       <button class="btn btn-primary">Anmelden</button>
     </form>
   </main>

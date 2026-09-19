@@ -26,16 +26,16 @@
     · wartende Nachrichten unbekannt
     {%- endif %}
     {%- if g.rueckstau_unvollstaendig %} ·
-    <span class="tag is-wait"><span class="tag-dot"></span>
+    <span class="notice is-wait"><span class="tag-dot"></span>
       {% if g.wartend is none %}keine Queue gemessen{% else %}unvollständig{% endif %}:
       {{ g.rueckstau_unvollstaendig|join(', ') or 'diese Gruppe kennt keine Queue' }}</span>
     {%- elif g.wartend is none %} ·
-    <span class="tag is-wait"><span class="tag-dot"></span>
+    <span class="notice is-wait"><span class="tag-dot"></span>
       diese Gruppe kennt keine Queue -- ohne Stammdaten ist kein Rückstau messbar</span>
     {%- endif %}
     · Tasks nur so weit, wie das Verzeichnis reicht
     {%- if g.eingeschraenkt %} ·
-    <span class="tag is-wait"><span class="tag-dot"></span>
+    <span class="notice is-wait"><span class="tag-dot"></span>
       eingeschränkt: für mindestens einen Worker gibt es nur das letzte Signal</span>
     {%- endif %}
   </p>
@@ -52,9 +52,9 @@
       <col style="width: 108px">
     </colgroup>
     <thead><tr>
-      <th class="right">Slot</th><th>Worker</th><th>Verbundenheit</th>
-      <th class="right">Belegt</th><th class="right">Tasks</th>
-      <th class="right">Laufzeit</th><th>Lebenszeichen</th><th>Aktion</th>
+      <th scope="col" class="right">Slot</th><th scope="col">Worker</th><th scope="col">Verbundenheit</th>
+      <th scope="col" class="right">Belegt</th><th scope="col" class="right">Tasks</th>
+      <th scope="col" class="right">Laufzeit</th><th scope="col">Lebenszeichen</th><th scope="col">Aktion</th>
     </tr></thead>
     <tbody>
       {%- for w in g.worker %}
@@ -95,7 +95,10 @@
 </section>
 {%- endfor %}
 {%- else %}
-{% with titel=leer_titel, ursache=leer_ursache %}{% include "leerzustand.html" %}{% endwith %}
+{#- Auch der Leerzustand steht in einer Karte (siehe tasks/liste.html). -#}
+<section class="card">
+  {% with titel=leer_titel, ursache=leer_ursache %}{% include "leerzustand.html" %}{% endwith %}
+</section>
 {%- endif %}
 
 {%- if queues %}
@@ -105,8 +108,8 @@
   <table>
     <colgroup><col><col style="width: 110px"><col style="width: 130px">
       <col style="width: 46%"></colgroup>
-    <thead><tr><th>Queue</th><th class="right">Wartend</th>
-      <th class="right">Konsumenten</th><th>Hinweis</th></tr></thead>
+    <thead><tr><th scope="col">Queue</th><th scope="col" class="right">Wartend</th>
+      <th scope="col" class="right">Konsumenten</th><th scope="col">Hinweis</th></tr></thead>
     <tbody>
       {%- for q in queues %}
       <tr>
@@ -114,7 +117,7 @@
         {%- if q.stats.error %}
         {#- Eine Null hier laese sich als "kein Rueckstau" -- die
             gefaehrlichste stille Falschaussage dieser Seite. -#}
-        <td colspan="3"><span class="tag is-fail"><span class="tag-dot"></span>
+        <td colspan="3"><span class="notice is-fail"><span class="tag-dot"></span>
           nicht abgefragt: {{ q.stats.error }}</span></td>
         {%- else %}
         {#- ``exists=False`` traegt keinen Fehlgrund und ist trotzdem keine
@@ -130,7 +133,7 @@
         {%- endif %}
         <td>
           {%- if q.ohne_hook %}
-          <span class="tag is-wait"><span class="tag-dot"></span>
+          <span class="notice is-wait"><span class="tag-dot"></span>
             {{ q.ohne_hook }} Konsumenten ohne Hook{% if not q.bekannt %} --
             der Strom kennt keinen Worker für diese Queue{% endif %}</span>
           {%- endif %}

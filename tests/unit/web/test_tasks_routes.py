@@ -527,7 +527,7 @@ async def test_die_liste_benennt_eine_geschnittene_luecke(tmp_path: Path) -> Non
         # ohnehin in jeder Task-Zeile, und die Spanne durfte aus dem Hinweis
         # verschwinden, ohne dass etwas kippte.
         absatz = re.search(
-            r'<p class="tag is-wait"><span class="tag-dot"></span>\s*([^<]*)', antwort.text
+            r'<p class="notice is-wait"><span class="tag-dot"></span>\s*([^<]*)', antwort.text
         )
         assert absatz, "die Luecke wird verschwiegen"
         hinweis = " ".join(absatz.group(1).split())

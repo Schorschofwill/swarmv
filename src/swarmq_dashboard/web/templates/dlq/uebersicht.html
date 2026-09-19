@@ -3,7 +3,7 @@
 {% block inhalt %}
 
 {%- if meldung %}
-<p class="tag is-wait"><span class="tag-dot"></span> {{ meldung }}</p>
+<p class="notice is-wait" role="status"><span class="tag-dot"></span> {{ meldung }}</p>
 {%- endif %}
 
 {#- Die massgebliche Zahl. Sie kommt aus der passiven Beobachtung und kostet
@@ -17,7 +17,7 @@
   <div class="card-table">
   <table>
     <colgroup><col style="width: 220px"><col style="width: 120px"><col></colgroup>
-    <thead><tr><th>Queue</th><th class="right">Dead Letter</th><th>Aktionen</th></tr></thead>
+    <thead><tr><th scope="col">Queue</th><th scope="col" class="right">Dead Letter</th><th scope="col">Aktionen</th></tr></thead>
     <tbody>
       {%- for z in queues %}
       <tr>
@@ -67,11 +67,21 @@
             <input type="hidden" name="bestaetigung" value="{{ z.queue }}">
             {%- if z.stats and z.stats.exists and not z.stats.error %}
             <input type="hidden" name="erwartet" value="{{ z.stats.dead_letter }}">
-            <button class="btn btn-destructive">
+            {#- Rot **nur**, wenn wirklich etwas dort liegt. Zwoelf
+                vollflaechig rote Knoepfe untereinander, elf davon an leeren
+                Queues, setzen die eine Regel der Gestaltung ausser Kraft:
+                wo Farbe ist, ist etwas los. Das Auge fand die eine Queue mit
+                Inhalt nicht mehr. Im Mockup ist rot ausschliesslich der
+                Knopf im Bestaetigungsdialog. -#}
+            {%- if z.stats.dead_letter %}
+            <button class="btn btn-sm btn-danger">
               {{ z.stats.dead_letter }} Nachrichten in {{ z.queue }}.XQ endgültig löschen
             </button>
             {%- else %}
-            <button class="btn btn-destructive" disabled
+            <button class="btn btn-sm" disabled>{{ z.queue }}.XQ ist leer</button>
+            {%- endif %}
+            {%- else %}
+            <button class="btn btn-sm" disabled
                     title="Solange die Tiefe unbekannt ist, lässt sich nicht bestätigen, wie viel vernichtet würde">
               {{ z.queue }}.XQ leeren -- Zahl unbekannt
             </button>
@@ -95,15 +105,15 @@
 <section class="card">
   <h2 class="card-section">Sichtung von {{ gesichtet.queue }}.XQ</h2>
   {%- if gesichtet.error %}
-  <p class="card-meta"><span class="tag is-fail"><span class="tag-dot"></span> {{ gesichtet.error }}</span></p>
+  <p class="card-meta"><span class="notice is-fail" role="alert"><span class="tag-dot"></span> {{ gesichtet.error }}</span></p>
   {%- else %}
   <p class="card-meta">{{ gesichtet.gelesen }} Nachrichten gelesen und wieder eingereiht.</p>
   <div class="card-table">
   <table>
     <colgroup><col><col style="width: 170px"><col style="width: 120px">
       <col style="width: 92px"><col style="width: 160px"></colgroup>
-    <thead><tr><th>Kennung</th><th>Name</th><th>Queue</th>
-      <th class="right">Größe</th><th>Aktion</th></tr></thead>
+    <thead><tr><th scope="col">Kennung</th><th scope="col">Name</th><th scope="col">Queue</th>
+      <th scope="col" class="right">Größe</th><th scope="col">Aktion</th></tr></thead>
     <tbody>
       {%- for e in gesichtet.entries %}
       <tr>
@@ -133,7 +143,7 @@
       fehlenden Zeile ist selbst keine Aussage. -#}
   <p class="card-meta">{{ unvollstaendig_hinweis }}</p>
   {%- if hinweis %}
-  <p class="card-meta"><span class="tag is-wait"><span class="tag-dot"></span> {{ hinweis }}</span></p>
+  <p class="card-meta"><span class="notice is-wait"><span class="tag-dot"></span> {{ hinweis }}</span></p>
   {%- endif %}
   {%- if tasks %}
   <div class="card-table">
@@ -142,8 +152,8 @@
       <col style="width: 104px"><col style="width: 26%"><col>
       <col style="width: 156px"></colgroup>
     <thead><tr>
-      <th>Kennung</th><th>Name</th><th>Queue</th><th>Argumente</th>
-      <th>Fehler</th><th>Zuletzt</th>
+      <th scope="col">Kennung</th><th scope="col">Name</th><th scope="col">Queue</th><th scope="col">Argumente</th>
+      <th scope="col">Fehler</th><th scope="col">Zuletzt</th>
     </tr></thead>
     <tbody>
       {%- for z in tasks %}

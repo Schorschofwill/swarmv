@@ -3,11 +3,20 @@
 
     Nichts wird von aussen geholt (KTD7) -- weder Schrift noch Skript. -#}
 <!doctype html>
-<html lang="de" data-theme="{{ theme|default('light') }}">
+{#- **Ohne** ``data-theme``, wenn niemand eine Fassung waehlt: das Attribut
+    stand fest auf "light" und setzte damit ``color-scheme: light`` -- jedes
+    ``light-dark()`` der Vorlage loeste auf die helle Seite auf, und die
+    gesamte dunkle Fassung war unerreichbar, auch fuer ein System, das
+    ausdruecklich dunkel angefordert hat. -#}
+<html lang="de"{% if theme is defined and theme %} data-theme="{{ theme }}"{% endif %}>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block titel %}swarmq{% endblock %} · Dashboard</title>
+  {#- Das Sinnbild im Dokument, nicht in einem fremden Netz (KTD7): ohne
+      ``rel="icon"`` fragt der Browser ``/favicon.ico`` und bekommt bei jedem
+      Aufruf eine 404 ins Zugriffsprotokoll. -#}
+  {% include "sinnbild.html" %}
   <link rel="stylesheet" href="/static/app.css">
   <script src="/static/htmx.min.js" defer></script>
   <script src="/static/idiomorph-ext.min.js" defer></script>
@@ -15,10 +24,17 @@
 </head>
 <body hx-ext="morph">
 
+  <a class="skip" href="#inhalt">Zum Inhalt springen</a>
+
   <nav class="nav">
+    {#- ``.nav-brand`` ist eine waagerechte Reihe; Wort und Unterzeile
+        brauchen einen eigenen Behaelter, sonst stehen sie nebeneinander
+        ("swarmq DASHBOARD" in einer Zeile). -#}
     <div class="nav-brand">
-      <span class="nav-word">swarmq</span>
-      <span class="nav-sub">Dashboard</span>
+      <div>
+        <div class="nav-word">swarmq</div>
+        <div class="nav-sub">Dashboard</div>
+      </div>
     </div>
     {%- for b in bereiche %}
     <a class="nav-link" href="{{ b.pfad }}"
@@ -26,6 +42,10 @@
       {{ b.titel }}
     </a>
     {%- endfor %}
+    {#- ``.nav-foot`` bringt eine Oberlinie mit und ist als Abschluss der
+        Spalte gedacht. Ohne diesen Fueller zog die Linie quer unter dem
+        letzten Verweis, mit 700 px leerer Flaeche darunter. -#}
+    <div class="grow"></div>
     <div class="nav-foot">
       <span class="mono">{{ account }}</span>
       <form method="post" action="/logout">
@@ -61,7 +81,8 @@
           Luecke von gestern bleibt trotzdem eine (R4a). -#}
       {%- if status.directory.gaps %}
       <span class="tag is-wait"><span class="tag-dot"></span>
-        {{ status.directory.gaps }} Lücke(n) im Strom</span>
+        {{ status.directory.gaps }}
+        {{- ' Lücke im Strom' if status.directory.gaps == 1 else ' Lücken im Strom' }}</span>
       {%- elif status.directory.behind %}
       <span class="tag is-wait"><span class="tag-dot"></span> Rückstand im Strom</span>
       {%- endif %}
@@ -75,16 +96,19 @@
       {%- if status.directory.dropped %}
       <span class="tag is-wait" title="Einträge aus dem Strom, die diese Fassung nicht lesen konnte">
         <span class="tag-dot"></span>
-        {{ status.directory.dropped }} Einträge nicht lesbar</span>
+        {{ status.directory.dropped }}
+        {{- ' Eintrag nicht lesbar' if status.directory.dropped == 1 else ' Einträge nicht lesbar' }}</span>
       {%- endif %}
       {%- if status.directory.rejected %}
       <span class="tag is-wait" title="Ereignisse, die das Verzeichnis nicht annahm">
         <span class="tag-dot"></span>
-        {{ status.directory.rejected }} Ereignisse abgewiesen</span>
+        {{ status.directory.rejected }}
+        {{- ' Ereignis abgewiesen' if status.directory.rejected == 1 else ' Ereignisse abgewiesen' }}</span>
       {%- endif %}
       {%- if status.audit.lost %}
       <span class="tag is-wait"><span class="tag-dot"></span>
-        {{ status.audit.lost }} Audit-Einträge verloren</span>
+        {{ status.audit.lost }}
+        {{- ' Audit-Eintrag verloren' if status.audit.lost == 1 else ' Audit-Einträge verloren' }}</span>
       {%- endif %}
       {#- Der Zustand **dieser** Verbindung, nicht der des Servers. Die drei
           Marken daneben beschreiben, was der Server beim Rendern wusste; ob
@@ -95,7 +119,7 @@
       </span>
     </header>
 
-    <main class="page">
+    <main class="page" id="inhalt" tabindex="-1">
       {% block inhalt %}{% endblock %}
     </main>
   </div>

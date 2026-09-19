@@ -541,3 +541,107 @@ async def test_statische_dateien_werden_nachgeprueft() -> None:
                 f"{pfad} traegt keine Cache-Anweisung ({steuerung!r}) -- eine "
                 "geaenderte Datei kommt dann nicht zuverlaessig an"
             )
+
+
+# --- Zyklus 6: was der Browser misst, nicht was die Vorlage behauptet ----
+
+
+def test_ein_verborgenes_element_bleibt_verborgen() -> None:
+    """``hidden`` verliert gegen jede Klasse, die ein ``display`` setzt.
+
+    Gemessen im Browser: die Marke fuer den Zustand des Live-Kanals traegt
+    ``hidden`` **und** ``.tag``. ``.tag`` setzt ``display: inline-flex``, und
+    das schlaegt die Vorgabe des Browsers fuer ``[hidden]``. Die Folge war ein
+    leeres rotes Kaestchen von 18 px in der Kopfzeile **jeder** Seite -- eine
+    Stoerungsmarke ohne Stoerung, genau die Art Falschaussage, die dieses
+    Dashboard nicht machen darf.
+    """
+    css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+    regel = re.search(r"\[hidden\]\s*\{([^}]*)\}", css)
+    assert regel, "das Stylesheet holt [hidden] nicht ein"
+    assert re.search(r"display:\s*none\s*!important", regel.group(1)), (
+        "ohne !important verliert [hidden] gegen jede Klasse mit display: "
+        f"{regel.group(1)}"
+    )
+
+    html = render("base.html", status=_zustand(), account="ops", aktiv="worker")
+    marke = re.search(r'<span class="tag[^"]*"[^>]*data-live-zustand[^>]*>', html)
+    assert marke and "hidden" in marke.group(0), (
+        "die Marke des Live-Kanals traegt kein hidden mehr -- dann prueft "
+        "dieser Test die falsche Stelle"
+    )
+
+
+def test_jede_seite_nennt_ihr_sinnbild() -> None:
+    """Ohne ``rel="icon"`` fragt der Browser ``/favicon.ico`` -- und bekommt
+    bei jedem Aufruf eine 404 im Zugriffsprotokoll. Das Sinnbild liegt im
+    Dokument, nicht in einem fremden Netz (KTD7).
+    """
+    for vorlage, kontext in (
+        ("base.html", {"status": _zustand(), "account": "ops", "aktiv": "worker"}),
+        ("anmeldung.html", {"csrf_token": "t", "fehler": ""}),
+        ("fehler.html", {"code": 404, "titel": "Nicht gefunden", "detail": "weg"}),
+    ):
+        html = render(vorlage, **kontext)
+        assert re.search(r'<link[^>]+rel="icon"', html), f"{vorlage} hat kein Sinnbild"
+
+
+def test_die_kopfzeile_zaehlt_im_singular() -> None:
+    """"1 Audit-Einträge verloren" und "1 Lücke(n)".
+
+    Eine Zahl, die man nicht liest, ohne ueber die Form zu stolpern, kostet
+    genau die Sekunde, in der man im Vorfall etwas anderes tun sollte.
+    """
+    eins = _zustand(
+        directory={"ok": True, "reason": None, "rebuilding": False, "behind": False,
+                   "gaps": 1, "rejected": 1, "dropped": 1, "erasure_pending": False,
+                   "oldest_entry": 1_700_000_000.0},
+        audit={"lost": 1},
+    )
+    html = render("base.html", status=eins, account="ops", aktiv="worker")
+    text = " ".join(re.sub(r"<[^>]+>", " ", html).split())
+    for falsch in ("1 Lücke(n)", "1 Audit-Einträge", "1 Einträge", "1 Ereignisse"):
+        assert falsch not in text, f"die Kopfzeile sagt {falsch!r}"
+    for richtig in ("1 Lücke im Strom", "1 Audit-Eintrag verloren",
+                    "1 Eintrag nicht lesbar", "1 Ereignis abgewiesen"):
+        assert richtig in text, f"{richtig!r} fehlt: {text[:400]}"
+
+    viele = _zustand(
+        directory={"ok": True, "reason": None, "rebuilding": False, "behind": False,
+                   "gaps": 2, "rejected": 2, "dropped": 2, "erasure_pending": False,
+                   "oldest_entry": 1_700_000_000.0},
+        audit={"lost": 2},
+    )
+    text = " ".join(re.sub(r"<[^>]+>", " ", render(
+        "base.html", status=viele, account="ops", aktiv="worker")).split())
+    for richtig in ("2 Lücken im Strom", "2 Audit-Einträge verloren",
+                    "2 Einträge nicht lesbar", "2 Ereignisse abgewiesen"):
+        assert richtig in text, f"{richtig!r} fehlt: {text[:400]}"
+
+
+def test_jeder_tabellenkopf_nennt_seine_richtung() -> None:
+    """``<th>`` ohne ``scope`` laesst ein Vorleseprogramm raten, ob die Zelle
+    ihre Spalte oder ihre Zeile beschreibt. Bei acht Spalten sagt es dann in
+    jeder Zelle den falschen Namen an.
+    """
+    fehlend: list[str] = []
+    for pfad in sorted(TEMPLATE_DIR.rglob("*.html")):
+        for kopf in re.findall(r"<th\b[^>]*>", pfad.read_text(encoding="utf-8")):
+            if "scope=" not in kopf:
+                fehlend.append(f"{pfad.name}: {kopf}")
+    assert not fehlend, "Tabellenkoepfe ohne scope: " + ", ".join(fehlend)
+
+
+def test_jede_seite_beginnt_mit_einem_sprungverweis() -> None:
+    """Vor dem Inhalt stehen drei Navigationsverweise und eine Kopfzeile mit
+    bis zu neun Marken. Wer mit der Tastatur arbeitet, laeuft sie auf jeder
+    Seite neu durch, bevor er die Tabelle erreicht.
+    """
+    html = render("base.html", status=_zustand(), account="ops", aktiv="worker")
+    verweis = re.search(r'<a class="skip"[^>]*href="#([^"]+)"', html)
+    assert verweis, "kein Sprungverweis"
+    assert f'id="{verweis.group(1)}"' in html, "der Sprungverweis zeigt ins Leere"
+    assert html.index(verweis.group(0)) < html.index('class="nav"'), (
+        "der Sprungverweis steht hinter der Navigation -- dann ueberspringt "
+        "er sie nicht"
+    )

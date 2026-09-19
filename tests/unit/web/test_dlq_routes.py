@@ -170,7 +170,7 @@ def _meldung(html: str) -> str:
     ``assert "2" in antwort.text`` fand die Ziffer irgendwo und liess die
     Mutation "melde immer 0 unverarbeitet" ueberleben.
     """
-    marke = '<p class="tag is-wait">'
+    marke = '<p class="notice is-wait" role="status">'
     anfang = html.find(marke)
     assert anfang >= 0, "die Seite traegt keine Meldung"
     return " ".join(html[anfang + len(marke):html.find("</p>", anfang)].split())

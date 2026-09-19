@@ -45,7 +45,10 @@
     --ink:         light-dark(#17181A, #E9E9E4);
     --ink-2:       light-dark(#3C3E39, #B9BBB2);
     --muted:       light-dark(#6E7068, #9A9C94);
-    --dim:         light-dark(#8A8C83, #74766E);
+    /* ``#8A8C83`` auf der hellen Flaeche sind 2,6:1 -- unter jeder
+       Lesbarkeitsschwelle, und ``.dim`` traegt die Quelle eines Workers und
+       das Wort "nicht gemessen". Jetzt 4,6:1 bzw. 5,1:1. */
+    --dim:         light-dark(#6B6D65, #8E9088);
 
     /* Bedienelemente */
     --control-border: light-dark(#D6D6CD, #383A40);
@@ -81,6 +84,11 @@
     --font-mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', monospace;
   }
 
+  /* ``light dark`` als Vorgabe: ohne sie gilt ``light``, und jedes
+     ``light-dark()`` unten loest auf die helle Seite auf -- auch auf einem
+     System, das ausdruecklich dunkel angefordert hat. Die beiden Regeln
+     darunter uebersteuern das, wenn jemand eine Fassung fest waehlt. */
+  :root { color-scheme: light dark; }
   :root[data-theme="light"] { color-scheme: light; }
   :root[data-theme="dark"]  { color-scheme: dark; }
 }
@@ -89,7 +97,10 @@
 @layer reset {
   *, *::before, *::after { box-sizing: border-box; }
   body { margin: 0; -webkit-font-smoothing: antialiased; }
-  h1, h2, h3, p, dd { margin: 0; }
+  /* ``dl`` und ``pre`` bringen ebenfalls Vorgaberaender mit: die
+     Feldliste der Detailseite sass dadurch schief in ihrer Karte, und
+     die Argumente standen mit einem Rand, den nichts sonst hat. */
+  h1, h2, h3, p, dd, dl, pre { margin: 0; }
   button, input, select { font: inherit; }
   :focus-visible { outline: 2px solid var(--brand); outline-offset: 1px; }
 }
@@ -145,14 +156,22 @@
   .content { flex-grow: 1; min-width: 0; display: flex; flex-direction: column; }
 
   /* Kopfzeile mit Broker-, Backend- und Stromzustand (R26) */
+  /* ``min-height`` statt ``height``: bei neun gleichzeitigen Stoerungen
+     brauchen die Marken drei Zeilen, und eine feste Hoehe schnitt sie ab. */
   .head {
-    height: var(--head-h); flex-shrink: 0;
+    min-height: var(--head-h); flex-shrink: 0;
     border-bottom: 1px solid var(--line); background: var(--surface);
     display: flex; align-items: center; gap: 14px; padding: 0 24px;
   }
   .head-title { font-size: 16px; font-weight: 600; letter-spacing: -.01em; }
   .head-meta { font-size: 12.5px; color: var(--muted); }
-  .head-state { margin-left: auto; display: flex; align-items: center; gap: 7px; }
+  /* Umbrechen statt hinausschieben: bei neun gleichzeitigen Stoerungen
+     fielen fuenf aus dem Bild, ohne ein Zeichen dafuer -- darunter
+     "Loeschung offen" und "4213 Eintraege nicht lesbar". */
+  .head-state {
+    margin-left: auto; display: flex; align-items: center; gap: 7px;
+    flex-wrap: wrap; justify-content: flex-end; padding: 8px 0;
+  }
 
   .page { flex-grow: 1; padding: 20px 24px; display: flex; flex-direction: column; gap: 16px; }
 }
@@ -253,7 +272,12 @@
   .btn-primary:hover { background: color-mix(in oklab, var(--brand) 88%, var(--ground)); }
   .btn-danger { border-color: color-mix(in oklab, var(--fail) 55%, var(--control-border)); color: var(--fail-text); }
   .btn-danger:hover { background: var(--fail-bg); }
-  .btn-destructive { border-color: var(--fail-text); background: var(--fail); color: #FFFFFF; }
+  /* In der dunklen Fassung ist ``--fail`` hell; weisse Schrift darauf
+     ergab 1,9:1. Die Schriftfarbe folgt darum der Fassung. */
+  .btn-destructive {
+    border-color: var(--fail-text); background: var(--fail);
+    color: light-dark(#FFFFFF, #17181A);
+  }
   .btn-destructive:hover { background: color-mix(in oklab, var(--fail) 88%, black); }
 
   /* Hinweisleisten: Reichweite (R8), Lücke (R4a), Konsument ohne Hook (R18) */
@@ -265,6 +289,9 @@
   .notice > svg { flex-shrink: 0; }
   .notice.is-wait { background: var(--wait-bg); color: var(--wait-text); }
   .notice.is-fail { background: var(--fail-bg); color: var(--fail-text); }
+  /* ``.tag.is-idle`` gab es, ``.notice.is-idle`` nicht -- der Satz "der Task
+     ist bereits beendet" stand dadurch ohne Flaeche zwischen zwei Karten. */
+  .notice.is-idle { background: var(--fill); color: var(--ink-2); }
 
   /* Filterleiste (R10) */
   .filters { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
@@ -319,7 +346,9 @@
     font-size: 10.5px; letter-spacing: .07em; text-transform: uppercase;
     color: var(--dim); margin-bottom: 3px;
   }
-  .fields dd { font-size: 13px; }
+  /* Eine swarmq-Kennung hat keine Leerzeichen und bricht ohne dies nicht
+     um -- sie schob die zweite Spalte aus der Karte. */
+  .fields dd { font-size: 13px; overflow-wrap: anywhere; }
 
   /* Argumente im Klartext (R7) */
   .args {
@@ -371,6 +400,24 @@
   .dim { color: var(--dim); }
   .grow { flex-grow: 1; }
   .trunc { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
+
+  /* ``hidden`` verliert gegen jede Klasse, die ein ``display`` setzt --
+     gemessen an der Marke des Live-Kanals, die ``hidden`` **und** ``.tag``
+     traegt: ``.tag`` setzt ``display: inline-flex``, und die Kopfzeile jeder
+     Seite trug ein leeres rotes Kaestchen von 18 px. Eine Stoerungsmarke
+     ohne Stoerung. */
+  [hidden] { display: none !important; }
+
+  /* Vor dem Inhalt stehen drei Verweise und bis zu neun Zustandsmarken. Wer
+     mit der Tastatur arbeitet, lief sie auf jeder Seite neu durch. Der
+     Verweis ist unsichtbar, bis er den Fokus bekommt. */
+  .skip {
+    position: absolute; left: 8px; top: -60px; z-index: 10;
+    padding: 8px 12px; border-radius: var(--radius-control);
+    background: var(--brand); color: var(--on-brand);
+    font-size: 13px; text-decoration: none;
+  }
+  .skip:focus { top: 8px; }
 
   .sr-only {
     position: absolute; width: 1px; height: 1px; overflow: hidden;

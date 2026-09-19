@@ -48,7 +48,7 @@
 <p class="notice">{{ herkunft_hinweis }}</p>
 
 {%- if hinweis %}
-<p class="tag is-wait"><span class="tag-dot"></span> {{ hinweis }}</p>
+<p class="notice is-wait"><span class="tag-dot"></span> {{ hinweis }}</p>
 {%- endif %}
 
 {%- if zeilen %}
@@ -64,8 +64,8 @@
       <col style="width: 118px"><col style="width: 156px">
     </colgroup>
     <thead><tr>
-      <th>Status</th><th>Kennung</th><th>Name</th><th>Queue</th>
-      <th>Argumente</th><th>Worker</th><th>Eingereiht</th>
+      <th scope="col">Status</th><th scope="col">Kennung</th><th scope="col">Name</th><th scope="col">Queue</th>
+      <th scope="col">Argumente</th><th scope="col">Worker</th><th scope="col">Eingereiht</th>
     </tr></thead>
     <tbody id="task-zeilen">
       {%- for z in zeilen %}
@@ -103,12 +103,26 @@
     </tbody>
   </table>
   </div>
+  {%- if weiter %}
+  {#- Der Verweis gehoert in den Kartenfuss, nicht frei unter die Karte:
+      ``.page`` ist eine senkrechte Flex-Spalte, und ein ``.btn`` darin
+      dehnte sich auf die volle Breite -- ein 1081 px breiter Balken mit dem
+      Wort "Weitere" in der Mitte. Der Fuss sagt ausserdem, dass die Liste
+      abgeschnitten ist; vorher endete sie bei fuenfzig, ohne es zu sagen. -#}
+  <div class="card-foot">
+    <span>{{ zeilen|length }} Zeilen — es sind mehr.</span>
+    <div class="grow"></div>
+    <a class="btn" href="/tasks?{{ weiterlink(filter, weiter, seit) }}">Weitere</a>
+  </div>
+  {%- endif %}
 </section>
-{%- if weiter %}
-<a class="btn btn-sm" href="/tasks?{{ weiterlink(filter, weiter, seit) }}">Weitere</a>
-{%- endif %}
 {%- else %}
-{% with titel=leer_titel, ursache=leer_ursache %}{% include "leerzustand.html" %}{% endwith %}
+{#- Auch der Leerzustand steht in einer Karte: sonst schwebt der Satz auf
+    dem Seitenhintergrund, waehrend jeder andere Inhalt der Seite eine
+    Flaeche hat. -#}
+<section class="card">
+  {% with titel=leer_titel, ursache=leer_ursache %}{% include "leerzustand.html" %}{% endwith %}
+</section>
 {%- endif %}
 
 {% endblock %}
