@@ -317,10 +317,15 @@ async def test_stop_haengt_nicht_an_unerreichbarem_strom() -> None:
         puffer.record(_ev(i))
     await puffer.start()
     await asyncio.sleep(0.05)
+    # Die Frist wird uebergeben statt abgewartet: geprueft wird, dass
+    # ``stop()`` sie **einhaelt** -- und das ist bei 0,2 s dieselbe Aussage
+    # wie bei der Vorgabe von 2 s, nur zwei Sekunden schneller. Ein
+    # ``stop()``, das den haengenden Schreibvorgang aussitzt, liefe weiterhin
+    # in die Zeitgrenze.
     t0 = time.perf_counter()
-    await asyncio.wait_for(puffer.stop(), timeout=5.0)
+    await asyncio.wait_for(puffer.stop(deadline_s=0.2), timeout=5.0)
     dauer = time.perf_counter() - t0
-    assert dauer < 3.0, f"stop() brauchte {dauer:.1f}s an einem toten Strom"
+    assert dauer < 1.0, f"stop() brauchte {dauer:.1f}s an einem toten Strom"
 
 
 async def test_stop_zaehlt_was_es_nicht_mehr_loswird() -> None:
@@ -332,7 +337,7 @@ async def test_stop_zaehlt_was_es_nicht_mehr_loswird() -> None:
     puffer = EventBuffer(capacity=100, client=Haengend(), batch=10, flush_interval=0.01)
     for i in range(50):
         puffer.record(_ev(i))
-    await asyncio.wait_for(puffer.stop(), timeout=5.0)
+    await asyncio.wait_for(puffer.stop(deadline_s=0.2), timeout=5.0)
     erhalten = len(puffer.peek()) + puffer.counters.dropped + puffer.counters.flushed
     assert erhalten >= 50, f"nur {erhalten} von 50 Ereignissen erhalten oder gezaehlt"
 

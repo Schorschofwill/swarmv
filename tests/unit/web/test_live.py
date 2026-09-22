@@ -259,8 +259,12 @@ async def test_nach_dem_neuladen_laeuft_die_folge_sauber_weiter() -> None:
             for i in range(20):
                 await sender.publish("task", {"n": i})
             await asyncio.sleep(0.2)
+            # Kurzer Herzschlag: der Rueckstau gibt nach dem Deckel nur
+            # wenige Nachrichten her, und ohne ihn sass der Test die volle
+            # Geduld von zwei Sekunden auf eine sechste Nachricht ab, die
+            # nie kam. Die Zusicherungen filtern Herzschlaege ohnehin.
             gesehen = await _sammeln(
-                live_events(abo, heartbeat_s=5.0, start_seq=beginn), 6
+                live_events(abo, heartbeat_s=0.05, start_seq=beginn), 6
             )
 
         arten = [n["kind"] for n in gesehen]
