@@ -1,0 +1,193 @@
+{% extends "base.html" %}
+{% block titel %}Dead Letter{% endblock %}
+{% block inhalt %}
+
+{%- if meldung %}
+<p class="notice is-wait" role="status"><span class="tag-dot"></span> {{ meldung }}</p>
+{%- endif %}
+
+{#- Die massgebliche Zahl. Sie kommt aus der passiven Beobachtung und kostet
+    keine Umreihung -- deshalb steht sie oben und die Sichtung darunter. -#}
+<section class="card">
+  <h2 class="card-section">Gescheiterte Arbeit je Queue</h2>
+  {%- if not queues %}
+  {% with titel="Keine Queue bekannt", ursache=queues_leer_ursache %}
+  {% include "leerzustand.html" %}{% endwith %}
+  {%- else %}
+  <div class="card-table">
+  <table>
+    <colgroup><col style="width: 220px"><col style="width: 120px"><col></colgroup>
+    <thead><tr><th scope="col">Queue</th><th scope="col" class="right">Dead Letter</th><th scope="col">Aktionen</th></tr></thead>
+    <tbody>
+      {%- for z in queues %}
+      <tr>
+        <td class="mono">{{ z.queue }}</td>
+        <td class="mono right">
+          {%- if z.stats and z.stats.error %}
+          {#- Niemals eine Null, wo eine Auskunft fehlt: eine Null laese sich
+              als "keine gescheiterte Arbeit" -- die gefaehrlichste stille
+              Falschaussage dieser Seite. -#}
+          <span class="tag is-fail" title="{{ z.stats.error }}">
+            <span class="tag-dot"></span> unbekannt</span>
+          {%- elif z.stats and z.stats.exists %}{{ zahl(z.stats.dead_letter) }}
+          {%- else %}
+          {#- Weder Fehler noch vorhanden: nie gemessen. Die Zeile sagte hier
+              "0" und der Knopf daneben "Zahl unbekannt" -- ein Widerspruch
+              in einer einzigen Zeile. -#}
+          <span class="dim">nicht gemessen</span>
+          {%- endif %}
+        </td>
+        <td class="actions">
+          {%- if z.busy %}
+          <span class="tag is-wait"><span class="tag-dot"></span>
+            wird gerade gesichtet</span>
+          {%- else %}
+          <form method="post" action="/dlq/{{ z.queue|urlencode }}/peek">
+            <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="bestaetigt" value="sichten">
+            {#- Zwoelf Knoepfe "Sichten" untereinander: wer die Seite per
+                Knopfliste abgeht -- ein Vorleseprogramm bietet genau das an
+                -- hoerte zwoelfmal dasselbe Wort. Der Zusatz steht in
+                ``.sr-only``, weil die Zeile die Frage sichtbar schon
+                beantwortet. -#}
+            <button class="btn btn-sm">Sichten<span class="sr-only">
+              -- {{ z.queue }}.XQ</span></button>
+          </form>
+          {%- endif %}
+          <form method="post" action="/dlq/{{ z.queue|urlencode }}/requeue-all">
+            <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
+            <button class="btn btn-sm">Alle wieder einreihen<span class="sr-only">
+              -- {{ z.queue }}.XQ</span></button>
+          </form>
+          {#- R30, AE12: der Knopf wiederholt Queue **und** Zahl -- und
+              nennt die Queue, die wirklich geleert wird. "in reports" waere
+              falsch: geleert wird ``reports.XQ``, und wer den Satz liest,
+              muesste glauben, dass gleich wartende Nachrichten aus der
+              Arbeits-Queue verschwinden.
+
+              Ist die Tiefe unbekannt, steht dort **keine Null**: die Null
+              neben der Zerstoer-Handlung ist die beruhigendste
+              Falschaussage der Seite. Der Knopf ist dann gesperrt, weil
+              eine Bestaetigung ohne pruefbare Zahl ohnehin nicht traegt. -#}
+          <form method="post" action="/dlq/{{ z.queue|urlencode }}/purge">
+            <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="bestaetigung" value="{{ z.queue }}">
+            {%- if z.stats and z.stats.exists and not z.stats.error %}
+            <input type="hidden" name="erwartet" value="{{ z.stats.dead_letter }}">
+            {#- Rot **nur**, wenn wirklich etwas dort liegt. Zwoelf
+                vollflaechig rote Knoepfe untereinander, elf davon an leeren
+                Queues, setzen die eine Regel der Gestaltung ausser Kraft:
+                wo Farbe ist, ist etwas los. Das Auge fand die eine Queue mit
+                Inhalt nicht mehr. Im Mockup ist rot ausschliesslich der
+                Knopf im Bestaetigungsdialog. -#}
+            {%- if z.stats.dead_letter %}
+            <button class="btn btn-sm btn-danger">
+              {{ zahl(z.stats.dead_letter) }} Nachrichten in {{ z.queue }}.XQ endgültig löschen
+            </button>
+            {%- else %}
+            <button class="btn btn-sm" disabled>{{ z.queue }}.XQ ist leer</button>
+            {%- endif %}
+            {%- else %}
+            <button class="btn btn-sm" disabled
+                    title="Solange die Tiefe unbekannt ist, lässt sich nicht bestätigen, wie viel vernichtet würde">
+              {{ z.queue }}.XQ leeren -- Zahl unbekannt
+            </button>
+            {%- endif %}
+          </form>
+        </td>
+      </tr>
+      {%- endfor %}
+    </tbody>
+  </table>
+  </div>
+  {%- endif %}
+</section>
+
+{#- Der Hinweis steht **vor** jedem Sichten, nicht danach: "non-destructive"
+    stimmt nur im Wortsinn, und wer das erst hinterher liest, hat schon
+    umgereiht (R28a). -#}
+<p class="notice">{{ sicht_warnung }}</p>
+
+{%- if gesichtet %}
+<section class="card">
+  <h2 class="card-section">Sichtung von {{ gesichtet.queue }}.XQ</h2>
+  {%- if gesichtet.error %}
+  <p class="card-meta"><span class="notice is-fail" role="alert"><span class="tag-dot"></span> {{ gesichtet.error }}</span></p>
+  {%- else %}
+  <p class="card-meta">{{ zahl(gesichtet.gelesen) }} Nachrichten gelesen und wieder eingereiht.</p>
+  <div class="card-table">
+  <table>
+    <colgroup><col><col style="width: 170px"><col style="width: 120px">
+      <col style="width: 92px"><col style="width: 160px"></colgroup>
+    <thead><tr><th scope="col">Kennung</th><th scope="col">Name</th><th scope="col">Queue</th>
+      <th scope="col" class="right">Größe</th><th scope="col">Aktion</th></tr></thead>
+    <tbody>
+      {%- for e in gesichtet.entries %}
+      <tr>
+        <td class="mono">{{ e['task_id'] or '--' }}</td>
+        <td class="mono">{{ e['task_name'] or '--' }}</td>
+        <td class="mono">{{ e['queue'] or '--' }}</td>
+        <td class="mono num right">{{ zahl(e['body_size']) }} B</td>
+        <td>
+          <form method="post" action="/dlq/{{ gesichtet.queue|urlencode }}/requeue">
+            <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="task_id" value="{{ e['task_id'] }}">
+            <button class="btn btn-sm">Wieder einreihen<span class="sr-only">
+              -- {{ e['task_id'] or 'ohne Kennung' }}</span></button>
+          </form>
+        </td>
+      </tr>
+      {%- endfor %}
+    </tbody>
+  </table>
+  </div>
+  {%- endif %}
+</section>
+{%- endif %}
+
+<section class="card">
+  <h2 class="card-section">Gescheiterte Tasks aus dem Verzeichnis</h2>
+  {#- Stehender Hinweis, auch bei voller Liste: die Abwesenheit einer
+      fehlenden Zeile ist selbst keine Aussage. -#}
+  <p class="card-meta">{{ unvollstaendig_hinweis }}</p>
+  {%- if hinweis %}
+  <p class="card-meta"><span class="notice is-wait"><span class="tag-dot"></span> {{ hinweis }}</span></p>
+  {%- endif %}
+  {%- if tasks %}
+  <div class="card-table">
+  <table>
+    <colgroup><col style="width: 132px"><col style="width: 150px">
+      <col style="width: 104px"><col style="width: 26%"><col>
+      <col style="width: 156px"></colgroup>
+    <thead><tr>
+      <th scope="col">Kennung</th><th scope="col">Name</th><th scope="col">Queue</th><th scope="col">Argumente</th>
+      <th scope="col">Fehler</th><th scope="col">Zuletzt</th>
+    </tr></thead>
+    <tbody>
+      {%- for z in tasks %}
+      <tr>
+        <td class="mono"><a class="trunc" href="/tasks/{{ z['task_id']|urlencode }}">{{ z['task_id'] }}</a></td>
+        <td class="mono">{{ z['task_name'] or '--' }}</td>
+        <td class="mono">{{ z['queue'] or '--' }}</td>
+        <td class="mono"><span class="args trunc">{{ z['args_text'] or '--' }}</span></td>
+        <td class="mono"><span class="args trunc">{{ z['error'] or '--' }}</span></td>
+        <td class="mono">{{ zeitpunkt(z['last_seen_at']) }}</td>
+      </tr>
+      {%- endfor %}
+    </tbody>
+  </table>
+  </div>
+  {%- if weiter %}
+  {#- Ohne diesen Fuss endete die Liste bei fuenfzig, ohne es zu sagen. -#}
+  <div class="card-foot">
+    <span>{{ tasks|length }} Zeilen — es sind mehr.</span>
+    <div class="grow"></div>
+    <a class="btn" href="/dlq?cursor={{ weiter|urlencode }}">Weitere</a>
+  </div>
+  {%- endif %}
+  {%- else %}
+  {% with titel=leer_titel, ursache=leer_ursache %}{% include "leerzustand.html" %}{% endwith %}
+  {%- endif %}
+</section>
+
+{% endblock %}

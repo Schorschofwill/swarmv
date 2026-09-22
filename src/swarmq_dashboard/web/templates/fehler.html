@@ -1,0 +1,26 @@
+{#- Eine Fehlerseite, die aussieht wie das Dashboard (R33).
+
+    Vorher kam hier rohes JSON: {"status_code":404,"detail":"…"} -- ohne
+    Sprache, ohne Titel, ohne Navigation, ohne Weg zurueck. Der Satz darin
+    war sachlich gut und fuer die falsche Zielgruppe verpackt; wer einer
+    Kennung aus einem Ticket folgt, deren Task abgelaufen ist, trifft ihn im
+    Normalfall, nicht im Ausnahmefall. -#}
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ code }} · Dashboard</title>
+  {% include "sinnbild.html" %}
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="signin">
+  <main class="signin-card card">
+    <h1 class="signin-title">{{ titel }}</h1>
+    <p class="notice is-fail" role="alert"><span class="tag-dot"></span> {{ detail }}</p>
+    <div class="card-body">
+      <a class="btn btn-primary" href="/">Zur Worker-Übersicht</a>
+    </div>
+  </main>
+</body>
+</html>

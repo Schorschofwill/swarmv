@@ -1,0 +1,201 @@
+{% extends "base.html" %}
+{% block titel %}Worker{% endblock %}
+{% block inhalt %}
+
+{#- Genau einmal, nicht an jeder Zelle: wiederholt waere der Hinweis Laerm und
+    verdeckte, was **da** ist (R33, AE15). Und nur, wenn wirklich etwas fehlt --
+    gegen eine Bibliothek mit Kontrollkanal waere der Satz selbst die
+    Falschaussage. -#}
+{%- if ohne_kontrollkanal %}
+<p class="notice"><span class="tag-dot"></span>
+  {{ ohne_kontrollkanal }}</p>
+{%- elif kanal_fehler %}
+<p class="notice is-wait"><span class="tag-dot"></span>
+  Der Kontrollkanal antwortet nicht, Spielraum und Sollwerte fehlen darum:
+  {{ kanal_fehler }} Alles andere auf dieser Seite gilt.</p>
+{%- endif %}
+
+{%- if gruppen %}
+{%- for g in gruppen %}
+<section class="card" id="gruppe-{{ g.name }}">
+  {#- Kopf und Meta-Zeile als eigene Bausteine: die Karte selbst hat keine
+      Polsterung, und eine nackte Ueberschrift darin klebt an der Kante. -#}
+  <div class="card-head">
+    <h2 class="card-name">{{ g.name }}</h2>
+  </div>
+  <p class="card-meta">
+    {{ g.verbunden|length }} von {{ g.worker|length }} verbunden
+    {#- Spielraum und Herkunft stehen nur da, wo der Kontrollkanal sie
+        wirklich gemeldet hat (R14, R15a). -#}
+    {%- set steuer = steuerung.get(g.name) %}
+    {%- if steuer and steuer.gruppe.supervisoren %}
+    · Spielraum {{ zahl(steuer.gruppe.spielraum) }}
+      ({{ steuer.gruppe.supervisoren }}&nbsp;Supervisor{% if steuer.gruppe.supervisoren != 1 %}en{% endif %})
+    · wirksame Werte aus {{ steuer.gruppe.herkunft }}
+    {%- endif %}
+    {#- Der Sollwert gehoert auf die Uebersicht: sonst muesste man jede
+        Gruppe einzeln aufmachen, um zu sehen, ob jemand etwas gesetzt hat
+        (R14, R15a). Ablehnung und Warten tragen verschiedene Marken (KTD13). -#}
+    {%- if steuer and not steuer.gruppe.supervisoren %}
+    {#- Der Kanal antwortet, aber fuer diese Gruppe meldet niemand. Die
+        beiden Ursachen stehen hier und nicht in einer Fussnote: die
+        zweite ist im Betrieb die haeufigere und von aussen unsichtbar
+        (R33). -#}
+    · <span class="notice is-wait"><span class="tag-dot"></span>
+      kein Supervisor dieser Gruppe meldet sich: entweder läuft der Worker
+      ohne <code>--max-processes</code>, oder er meldet unter einem anderen
+      Gruppennamen -- der Kontrollkanal nimmt <code>--group</code>, das
+      Dashboard <code>SQD_WORKER_GROUP</code>, und beide müssen
+      übereinstimmen.</span>
+    {%- endif %}
+    {%- if steuer %}
+    ·
+    {%- if steuer.sollwert %}
+    Sollwert {{ steuer.sollwert.unten }}..{{ steuer.sollwert.oben }} je Supervisor
+    {%- if steuer.stand %}
+    {%- if steuer.stand.zustand == ZUSTAND.BESTAETIGT %}
+    <span class="tag is-ok"><span class="tag-dot"></span> bestätigt</span>
+    {%- elif steuer.stand.zustand == ZUSTAND.ABGELEHNT %}
+    <span class="tag is-fail"><span class="tag-dot"></span> abgelehnt</span>
+    {%- elif steuer.stand.zustand == ZUSTAND.UNBESTAETIGT %}
+    <span class="tag is-wait"><span class="tag-dot"></span> unbestätigt</span>
+    {%- else %}
+    <span class="tag is-wait"><span class="tag-dot"></span> gesendet</span>
+    {%- endif %}
+    {%- endif %}
+    {%- else %}
+    kein Sollwert
+    {%- endif %}
+    · <a href="/worker/gruppe/{{ g.name|urlencode }}/sollwert">Sollwert ändern</a>
+    {%- endif %}
+    {#- Der Rueckstau gehoert an die Gruppe, nicht in eine Tabelle am
+        Seitenende: ohne Kontrollkanal ist er die einzige Antwort auf
+        "staut es sich?" (R14 Satz 2), und die Frage entsteht hier. -#}
+    {%- if g.wartend is not none %}
+    · {{ zahl(g.wartend) }} wartende Nachrichten
+    {%- else %}
+    · wartende Nachrichten unbekannt
+    {%- endif %}
+    {%- if g.rueckstau_unvollstaendig %} ·
+    <span class="notice is-wait"><span class="tag-dot"></span>
+      {% if g.wartend is none %}keine Queue gemessen{% else %}unvollständig{% endif %}:
+      {{ g.rueckstau_unvollstaendig|join(', ') or 'diese Gruppe kennt keine Queue' }}</span>
+    {%- elif g.wartend is none %} ·
+    <span class="notice is-wait"><span class="tag-dot"></span>
+      diese Gruppe kennt keine Queue -- ohne Stammdaten ist kein Rückstau messbar</span>
+    {%- endif %}
+    · Tasks nur so weit, wie das Verzeichnis reicht
+    {%- if g.eingeschraenkt %} ·
+    <span class="notice is-wait"><span class="tag-dot"></span>
+      eingeschränkt: für mindestens einen Worker gibt es nur das letzte Signal</span>
+    {%- endif %}
+  </p>
+
+  <div class="card-table">
+  <table>
+    {#- Feste Breiten wie im freigegebenen Mockup. Ohne sie teilt der Browser
+        die Spalten nach Inhalt auf, und die Kopfzeilen werden gequetscht --
+        besonders wenn eine Zelle ganze Saetze traegt. -#}
+    <colgroup>
+      <col style="width: 62px"><col><col style="width: 188px">
+      <col style="width: 86px"><col style="width: 88px">
+      <col style="width: 104px"><col style="width: 156px">
+      <col style="width: 108px">
+    </colgroup>
+    <thead><tr>
+      <th scope="col" class="right">Slot</th><th scope="col">Worker</th><th scope="col">Verbundenheit</th>
+      <th scope="col" class="right">Belegt</th><th scope="col" class="right">Tasks</th>
+      <th scope="col" class="right">Laufzeit</th><th scope="col">Lebenszeichen</th><th scope="col">Aktion</th>
+    </tr></thead>
+    <tbody>
+      {%- for w in g.worker %}
+      <tr id="worker-{{ w.worker_id }}"{% if not w.connected(now=jetzt) %} class="is-gone"{% endif %}>
+        <td class="mono num right">{{ w.slot if w.slot is not none else '--' }}</td>
+        <td class="mono">{{ w.worker_id }}</td>
+        {#- Zustand **und** Quelle in einer Zelle (KTD10): "getrennt" heisst je
+            nach Quelle etwas anderes, und das Lebenszeichen schweigt ohne
+            Metrik-Port ohne Fehlermeldung. Als eigene Spalte trug die Quelle
+            ganze Saetze und drueckte die Tabelle auseinander. -#}
+        <td>
+          {%- if w.connected(now=jetzt) %}
+          <span class="tag is-ok"><span class="tag-dot"></span> verbunden</span>
+          {%- else %}
+          <span class="tag is-fail"><span class="tag-dot"></span> getrennt</span>
+          {%- endif %}
+          <div class="dim">nach {{ quellenname[w.source] }}
+            <span class="mono">({{ '%.0f'|format(w.stale_after_s) }} s)</span></div>
+        </td>
+        <td class="mono num right">{{ g.belegt(w) }}</td>
+        <td class="mono num right">{{ zahl(g.erledigt(w)) }}</td>
+        <td class="mono right">{{ laufzeit(w.started_at, now=jetzt) }}</td>
+        <td class="mono">{{ zeitpunkt(w.last_seen_at) }}</td>
+        <td>
+          {%- if not w.connected(now=jetzt) %}
+          <form method="post" action="/worker/{{ w.worker_id|urlencode }}/remove">
+            <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
+            <button class="btn btn-sm">Entfernen</button>
+          </form>
+          {%- endif %}
+        </td>
+      </tr>
+      {%- endfor %}
+    </tbody>
+  </table>
+  </div>
+
+</section>
+{%- endfor %}
+{%- else %}
+{#- Auch der Leerzustand steht in einer Karte (siehe tasks/liste.html). -#}
+<section class="card">
+  {% with titel=leer_titel, ursache=leer_ursache %}{% include "leerzustand.html" %}{% endwith %}
+</section>
+{%- endif %}
+
+{%- if queues %}
+<section class="card">
+  <div class="card-head"><h2 class="card-name">Queues</h2></div>
+  <div class="card-table">
+  <table>
+    <colgroup><col><col style="width: 110px"><col style="width: 130px">
+      <col style="width: 46%"></colgroup>
+    <thead><tr><th scope="col">Queue</th><th scope="col" class="right">Wartend</th>
+      <th scope="col" class="right">Konsumenten</th><th scope="col">Hinweis</th></tr></thead>
+    <tbody>
+      {%- for q in queues %}
+      <tr>
+        <td class="mono">{{ q.name }}</td>
+        {%- if q.stats.error %}
+        {#- Eine Null hier laese sich als "kein Rueckstau" -- die
+            gefaehrlichste stille Falschaussage dieser Seite. -#}
+        <td colspan="3"><span class="notice is-fail"><span class="tag-dot"></span>
+          nicht abgefragt: {{ q.stats.error }}</span></td>
+        {%- else %}
+        {#- ``exists=False`` traegt keinen Fehlgrund und ist trotzdem keine
+            Messung: die Queue gibt es am Broker nicht, oder ihr Name wurde
+            oertlich abgelehnt. Als Null erschien sie bisher als "kein
+            Rueckstau" -- waehrend die Gruppenzeile drei Zeilen hoeher
+            "nicht gemessen" sagte. -#}
+        {%- if q.stats.exists %}
+        <td class="mono num right">{{ zahl(q.stats.depth) }}</td>
+        <td class="mono num right">{{ zahl(q.stats.consumers) }}</td>
+        {%- else %}
+        <td class="dim" colspan="2">nicht gemessen: am Broker nicht vorhanden</td>
+        {%- endif %}
+        <td>
+          {%- if q.ohne_hook %}
+          <span class="notice is-wait"><span class="tag-dot"></span>
+            {{ zahl(q.ohne_hook) }} Konsumenten ohne Hook{% if not q.bekannt %} --
+            der Strom kennt keinen Worker für diese Queue{% endif %}</span>
+          {%- endif %}
+        </td>
+        {%- endif %}
+      </tr>
+      {%- endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+{%- endif %}
+
+{% endblock %}

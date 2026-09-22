@@ -1,0 +1,16 @@
+{#- Das Sinnbild der Seite, als Datenadresse im Dokument.
+
+    Nichts wird von aussen geholt (KTD7) -- und ohne diesen Verweis fragt der
+    Browser bei jedem Aufruf ``/favicon.ico`` und traegt eine 404 ins
+    Zugriffsprotokoll. Bei einem Ops-Werkzeug stuende dann die haeufigste
+    Fehlermeldung des Dienstes fuer nichts.
+
+    Ein PNG und **kein** SVG: ein eingebettetes SVG traegt zwingend
+    ``xmlns="http://www.w3.org/2000/svg"``, und der Waechter gegen fremde
+    Netze prueft stumpf auf ``http``. Die Ausnahme waere richtig -- der
+    Namensraum wird nie geholt -- und genau solche Ausnahmen verdecken
+    spaeter den echten Verweis nach aussen. Das PNG kommt ohne aus.
+
+    Sechs Punkte im Kreis auf gruener Flaeche: der Schwarm. Erzeugt mit
+    docs/reference/sinnbild.py, 32x32, vierfach abgetastet. -#}
+<link rel="icon" type="image/png" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAoUlEQVR42mPQz/djQMMNQPyfRrgB3T5kjgMNLUbHDugOoKflKI6AOeD/AGEGWsc5wTRBtu+nb1/2HwZAbHLNYaDUckodQZYDcIHh5wBc8UwoCkhJHwzkxjO5jiPaAeQGM6n6Bq8DyM1qVIsCSgobqiRCeuHB7YABjYIBT4Sj5cCAF8UDXhmNtgcGdZOM2o3SAW+WD3jHZFB0zQa8czpg3XMAdtjduSV4SHcAAAAASUVORK5CYII=">

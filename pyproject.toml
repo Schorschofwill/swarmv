@@ -1,0 +1,94 @@
+[project]
+name = "swarmq-dashboard"
+version = "0.1.0.dev0"
+description = "Flower-artiges Ops-Dashboard fuer swarmq: Worker, Tasks, Dead-Letter und Sollwerte im Browser"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.14"
+# Versionsspanne statt festem Pin (R1a): Dashboard und Bibliothek sind ueber die
+# Signal-Nutzlasten gekoppelt, aber getrennt veroeffentlicht. Die Obergrenze
+# haelt eine Nutzlast-Aenderung auf, bevor sie den Ereignisspiegel still
+# beschaedigt. Die Untergrenze ist seit U16 0.7: der Kontrollkanal ist dort
+# erschienen, und die Steuerung braucht seine Typen. Die Seite bleibt
+# trotzdem benutzbar, wenn sie fehlen -- geprueft wird zur Laufzeit (KTD14,
+# R33).
+dependencies = [
+    "swarmq>=0.7,<0.8",
+    # Beide kommen heute ueber swarmq mit. Sie stehen trotzdem hier: das Paket
+    # importiert sie selbst (events.py, stream.py), und ein Bibliotheks-Release
+    # innerhalb der Spanne oben, das eines davon tauscht, wuerde den Dienst
+    # sonst erst beim Start mit einem ImportError treffen (R1, KTD14).
+    "msgspec>=0.18",
+    "valkey>=6",
+    # Die Zahl der Konsumenten je Queue gibt die Bibliothek nicht heraus; das
+    # Dashboard deklariert dafuer selbst passiv (KTD11, broker.py). Der eine
+    # begruendete Ausbruch aus R1a -- und damit eine eigene Abhaengigkeit.
+    "aio-pika>=9.4,<11",
+    "litestar>=2.24,<3",
+    "granian>=2.8,<3",
+    "jinja2>=3.1",
+    # Kommt heute ueber jinja2 mit. Steht trotzdem hier: die Vorlagen-Schicht
+    # importiert Markup selbst, um die Kopfzeilen-Marken als HTML
+    # durchzureichen (web/templates/__init__.py).
+    "markupsafe>=2.1",
+    "argon2-cffi>=25.1",
+]
+
+[project.scripts]
+swarmq-dashboard = "swarmq_dashboard.cli.__main__:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.25",
+    "pytest-timeout>=2.3",
+    "httpx>=0.28",
+    "ruff>=0.9",
+    "mypy>=1.14",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/swarmq_dashboard"]
+
+# --- Werkzeuge: identisch zum Kern, damit ein Wechsel zwischen den Repos
+# --- keine Gewoehnung kostet (docs/reference/swarmq-ankerpunkte.md).
+
+[tool.ruff]
+target-version = "py314"
+src = ["src"]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "N", "UP", "B", "SIM", "RUF", "PLR0915", "C901"]
+# N818: Fehlerklassen ohne Error-Suffix sind im Kern etabliert.
+# SIM105: contextlib.suppress liest sich nicht immer besser als try/except.
+# RUF002/RUF003: deutsche Typografie in Docstrings und Kommentaren.
+ignore = ["N818", "SIM105", "RUF002", "RUF003"]
+
+[tool.ruff.lint.pylint]
+max-statements = 60
+
+[tool.ruff.lint.mccabe]
+max-complexity = 12
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["PLR0915", "C901", "N806", "N802", "N817", "RUF043", "B905", "B017"]
+
+[tool.mypy]
+strict = true
+warn_unused_ignores = true
+packages = ["swarmq_dashboard"]
+mypy_path = "src"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+timeout = 30
+markers = [
+    "unit: isoliert, ohne Broker und Backend",
+    "integration: braucht RabbitMQ und Valkey",
+]

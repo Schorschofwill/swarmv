@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+{% block titel %}Tasks{% endblock %}
+{% block inhalt %}
+
+<section class="card">
+  {#- Jedes Feld mit Beschriftung, nicht nur mit Platzhalter: der Platzhalter
+      verschwindet beim Tippen, und ein Vorleseprogramm nennt ihn gar nicht. -#}
+  <div class="card-body">
+  <form class="filters" method="get" action="/tasks">
+    <span class="field">
+      <label class="field-label" for="f-q">Suche</label>
+      <input class="mono search" id="f-q" name="q" value="{{ filter.text }}"
+             placeholder="Name oder Argumente">
+    </span>
+    <span class="field">
+      <label class="field-label" for="f-status">Status</label>
+      <input class="mono" id="f-status" name="status" value="{{ filter.status }}">
+    </span>
+    <span class="field">
+      <label class="field-label" for="f-name">Task-Name</label>
+      <input class="mono" id="f-name" name="task_name" value="{{ filter.task_name }}">
+    </span>
+    <span class="field">
+      <label class="field-label" for="f-worker">Worker</label>
+      <input class="mono" id="f-worker" name="worker_id" value="{{ filter.worker_id }}">
+    </span>
+    <span class="field">
+      <label class="field-label" for="f-seit">Zeitraum</label>
+      <select id="f-seit" name="seit">
+        {%- for tage, wort in zeitraeume %}
+        <option value="{{ tage or '' }}"{% if seit == (tage|string) %} selected{% endif %}>
+          {{ wort }}</option>
+        {%- endfor %}
+      </select>
+    </span>
+    <button class="btn">Suchen</button>
+  </form>
+  </div>
+</section>
+
+{#- Zwei stehende Hinweise. Sie stehen auch dann da, wenn gerade keine
+    betroffene Zeile sichtbar ist: die Abwesenheit einer solchen Zeile ist
+    selbst keine Aussage. -#}
+{#- ``zeitpunkt(None)`` gibt "noch nie" -- als Zeitpunkt richtig, in
+    diesem Satz falsch: "Die Suche reicht zurück bis noch nie" behauptet
+    eine Reichweite, die es nicht gibt. -#}
+<p class="notice">
+  {%- if reichweite is none %}
+  Das Verzeichnis ist leer -- die Suche hat noch keine Reichweite.
+  {%- else %}
+  Die Suche reicht zurück bis {{ zeitpunkt(reichweite) }} -- älteres steht
+  nicht mehr im Verzeichnis.
+  {%- endif %}
+</p>
+<p class="notice">{{ herkunft_hinweis }}</p>
+
+{%- if hinweis %}
+<p class="notice is-wait"><span class="tag-dot"></span> {{ hinweis }}</p>
+{%- endif %}
+
+{%- if zeilen %}
+<section class="card">
+  <div class="card-table">
+  <table>
+    {#- Reihenfolge und Breiten wie im freigegebenen Mockup: Status zuerst,
+        Argumente als breiteste Spalte. Ohne feste Breiten teilt der Browser
+        nach Inhalt auf, und eine lange Kennung quetscht alles andere. -#}
+    <colgroup>
+      <col style="width: 116px"><col style="width: 132px"><col>
+      <col style="width: 104px"><col style="width: 30%">
+      <col style="width: 118px"><col style="width: 156px">
+    </colgroup>
+    <thead><tr>
+      <th scope="col">Status</th><th scope="col">Kennung</th><th scope="col">Name</th><th scope="col">Queue</th>
+      <th scope="col">Argumente</th><th scope="col">Worker</th><th scope="col">Eingereiht</th>
+    </tr></thead>
+    <tbody id="task-zeilen">
+      {%- for z in zeilen %}
+      {#- ``urlencode`` ist hier keine Feinheit: swarmq vergibt die Kennung
+          eines Workflow-Schritts als ``{workflow_id}#{step_path}``, und
+          ``apply()`` mit einer einzelnen Signatur ist ein einschrittiger
+          Workflow -- **jede** so eingereihte Task traegt eine Raute. Roh in
+          der Adresse trennt sie das Fragment ab: der Browser holt die
+          gekuerzte Kennung, und die Detailseite antwortet mit 404. Beim
+          ersten Lauf gegen einen echten Worker war so jeder Verweis der
+          Liste kaputt. -#}
+      <tr id="task-{{ z['task_id'] }}">
+        <td>
+          <span class="tag {{ zustandsart(z['status']) }}">
+            <span class="tag-dot"></span> {{ z['status'] or 'unbekannt' }}
+          </span>
+          {%- if z['incomplete'] %}
+          {#- R4a: die Luecke muss sichtbar sein, sonst ist sie keine Meldung. -#}
+          <div class="dim" title="In dieser Zeitspanne fehlen möglicherweise Ereignisse">
+            unvollständig</div>
+          {%- endif %}
+        </td>
+        <td class="mono"><a class="trunc" href="/tasks/{{ z['task_id']|urlencode }}">{{ z['task_id'] }}</a></td>
+        <td class="mono">{{ z['task_name'] or '--' }}</td>
+        <td class="mono">{{ z['queue'] or '--' }}</td>
+        <td class="mono"><span class="args trunc">{{ z['args_text'] or '--' }}</span></td>
+        <td class="mono"><span class="trunc">{{ z['worker_id'] or '--' }}</span></td>
+        <td class="mono">
+          {%- if z['enqueued_at'] %}{{ zeitpunkt(z['enqueued_at']) }}
+          {%- else %}<span class="dim" title="{{ herkunft_hinweis }}">erst beim Aufgreifen</span>
+          {%- endif %}
+        </td>
+      </tr>
+      {%- endfor %}
+    </tbody>
+  </table>
+  </div>
+  {%- if weiter %}
+  {#- Der Verweis gehoert in den Kartenfuss, nicht frei unter die Karte:
+      ``.page`` ist eine senkrechte Flex-Spalte, und ein ``.btn`` darin
+      dehnte sich auf die volle Breite -- ein 1081 px breiter Balken mit dem
+      Wort "Weitere" in der Mitte. Der Fuss sagt ausserdem, dass die Liste
+      abgeschnitten ist; vorher endete sie bei fuenfzig, ohne es zu sagen. -#}
+  <div class="card-foot">
+    <span>{{ zeilen|length }} Zeilen — es sind mehr.</span>
+    <div class="grow"></div>
+    <a class="btn" href="/tasks?{{ weiterlink(filter, weiter, seit) }}">Weitere</a>
+  </div>
+  {%- endif %}
+</section>
+{%- else %}
+{#- Auch der Leerzustand steht in einer Karte: sonst schwebt der Satz auf
+    dem Seitenhintergrund, waehrend jeder andere Inhalt der Seite eine
+    Flaeche hat. -#}
+<section class="card">
+  {% with titel=leer_titel, ursache=leer_ursache %}{% include "leerzustand.html" %}{% endwith %}
+</section>
+{%- endif %}
+
+{% endblock %}
