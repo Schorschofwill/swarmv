@@ -47,15 +47,6 @@ dev = [
     "mypy>=1.14",
 ]
 
-# Die Bibliothek kommt aus ihrem Git-Repository, nicht von PyPI: 0.7.0 ist
-# getaggt, aber bewusst nicht hochgeladen. Der Tag ist die feste Groesse --
-# ein Branch oder gar der Arbeitsbaum waere es nicht, und der Kontrollkanal
-# ist die Schnittstelle, an der das Dashboard haengt. Sobald die Bibliothek
-# auf PyPI liegt, faellt dieser Abschnitt weg; die Spanne oben bleibt dann
-# unveraendert stehen (KTD14).
-[tool.uv.sources]
-swarmq = { git = "ssh://git@gitlab.com/Schorsch1984/swarmq.git", tag = "v0.7.0" }
-
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

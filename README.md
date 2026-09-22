@@ -23,10 +23,9 @@ Veröffentlichung; die Bibliothek bekommt dadurch keine neue Pflichtabhängigkei
 - Voraussetzung im Kern: der Kontrollkanal, erschienen in **swarmq 0.7.0**
   (MR !60, `docs/plans/2026-09-16-1753-feat-kontrollkanal-plan.md`);
   Schnittstelle in `docs/reference/kontrollkanal-schnittstelle.md`. Die
-  Bibliothek ist getaggt, aber nicht auf PyPI — `pyproject.toml` zieht sie
-  darum über `[tool.uv.sources]` aus dem Git-Repository am Tag `v0.7.0`.
-  Fehlt der Kanal, bleibt die Steuerung abgeschaltet und begründet — jede
-  andere Seite trägt weiter.
+  Bibliothek liegt auf PyPI; die Abhängigkeit löst sich als gewöhnliche
+  Versionsspanne auf. Fehlt der Kanal, bleibt die Steuerung abgeschaltet und
+  begründet — jede andere Seite trägt weiter.
 - Ankerpunkte in swarmq (Signale, Middleware-Haken, Cancel, DLQ, Schlüssel,
   Konventionen): `docs/reference/swarmq-ankerpunkte.md`.
 - Testmethodik gegen abtastende Prozesse: `docs/reference/scheduler-cron-sync-clobber-test-flake-2026-06-01.md`.
@@ -98,8 +97,5 @@ unter zwei Namen und findet nie einen Supervisor. Einzelheiten:
 
 ## Offen
 
-Solange swarmq 0.7.0 nicht auf PyPI liegt, braucht die Installation dieses
-Pakets Lesezugriff auf das Git-Repository der Bibliothek; der
-`[tool.uv.sources]`-Block entfällt mit dem ersten Upload. Die Ansicht des
-Audit-Stroms im Browser ist nach R27 ausdrücklich Stufe 2 und bleibt vorerst
-bei der Kommandozeile.
+Die Ansicht des Audit-Stroms im Browser ist nach R27 ausdrücklich Stufe 2 und
+bleibt vorerst bei der Kommandozeile.
