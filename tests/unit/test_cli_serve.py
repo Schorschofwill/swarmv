@@ -321,3 +321,58 @@ def test_ein_gesetztes_sqd_data_dir_bleibt_ohne_ausdrueckliches_argument(
     code = main(["serve", "--insecure-http"], out=aus, server=FakeServer, umgebung=umgebung)
     assert code == 0, aus.getvalue()
     assert os.environ.get("SQD_DATA_DIR") == aus_der_umgebung_pfad
+
+
+# --- Zyklus 6: hinter einem vorgelagerten TLS-Abschluss ------------------
+
+
+def test_hinter_einem_tls_proxy_laeuft_der_dienst_auch_ohne_zertifikat(tmp_path: Path) -> None:
+    """Der dritte Weg aus dem eigenen Hilfetext -- den es bisher nicht gab.
+
+    "Hinter einem vorgelagerten TLS-Abschluss lauschen (der spricht dann
+    https nach aussen)" stand als Moeglichkeit in der Fehlermeldung. Gangbar
+    war sie nicht: ohne ``--tls-cert`` verlangt der Start ``--insecure-http``,
+    und das gilt nur auf 127.0.0.1. In einem Container muss der Dienst aber
+    auf 0.0.0.0 lauschen, sonst erreicht ihn kein Portmapping -- der
+    haeufigste Fall ueberhaupt war damit ausgeschlossen.
+    """
+    aus = io.StringIO()
+    code = main(["--data-dir", str(tmp_path), "serve", "--host", "0.0.0.0",
+                 "--behind-tls-proxy"],
+                out=aus, server=FakeServer, umgebung=_umgebung(tmp_path))
+    assert code == 0, aus.getvalue()
+    assert FakeServer.letzte.get("serve"), "der Dienst wurde nicht gestartet"
+    assert FakeServer.letzte["address"] == "0.0.0.0"
+
+
+def test_hinter_dem_proxy_behalten_die_cookies_ihr_secure(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Der Unterschied zu ``--insecure-http``, und er ist der ganze Punkt.
+
+    Bei ``--insecure-http`` spricht der Browser selbst Klartext, das Merkmal
+    ``Secure`` waere dort eine Sperre gegen die eigene Anmeldung. Hinter
+    einem Abschluss spricht er https -- das Cookie gehoert also gesetzt, und
+    es wegzulassen gaebe es ueber jede Klartextstrecke preis, die der
+    Browser sonst noch nimmt.
+    """
+    monkeypatch.delenv("SQD_INSECURE_HTTP", raising=False)
+    aus = io.StringIO()
+    code = main(["--data-dir", str(tmp_path), "serve", "--host", "0.0.0.0",
+                 "--behind-tls-proxy"],
+                out=aus, server=FakeServer, umgebung=_umgebung(tmp_path))
+    assert code == 0, aus.getvalue()
+    assert os.environ.get("SQD_INSECURE_HTTP") != "1", (
+        "hinter dem Abschluss verlieren die Cookies ihr 'Secure'"
+    )
+
+
+def test_eigenes_tls_und_proxy_zugleich_wird_abgewiesen(tmp_path: Path) -> None:
+    """Zwei Aussagen ueber dieselbe Strecke -- eine davon waere unwahr."""
+    aus = io.StringIO()
+    code = main(["--data-dir", str(tmp_path), "serve", "--behind-tls-proxy",
+                 "--tls-cert", str(tmp_path / "c.pem"), "--tls-key", str(tmp_path / "k.pem")],
+                out=aus, server=FakeServer, umgebung=_umgebung(tmp_path))
+    assert code == 2
+    assert "dieselbe Strecke" in aus.getvalue()
+    assert not FakeServer.letzte.get("serve"), "es wurde trotzdem gestartet"

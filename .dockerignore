@@ -1,0 +1,16 @@
+# Alles, was nicht ins Abbild gehoert. Die Kontendatei besonders: sie traegt
+# Passwort-Hashes und Sitzungen, und in einem Abbild waere sie fuer jeden
+# lesbar, der es zieht.
+**/*.sqlite3
+**/*.sqlite3-*
+sqd-data/
+.venv/
+.git/
+.github/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+__pycache__/
+tests/
+docs/
+dist/

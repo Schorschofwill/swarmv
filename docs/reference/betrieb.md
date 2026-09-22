@@ -125,3 +125,48 @@ Seiten denselben Schlüssel aus den Queues.
 der Supervisor den Kontrollkanal gar nicht ein: er meldet nichts, und ein
 Sollwert erreicht ihn nicht. Die Worker-Übersicht sagt das an der betroffenen
 Gruppe.
+
+## Im Container
+
+`Dockerfile` im Wurzelverzeichnis baut in zwei Stufen: die erste erzeugt das
+Rad aus dem Quellbaum, die zweite installiert nur dieses Rad. Im
+Laufzeit-Abbild liegt weder `uv` noch ein Compiler noch der Quellbaum.
+
+Der Dienst läuft als eigener Benutzer `sqd`, das Datenverzeichnis ist
+`/var/lib/sqd` und gehört ihm. Ohne Volume wäre die Kontendatei beim ersten
+`docker rm` weg — sie steht in keinem Strom und käme nicht wieder.
+
+### TLS im Container
+
+Der voreingestellte Befehl lauscht auf `0.0.0.0:8080` mit
+`--behind-tls-proxy`. Das ist kein Schlupfloch, sondern der zweite der drei
+Wege aus der Startmeldung, und im Container der einzige gangbare: Auf
+`127.0.0.1` zu lauschen erreichte kein Portmapping, und `--insecure-http`
+gilt ausdrücklich nur örtlich.
+
+Der Unterschied zwischen den beiden Schaltern ist das Sitzungscookie:
+
+| Schalter | Cookie | wann |
+|---|---|---|
+| `--insecure-http` | ohne `Secure` | Entwicklung auf 127.0.0.1, sonst nirgends |
+| `--behind-tls-proxy` | **mit** `Secure` | ein Abschluss davor spricht https nach außen |
+
+Hinter dem Abschluss spricht der Browser https — das Merkmal gehört also
+gesetzt. Klartext ist allein die Strecke zwischen Abschluss und Dienst; sie
+abzusichern (eigenes Netz, mTLS, Unix-Socket) ist Sache des Betreibers.
+
+Wer ohne Proxy prüfen will, reicht Zertifikate hinein und ersetzt den
+Befehl:
+
+```bash
+docker run -d -p 8443:8443 -v /etc/ssl/sqd:/certs:ro \
+  -e SWARMQ_BROKER_URL=... -e SWARMQ_BACKEND_URL=... -v sqd-data:/var/lib/sqd \
+  swarmq-dashboard:0.1.0 serve --host 0.0.0.0 --port 8443 \
+  --tls-cert /certs/cert.pem --tls-key /certs/key.pem
+```
+
+### Gesundheitsprüfung
+
+Das Abbild fragt alle 30 Sekunden `/login` ab — eine öffentliche Seite.
+`/api/status` wäre die genauere Auskunft, braucht aber eine Sitzung und
+taugt darum nicht als Prüfung von außen.

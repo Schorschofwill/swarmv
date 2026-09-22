@@ -128,6 +128,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="ohne TLS auf 127.0.0.1 lauschen -- nur fuer die Entwicklung. "
              "Die Sitzungscookies verlieren dabei ihr 'Secure'.",
     )
+    dienst.add_argument(
+        "--behind-tls-proxy", action="store_true",
+        help="ohne eigenes TLS lauschen, weil ein vorgelagerter Abschluss "
+             "https nach aussen spricht (Reverse-Proxy, Ingress, Container). "
+             "Die Sitzungscookies behalten ihr 'Secure' -- der Browser "
+             "spricht https, nur die Strecke dahinter ist Klartext.",
+    )
 
     audit = unter.add_parser("audit", help="nachsehen, wer was getan hat (R27)")
     audit_aktionen = audit.add_subparsers(dest="aktion", required=True)
@@ -221,7 +228,23 @@ def _serve(args: argparse.Namespace, out: TextIO, server: Any,
               "und still ohne zu starten waere schlimmer, als gar nicht zu starten.",
               file=out)
         return 2
-    if not args.tls_cert:
+    if args.tls_cert and args.behind_tls_proxy:
+        print("--behind-tls-proxy und eigene Zertifikate zugleich sind zwei "
+              "Aussagen ueber dieselbe Strecke. Entweder der Dienst spricht "
+              "TLS, oder der Abschluss davor tut es.", file=out)
+        return 2
+    if not args.tls_cert and args.behind_tls_proxy:
+        # Der zweite der drei Wege aus der Meldung unten, und der einzige,
+        # der im Container traegt: dort muss der Dienst auf 0.0.0.0
+        # lauschen, sonst erreicht ihn kein Portmapping.
+        #
+        # Die Cookies behalten hier ihr ``Secure``, anders als bei
+        # ``--insecure-http``: der Browser spricht https mit dem Abschluss
+        # davor, und genau darauf bezieht sich das Merkmal. Klartext ist nur
+        # die Strecke zwischen Abschluss und Dienst -- wer die absichert,
+        # ist der Betreiber.
+        pass
+    elif not args.tls_cert:
         # Ohne TLS ueberhaupt nicht -- auch nicht oertlich. Beim ersten
         # echten Start nachgemessen: die Cookies tragen 'Secure', kein Klient
         # schickt sie ueber http, der POST kommt ohne Sitzung an, und die
@@ -234,10 +257,10 @@ def _serve(args: argparse.Namespace, out: TextIO, server: Any,
                 "Sitzungscookies tragen 'Secure', kein Browser schickt sie "
                 "ueber eine Klartextverbindung mit, und die Anmeldung "
                 "scheitert mit 'Das Anmeldeformular ist abgelaufen'.\n"
-                "Drei Wege: --tls-cert und --tls-key angeben; hinter einem "
-                "vorgelagerten TLS-Abschluss lauschen (der spricht dann https "
-                "nach aussen); oder fuer die Entwicklung auf 127.0.0.1 mit "
-                "--insecure-http starten.",
+                "Drei Wege: --tls-cert und --tls-key angeben; mit "
+                "--behind-tls-proxy hinter einem vorgelagerten TLS-Abschluss "
+                "lauschen (der spricht dann https nach aussen); oder fuer die "
+                "Entwicklung auf 127.0.0.1 mit --insecure-http starten.",
                 file=out,
             )
             return 2

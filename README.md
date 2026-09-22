@@ -75,6 +75,42 @@ ihn aufgreift — dann ohne Einreihungszeitpunkt. Scheduler-Auslösungen und
 verzögerte Einreihungen gehen auch am Anwendungs-Hook vorbei; sie
 veröffentlichen direkt am Broker.
 
+### Im Container
+
+```bash
+docker build -t swarmq-dashboard:0.1.0 .
+
+# Konto anlegen (das Volume behält es)
+docker run --rm -it -v sqd-data:/var/lib/sqd swarmq-dashboard:0.1.0 account create ops
+
+# Fahren -- hinter einem vorgelagerten TLS-Abschluss
+docker run -d --name sqd -p 8080:8080 \
+  -e SWARMQ_BROKER_URL="amqp://user:pass@rabbit:5672/" \
+  -e SWARMQ_BACKEND_URL="valkey://valkey:6379/0" \
+  -v sqd-data:/var/lib/sqd \
+  swarmq-dashboard:0.1.0
+```
+
+Das Abbild lauscht auf `0.0.0.0:8080` **ohne eigenes TLS** und setzt dafür
+`--behind-tls-proxy`: Im Container ist der vorgelagerte Abschluss der
+Normalfall, und auf `127.0.0.1` zu lauschen erreichte kein Portmapping. Die
+Sitzungscookies behalten dabei ihr `Secure` — der Browser spricht https mit
+dem Proxy, nur die Strecke dahinter ist Klartext, und die abzusichern ist
+Sache des Betreibers.
+
+**Direkt per `http://` im Browser kommt man deshalb nicht hinein**, und das
+ist Absicht: Der Browser schickt ein `Secure`-Cookie über Klartext nicht
+mit. Wer ohne Proxy ausprobieren will, nimmt eigene Zertifikate:
+
+```bash
+docker run -d -p 8443:8443 -v /etc/ssl/sqd:/certs:ro ... swarmq-dashboard:0.1.0 \
+  serve --host 0.0.0.0 --port 8443 --tls-cert /certs/cert.pem --tls-key /certs/key.pem
+```
+
+Das Datenverzeichnis liegt auf `/var/lib/sqd` und gehört einem eigenen
+Benutzer. Es gehört in ein Volume: die Kontendatei steht in keinem Strom und
+käme nach einem `docker rm` nicht wieder.
+
 ### Den Dienst starten
 
 ```bash
