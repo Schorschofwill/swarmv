@@ -5,12 +5,12 @@ Zwei Dinge machen diese Seite heikel:
 * **Sie ist die Startseite.** Wer das Dashboard oeffnet, sieht sie zuerst --
   auch und gerade im Vorfall. Eine leere Tabelle waere dann die schlechteste
   aller Antworten.
-* **Der Kontrollkanal fehlt.** Er ist in swarmq gemergt, aber unveroeffentlicht.
-  Spielraum, Slot-Kapazitaet und Sollwert lassen sich also nicht fuellen. An
-  ihrer Stelle steht **eine** benannte Ursache, kein leerer Bereich (R33), und
-  die Zahl wartender Nachrichten bleibt -- sie kommt aus der passiven
-  Broker-Beobachtung und ist in der ersten Auslieferung die einzige Antwort
-  auf "staut es sich?".
+* **Der Kontrollkanal kann fehlen.** Seit U16 fuellt er Spielraum,
+  Slot-Kapazitaet und Sollwert -- aber nur, wenn die installierte
+  Bibliotheksfassung ihn mitbringt und das Backend antwortet. Fehlt eines von
+  beidem, steht **eine** benannte Ursache da, kein leerer Bereich (R33), und
+  die Zahl wartender Nachrichten bleibt: sie kommt aus der passiven
+  Broker-Beobachtung und haengt an keinem der beiden.
 
 Der dritte Punkt ist R18: ein Ueberschuss an Konsumenten heisst, dass jemand
 arbeitet, dessen Ereignisse nie im Verzeichnis landen -- und dessen Tasks sich
@@ -22,25 +22,25 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Annotated, Any
+from urllib.parse import quote
 
 from litestar import Request, get, post
+from litestar.enums import RequestEncodingType
 from litestar.exceptions import NotFoundException
-from litestar.params import FromPath
+from litestar.params import Body, FromPath
 from litestar.response import Redirect, Template
 
 from swarmq_dashboard.broker import QueueStats
-from swarmq_dashboard.directory.workers import Quelle, Worker, WorkerRegistry
+from swarmq_dashboard.control import Sollwert, Steuerbild, Zustand
+from swarmq_dashboard.directory.workers import (
+    KEINE_GRUPPE,
+    Quelle,
+    Worker,
+    WorkerRegistry,
+)
 from swarmq_dashboard.web.auth import SESSION_ACCOUNT_KEY
 
-#: Der eine Satz, der sagt, was ohne Kontrollkanal fehlt (R33, AE15). Er steht
-#: genau einmal auf der Seite -- an jeder Zelle wiederholt waere er Laerm und
-#: verdeckte, was **da** ist.
-OHNE_KONTROLLKANAL = (
-    "Steuerung nicht verfügbar: die installierte swarmq-Fassung bringt den "
-    "Kontrollkanal noch nicht mit. Spielraum, gemeldete Slot-Kapazität und "
-    "Sollwerte fehlen darum. Alles andere auf dieser Seite gilt."
-)
 #: Wie die Quellen heissen, wenn die Seite sie nennt (KTD10, R14a).
 QUELLENNAME = {
     Quelle.SUPERVISOR: "Supervisor-Rückmeldung",
@@ -211,6 +211,24 @@ async def uebersicht(request: Request[Any, Any, Any]) -> Template:
     stats = await services.queue_stats(gebraucht)
 
     last = register.load()
+    # Je Gruppe ein Steuerbild. Das Lesen ist Pflicht und nicht Kuer: erst
+    # dabei faellt eine Ablehnung auf, und erst dann wird der verworfene
+    # Wert aus dem Kanal genommen (R16a, KTD13).
+    steuerung: dict[str, Steuerbild] = {}
+    kanal_fehler: str | None = None
+    if services.steuerung.verfuegbar:
+        for name in sorted(gebuendelt):
+            # **Nicht** fuer die Sammelgruppe: "ohne Gruppe" ist ein
+            # Platzhalter fuer Worker ohne Gruppenangabe, kein Gruppenname.
+            # Ein Sollwert unter diesem Schluessel erreicht keinen
+            # Supervisor und laege fuer immer im Kanal -- die Ansicht
+            # fuehrte ihn trotzdem als gesetzt.
+            if name == KEINE_GRUPPE:
+                continue
+            steuerung[name] = await services.steuerung.bild(name, now=jetzt)
+            # Einmal genannt, nicht je Gruppe: dieselbe Leitung, derselbe
+            # Grund -- an jeder Karte wiederholt verdeckte er den Rest.
+            kanal_fehler = kanal_fehler or steuerung[name].fehler
     gruppen = [
         Gruppe(name=name, worker=worker, now=jetzt, last=last, stats=stats)
         for name, worker in sorted(gebuendelt.items())
@@ -235,7 +253,12 @@ async def uebersicht(request: Request[Any, Any, Any]) -> Template:
             "queues": queues,
             "quellenname": QUELLENNAME,
             "laufzeit": laufzeit,
-            "ohne_kontrollkanal": OHNE_KONTROLLKANAL,
+            # ``None``, wenn nichts fehlt -- sonst stuende der Satz ueber
+            # das Fehlende auch da, wo der Kanal antwortet.
+            "ohne_kontrollkanal": services.steuerung.grund,
+            "steuerung": steuerung,
+            "kanal_fehler": kanal_fehler,
+            "ZUSTAND": Zustand,
             "jetzt": jetzt,
             "leer_titel": "Noch kein Worker bekannt",
             "leer_ursache": _leergrund(services.status()),
@@ -281,3 +304,120 @@ async def entfernen(request: Request[Any, Any, Any], worker_id: FromPath[str]) -
         outcome="ok" if entfernt else "nicht gefunden",
     )
     return Redirect("/", status_code=303)
+
+
+def _steuerung(request: Request[Any, Any, Any]) -> Any:
+    return request.app.state.services.steuerung
+
+
+@get("/worker/gruppe/{name:str}/sollwert")
+async def sollwert_dialog(request: Request[Any, Any, Any], name: FromPath[str]) -> Template:
+    """Der Dialog zum Sollwert einer Gruppe (U16 Punkt 5, AE4).
+
+    Bewusst eine eigene Seite und keine editierbare Tabellenzelle: die
+    Beschriftung "je Supervisor", die Zahl der Supervisoren, die daraus
+    folgende Gesamtzahl und die Pruefung vor dem Schreiben (R15b) brauchen
+    mehr Platz, als eine Zelle hergibt -- und sie sind der Unterschied
+    zwischen der Haelfte und dem Doppelten dessen, was jemand setzen wollte.
+    """
+    steuerung = _steuerung(request)
+    if not steuerung.verfuegbar:
+        raise NotFoundException(detail=steuerung.grund or "die Steuerung ist nicht verfügbar")
+    jetzt = _zahl(request.query_params.get("jetzt")) or time.time()
+    bild = await steuerung.bild(name, now=jetzt)
+    return Template(
+        "worker/sollwert.html",
+        context={
+            "bild": bild,
+            "gruppe": bild.gruppe,
+            "hinweis": request.query_params.get("hinweis"),
+            "jetzt": jetzt,
+            "status": request.app.state.services.status(),
+            "account": request.session.get(SESSION_ACCOUNT_KEY, ""),
+            "aktiv": "worker",
+            "csrf_token": request.session.get("csrf", ""),
+            "ZUSTAND": Zustand,
+        },
+    )
+
+
+def _ganzzahl(wert: Any) -> int | None:
+    """Eine ganze Zahl aus dem Formular -- oder ``None``.
+
+    Kein Umweg ueber ``float``: "2.7" ist keine Prozesszahl, und still auf 2
+    abzurunden waere eine Zahl, die niemand eingegeben hat.
+    """
+    try:
+        return int(str(wert).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _zurueck(name: str, hinweis: str) -> Redirect:
+    return Redirect(f"/worker/gruppe/{quote(name)}/sollwert?hinweis={quote(hinweis)}",
+                    status_code=303)
+
+
+@post("/worker/gruppe/{name:str}/sollwert")
+async def sollwert_setzen(
+    request: Request[Any, Any, Any],
+    name: FromPath[str],
+    data: Annotated[dict[str, Any], Body(media_type=RequestEncodingType.URL_ENCODED)],
+) -> Redirect:
+    """Einen Sollwert setzen oder korrigieren (R15, R15b, R27).
+
+    Die Pruefung laeuft **vor** dem Schreiben: was hier schon als unmoeglich
+    erkennbar ist, gehoert nicht in den Kanal, wo es auf einen Supervisor
+    wartet, der es ablehnt.
+    """
+    steuerung = _steuerung(request)
+    if not steuerung.verfuegbar:
+        raise NotFoundException(detail=steuerung.grund or "die Steuerung ist nicht verfügbar")
+    # Zwei Formen: Bereich oder feste Zahl (R15). Die feste Zahl ist der
+    # Sollwert N..N und schaltet die Autoskalierung ab.
+    fest = _ganzzahl(data.get("fest"))
+    unten = fest if fest is not None else _ganzzahl(data.get("unten"))
+    oben = fest if fest is not None else _ganzzahl(data.get("oben"))
+    if unten is None or oben is None:
+        return _zurueck(name, "Nicht gesetzt: die Grenzen waren keine ganzen Zahlen.")
+
+    konto = str(request.session.get(SESSION_ACCOUNT_KEY, "unbekannt"))
+    wert = Sollwert(unten, oben)
+    ergebnis = await steuerung.setzen(name, wert, now=time.time())
+    await request.app.state.services.audit.record(
+        "setpoint_set", account=konto, target=name,
+        outcome="ok" if ergebnis.erlaubt else "abgelehnt",
+        detail=f"{unten}..{oben} je Supervisor"
+               + ("" if ergebnis.erlaubt else f" -- {ergebnis.grund}"),
+    )
+    if not ergebnis.erlaubt:
+        return _zurueck(name, f"Nicht gesetzt: {ergebnis.grund}")
+    if ergebnis.wirkungsunbekannt:
+        return _zurueck(name, "Gesetzt -- es meldet sich aber kein Supervisor dieser "
+                              "Gruppe; ob und wann der Wert wirkt, ist unbekannt.")
+    return _zurueck(name, f"Gesetzt: {unten}..{oben} je Supervisor.")
+
+
+@post("/worker/gruppe/{name:str}/sollwert/aufheben")
+async def sollwert_aufheben(
+    request: Request[Any, Any, Any],
+    name: FromPath[str],
+    data: Annotated[dict[str, Any], Body(media_type=RequestEncodingType.URL_ENCODED)],
+) -> Redirect:
+    """Den Sollwert aufheben; danach gelten wieder die Startargumente (R15, R27)."""
+    steuerung = _steuerung(request)
+    if not steuerung.verfuegbar:
+        raise NotFoundException(detail=steuerung.grund or "die Steuerung ist nicht verfügbar")
+    konto = str(request.session.get(SESSION_ACCOUNT_KEY, "unbekannt"))
+    try:
+        await steuerung.aufheben(name)
+    except Exception as exc:
+        await request.app.state.services.audit.record(
+            "setpoint_clear", account=konto, target=name,
+            outcome="fehlgeschlagen", detail=str(exc)[:200],
+        )
+        return _zurueck(name, f"Nicht aufgehoben: {exc}")
+    await request.app.state.services.audit.record(
+        "setpoint_clear", account=konto, target=name, outcome="ok",
+    )
+    return _zurueck(name, "Aufgehoben -- es gelten wieder die Startargumente des Deployments.")

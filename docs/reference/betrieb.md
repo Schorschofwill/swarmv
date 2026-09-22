@@ -99,3 +99,29 @@ demselben Namen neu anlegen; ein gesperrtes nicht.
 Passwörter liegen als argon2id. Werden die Verfahrensparameter später
 angehoben, zieht der gespeicherte Wert beim nächsten erfolgreichen Anmelden
 von selbst nach.
+
+## Worker-Gruppen: `--group` und `SQD_WORKER_GROUP`
+
+Der Kontrollkanal führt eine Worker-Gruppe unter dem Label aus `--group`; ohne
+Label unter der sortierten, kommagetrennten Queue-Menge. Der Hook des
+Dashboards läuft im **Kindprozess** und sieht dieses Argument nicht — er liest
+`SQD_WORKER_GROUP` und fällt sonst ebenfalls auf die Queue-Menge zurück.
+
+Beide müssen übereinstimmen, sonst führt das Dashboard dieselbe Gruppe unter
+zwei Namen: die Übersicht unter dem einen, der Kontrollkanal unter dem
+anderen. Die Steuerung findet dann nie einen Supervisor, und die Gruppe
+erscheint dauerhaft als „kein Supervisor dieser Gruppe meldet sich".
+
+```
+$ export SQD_WORKER_GROUP=orders-eu
+$ swarmq worker --module app.tasks --configure swarmq_dashboard.hooks.worker:setup \
+    --queues orders --max-processes 16 --group orders-eu
+```
+
+Ohne `--group` genügt es, `SQD_WORKER_GROUP` wegzulassen: dann bilden beide
+Seiten denselben Schlüssel aus den Queues.
+
+`--max-processes` ist die zweite Voraussetzung. Ohne dieses Argument schaltet
+der Supervisor den Kontrollkanal gar nicht ein: er meldet nichts, und ein
+Sollwert erreicht ihn nicht. Die Worker-Übersicht sagt das an der betroffenen
+Gruppe.

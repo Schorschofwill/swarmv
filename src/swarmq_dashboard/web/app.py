@@ -37,6 +37,12 @@ from swarmq_dashboard.accounts import AccountStore
 from swarmq_dashboard.audit import AuditLog
 from swarmq_dashboard.broker import BrokerObserver, BrokerUnavailable
 from swarmq_dashboard.config import DashboardConfig
+from swarmq_dashboard.control import (
+    SetpointStore,
+    Steuerung,
+    SwarmQSetpointStore,
+    kontrollkanal_grund,
+)
 from swarmq_dashboard.directory.reader import DEFAULT_BATCH, StreamReader
 from swarmq_dashboard.directory.schema import connect
 from swarmq_dashboard.directory.writer import DirectoryWriter
@@ -63,7 +69,13 @@ from swarmq_dashboard.web.routes.dlq import (
 )
 from swarmq_dashboard.web.routes.login import login, login_form, logout
 from swarmq_dashboard.web.routes.tasks import cancel, detail, liste
-from swarmq_dashboard.web.routes.worker import entfernen, uebersicht
+from swarmq_dashboard.web.routes.worker import (
+    entfernen,
+    sollwert_aufheben,
+    sollwert_dialog,
+    sollwert_setzen,
+    uebersicht,
+)
 from swarmq_dashboard.web.stream import LIVE_CHANNEL, LivePublisher, live
 from swarmq_dashboard.web.templates import render, statische_dateien, template_config
 
@@ -198,6 +210,7 @@ class Services:
         broker: Any | None = None,
         dlq_admin: Any | None = None,
         stream: Any | None = None,
+        setpoint_store: SetpointStore | None = None,
     ) -> None:
         self._config = config
         self._hasher = hasher
@@ -217,6 +230,17 @@ class Services:
         #: Tasks das Verzeichnis. Wer nur hinsieht, bezahlt nichts (R28).
         self._dlq_admin: Any = dlq_admin or SwarmQDlqAdmin(config.broker_url)
         self.dlq = DlqService(self._dlq_admin)
+        #: Die Sollwert-Steuerung (U16). Die Faehigkeitspruefung laeuft
+        #: **beim Bauen** und nicht bei der ersten Aktion: ein Bereich, der
+        #: erst beim Klicken zugibt, dass es ihn nicht gibt, ist schlechter
+        #: als einer, der gar nicht erst anbietet (R33, AE15). Ein von aussen
+        #: eingesetzter Kanal ueberspringt sie -- er ist der Beweis, dass es
+        #: ihn gibt.
+        grund = None if setpoint_store is not None else kontrollkanal_grund()
+        self._setpoint_store: SetpointStore | None = setpoint_store
+        if self._setpoint_store is None and grund is None:
+            self._setpoint_store = SwarmQSetpointStore(config.backend_url)
+        self.steuerung = Steuerung(self._setpoint_store, grund=grund)
         #: Der Audit-Strom (R27). Er haengt am Ereignisstrom, nicht an der
         #: Kontendatei -- und er darf fehlen, ohne eine Aktion aufzuhalten.
         self.audit = AuditLog(None)
@@ -457,7 +481,7 @@ class Services:
         # Der Canceller gehoert dazu: er haelt eine eigene Valkey-Verbindung,
         # und ohne ihn leckte je Lebenszyklus eine.
         for teil in (self._stream, self._backend, self._broker, self._dlq_admin,
-                     self.canceller):
+                     self.canceller, self._setpoint_store):
             await _leise_schliessen(teil)
         self._stream = self._stream_vorgabe
         self._backend = None
@@ -742,6 +766,7 @@ def create_app(
     broker: Any | None = None,
     dlq_admin: Any | None = None,
     stream: Any | None = None,
+    setpoint_store: SetpointStore | None = None,
     secure_cookies: bool = True,
 ) -> Litestar:
     """Die Anwendung bauen. Der Lebenszyklus haelt die Aussenverbindungen.
@@ -752,7 +777,7 @@ def create_app(
     """
     services = Services(config, hasher=hasher, throttle_scale=throttle_scale,
                         canceller=canceller, broker=broker, dlq_admin=dlq_admin,
-                        stream=stream)
+                        stream=stream, setpoint_store=setpoint_store)
     # Die Registratur zeigt auf den Speicher des Dienstes, statt einen
     # eigenen zu halten: sonst bliebe eine vierte Verbindung auf die
     # Kontendatei offen, die niemand schliesst und deren abgelaufene Zeilen
@@ -864,7 +889,9 @@ def create_app(
         exception_handlers={NotAuthorizedException: zur_anmeldung,
                             HTTPException: fehlerseite},
         route_handlers=[zustand, login_form, login, logout, live, liste, detail,
-                        cancel, uebersicht, entfernen, dlq_uebersicht, sichten,
+                        cancel, uebersicht, entfernen, sollwert_dialog,
+                        sollwert_setzen, sollwert_aufheben,
+                        dlq_uebersicht, sichten,
                         wiedereinreihen, alle_wiedereinreihen, leeren,
                         statische_dateien()],
         template_config=template_config(),

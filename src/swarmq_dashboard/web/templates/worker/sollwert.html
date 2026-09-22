@@ -1,0 +1,136 @@
+{% extends "base.html" %}
+{% block titel %}Sollwert {{ gruppe.name }}{% endblock %}
+{% block inhalt %}
+
+{%- if hinweis %}
+<p class="notice is-wait" role="status"><span class="tag-dot"></span>{{ hinweis }}</p>
+{%- endif %}
+
+<section class="card">
+  <div class="card-head"><h2 class="card-name">Sollwert für {{ gruppe.name }}</h2></div>
+
+  <p class="card-meta">
+    {#- Die Zahl der Supervisoren ist keine Nebensache: der Sollwert gilt je
+        Supervisor, und aus 2..8 werden bei zweien 4..16 (R15a, AE4). -#}
+    {%- if gruppe.supervisoren == 1 %}
+    Ein Supervisor meldet sich · Spielraum {{ zahl(gruppe.spielraum) }} ·
+    wirksame Werte aus {{ gruppe.herkunft }}
+    {%- elif gruppe.supervisoren %}
+    {{ gruppe.supervisoren }} Supervisoren melden sich ·
+    Spielraum {{ zahl(gruppe.spielraum) }} insgesamt ·
+    wirksame Werte aus {{ gruppe.herkunft }}
+    {%- else %}
+    <span class="notice is-wait"><span class="tag-dot"></span>
+      Kein Supervisor dieser Gruppe meldet sich. Ein Sollwert lässt sich
+      schreiben -- ob und wann er wirkt, kann das Dashboard nicht sagen.</span>
+    {%- endif %}
+  </p>
+
+  {%- if gruppe.uneinheitlich %}
+  <p class="card-meta"><span class="notice is-fail" role="alert"><span class="tag-dot"></span>
+    {{ gruppe.uneinheitlich }} Es gibt keinen Wert, der für alle Supervisoren
+    dieser Gruppe richtig ist.</span></p>
+  {%- endif %}
+
+  {%- if bild.fehler %}
+  <p class="card-meta"><span class="notice is-fail" role="alert">
+    <span class="tag-dot"></span>{{ bild.fehler }}</span></p>
+  {%- endif %}
+
+  {#- Der gesetzte Sollwert und sein Zustand. Ablehnung und Warten teilen
+      sich bewusst keine Darstellung (KTD13). -#}
+  <dl class="fields">
+    <div><dt>Im Kontrollkanal</dt><dd class="mono">
+      {%- if bild.sollwert %}
+      {{ bild.sollwert.unten }}..{{ bild.sollwert.oben }} je Supervisor
+      {#- Die Gesamtzahl nur, wenn sie eine andere Zahl ist: bei einem
+          Supervisor stuende zweimal dasselbe nebeneinander und laese sich
+          wie zwei Groessen. -#}
+      {%- if gruppe.supervisoren > 1 %}
+      · gesamt {{ gruppe.gesamt(bild.sollwert).unten }}..{{ gruppe.gesamt(bild.sollwert).oben }}
+        ({{ gruppe.supervisoren }}&nbsp;Supervisoren)
+      {%- endif %}
+      {%- else %}<span class="muted">kein Sollwert -- es gelten die Startargumente</span>{% endif %}
+    </dd></div>
+    {%- if bild.stand %}
+    <div><dt>Zustand</dt><dd>
+      {%- if bild.stand.zustand == ZUSTAND.BESTAETIGT %}
+      <span class="tag is-ok"><span class="tag-dot"></span> bestätigt</span>
+      {%- elif bild.stand.zustand == ZUSTAND.ABGELEHNT %}
+      <span class="tag is-fail"><span class="tag-dot"></span> abgelehnt</span>
+      {%- elif bild.stand.zustand == ZUSTAND.UNBESTAETIGT %}
+      <span class="tag is-wait"><span class="tag-dot"></span> unbestätigt</span>
+      seit {{ zeitpunkt(bild.stand.gesendet_at) }}
+      {%- else %}
+      <span class="tag is-wait"><span class="tag-dot"></span> gesendet</span>
+      {%- endif %}
+      {%- if bild.stand.von > 1 %}
+      · {{ bild.stand.bestaetigt_von }} von {{ bild.stand.von }} Supervisoren haben ihn angewendet
+      {%- endif %}
+      {%- if bild.stand.grund %}
+      <p class="mono fehlertext">{{ bild.stand.grund }}</p>
+      {#- Kein Knopf zum erneuten Senden: die Ablehnung ist dauerhaft, und
+          der Weg fuehrt ueber eine Korrektur des Wertes (R17, KTD13). -#}
+      <p class="muted">Der Supervisor hat diesen Wert verworfen; er wurde aus
+        dem Kontrollkanal entfernt. Ein erneutes Senden ändert daran nichts --
+        setzen Sie einen Wert innerhalb des Spielraums.</p>
+      {%- endif %}
+      {%- if bild.stand.hinweis %}
+      <p class="muted">{{ bild.stand.hinweis }}</p>
+      {%- endif %}
+    </dd></div>
+    {%- endif %}
+  </dl>
+</section>
+
+<section class="card">
+  <h3 class="card-section">Neuen Sollwert setzen</h3>
+  <form method="post" action="/worker/gruppe/{{ gruppe.name|urlencode }}/sollwert" class="fields">
+    <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
+    {%- if gruppe.autoskalierung or not gruppe.supervisoren %}
+    {#- Zwei Formen: Bereich fuer autoskalierende Gruppen, feste Zahl
+        sonst (R15, U16 Punkt 5). -#}
+    <div>
+      <dt><label for="unten">Untergrenze je Supervisor</label></dt>
+      <dd><input type="number" id="unten" name="unten" min="1" required
+                 value="{{ bild.sollwert.unten if bild.sollwert else 1 }}"></dd>
+    </div>
+    <div>
+      <dt><label for="oben">Obergrenze je Supervisor</label></dt>
+      <dd><input type="number" id="oben" name="oben" min="1" required
+                 value="{{ bild.sollwert.oben if bild.sollwert else 1 }}"></dd>
+    </div>
+    {%- else %}
+    <div>
+      <dt><label for="fest">Prozesszahl je Supervisor</label></dt>
+      <dd><input type="number" id="fest" name="fest" min="1" required
+                 value="{{ bild.sollwert.unten if bild.sollwert else 1 }}">
+        <span class="muted">Diese Gruppe läuft ohne Autoskalierung und nimmt
+          nur eine feste Zahl an.</span></dd>
+    </div>
+    {%- endif %}
+    <div><dt></dt><dd>
+      <button type="submit" class="btn">Sollwert setzen</button>
+      <span class="muted">Die Zahlen gelten <strong>je Supervisor</strong>.
+        {%- if gruppe.supervisoren > 1 %}
+        Bei {{ gruppe.supervisoren }} meldenden Supervisoren fährt die Gruppe
+        insgesamt das {{ gruppe.supervisoren }}-Fache davon.
+        {%- endif %}</span>
+    </dd></div>
+  </form>
+</section>
+
+{%- if bild.sollwert %}
+<section class="card">
+  <h3 class="card-section">Sollwert aufheben</h3>
+  <form method="post" action="/worker/gruppe/{{ gruppe.name|urlencode }}/sollwert/aufheben"
+        class="card-foot">
+    <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
+    <button type="submit" class="btn">Aufheben</button>
+    <span class="muted">Danach gelten wieder die Startargumente des Deployments.</span>
+  </form>
+</section>
+{%- endif %}
+
+<p><a href="/">Zurück zur Worker-Übersicht</a></p>
+{% endblock %}

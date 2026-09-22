@@ -5,22 +5,28 @@ Worker-Übersicht, Task-Verzeichnis, Dead-Letter-Bedienung und Steuerung der
 Worker-Gruppen über den Kontrollkanal. Eigenes Paket, eigener Prozess, eigene
 Veröffentlichung; die Bibliothek bekommt dadurch keine neue Pflichtabhängigkeit.
 
-## Stand (2026-09-17)
+## Stand (2026-09-22)
 
 - Plan: `docs/plans/2026-09-16-1558-feat-dashboard-plan.md` — Anforderungen
   (R1–R33), Entscheidungen (KD1–KD16, KTD1–KTD14) und 19 Implementierungs-
   einheiten in fünf Stufen, umsetzungsreif.
-- Umgesetzt: **Stufe A** (Ereignisvertrag, Puffer, Strom, beide Hooks),
-  **Stufe B** (Verzeichnis mit Aufwärts-Ergänzung, Strom-Leser, Suche und
-  Filter, Broker-Beobachtung) und **U8** (Konten und Konto-Kommandozeile).
+- Umgesetzt: **Stufe A bis E**, also alle Einheiten. Stufe A (Ereignisvertrag,
+  Puffer, Strom, beide Hooks), Stufe B (Verzeichnis, Strom-Leser, Suche und
+  Filter, Broker-Beobachtung), Stufe C (Konten, Sitzung, Audit), Stufe D
+  (Oberfläche: Worker, Tasks, Dead-Letter, Live-Schicht), U18 (`serve`) und
+  **U16** (Sollwert-Steuerung über den Kontrollkanal).
 - Stack: `docs/reference/stack-entscheidung.md` — Litestar, msgspec, Granian,
   Jinja2 + HTMX, SQLite mit FTS5-Trigrammen, argon2id.
 - Oberfläche: `docs/reference/oberflaeche.md` und `docs/mockup/` (freigegeben).
 - **Betrieb: `docs/reference/betrieb.md`** — Datenverzeichnis, Rechte, was
   gelöscht werden darf, Konten anlegen.
-- Voraussetzung im Kern: der Kontrollkanal ist umgesetzt, MR !60 in swarmq
+- Voraussetzung im Kern: der Kontrollkanal, MR !60 in swarmq
   (`docs/plans/2026-09-16-1753-feat-kontrollkanal-plan.md`); Schnittstelle in
-  `docs/reference/kontrollkanal-schnittstelle.md`.
+  `docs/reference/kontrollkanal-schnittstelle.md`. Er ist dort **fertig, aber
+  noch nicht veröffentlicht**: bis zum Release nach 0.6.2 baut dieses Paket
+  über `[tool.uv.sources]` gegen den Arbeitsbaum der Bibliothek (siehe
+  Kommentar in `pyproject.toml`). Fehlt der Kanal, bleibt die Steuerung
+  abgeschaltet und begründet — jede andere Seite trägt weiter.
 - Ankerpunkte in swarmq (Signale, Middleware-Haken, Cancel, DLQ, Schlüssel,
   Konventionen): `docs/reference/swarmq-ankerpunkte.md`.
 - Testmethodik gegen abtastende Prozesse: `docs/reference/scheduler-cron-sync-clobber-test-flake-2026-06-01.md`.
@@ -74,8 +80,25 @@ stehen in `docs/reference/oberflaeche.md`, das fertige Stylesheet in
 Leitsatz: **Farbe trägt Bedeutung, nie Marke.** Gehäuse grafit und
 papierfarben, Farbe nur als Zustand. IBM Plex Sans und Mono, selbst gehostet.
 
-## Offen vor dem ersten Code
+## Worker anschließen
 
-Speicherbudget des Stroms, DLQ-Lesen ohne Drain, Anbindung des Anwendungs-Hooks
-bei Scheduler- und Workflow-Einreihungen, Fristen für „getrennt“ und
-„unbestätigt“, Versionsspanne zu swarmq — im Plan unter „Deferred to Planning“.
+```bash
+export SQD_WORKER_GROUP=orders-eu          # muss zu --group passen
+swarmq worker --module app.tasks \
+  --configure swarmq_dashboard.hooks.worker:setup \
+  --queues orders --max-processes 16 --group orders-eu
+```
+
+`--max-processes` schaltet den Kontrollkanal ein; ohne das Argument meldet der
+Supervisor nichts und ein Sollwert erreicht ihn nicht. `SQD_WORKER_GROUP` und
+`--group` müssen dasselbe sagen — der Hook läuft im Kindprozess und sieht das
+Argument nicht. Stimmen sie nicht überein, führt das Dashboard dieselbe Gruppe
+unter zwei Namen und findet nie einen Supervisor. Einzelheiten:
+`docs/reference/betrieb.md`.
+
+## Offen
+
+Die Versionsspanne zu swarmq wartet auf das Release des Kontrollkanals; danach
+entfällt der `[tool.uv.sources]`-Block und die Spanne wird auf `>=0.7,<0.8`
+gezogen. Die Ansicht des Audit-Stroms im Browser ist nach R27 ausdrücklich
+Stufe 2 und bleibt vorerst bei der Kommandozeile.

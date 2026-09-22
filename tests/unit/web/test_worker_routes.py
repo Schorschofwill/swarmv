@@ -264,8 +264,20 @@ async def test_eine_queue_mit_fehlgrund(tmp_path: Path) -> None:
 # --- Zyklus 3 -----------------------------------------------------------
 
 
-async def test_ohne_kontrollkanal_sagt_die_seite_das(tmp_path: Path) -> None:
-    """Covers AE15, R33. An **einer** Stelle, nicht an jeder Zelle."""
+async def test_ohne_kontrollkanal_sagt_die_seite_das(tmp_path: Path, monkeypatch: Any) -> None:
+    """Covers AE15, R33. An **einer** Stelle, nicht an jeder Zelle.
+
+    Seit U16 haengt der Satz an der Faehigkeitspruefung statt fest in der
+    Vorlage: gegen eine Bibliothek **mit** Kanal waere er selbst die
+    Falschaussage. Der Test stellt die alte Bibliothek her, statt sich auf
+    die gerade installierte zu verlassen -- sonst prueft er die Umgebung und
+    nicht den Code.
+    """
+    monkeypatch.setattr(
+        "swarmq_dashboard.web.app.kontrollkanal_grund",
+        lambda: ("Steuerung nicht verfügbar: die installierte swarmq-Fassung bringt den "
+                 "Kontrollkanal nicht mit."),
+    )
     config = _config(tmp_path)
     _worker(config, _meta("phx-w1:0", JETZT), _herzschlag("phx-w1:0", JETZT))
     c = await _angemeldet(config, broker=FakeBroker())

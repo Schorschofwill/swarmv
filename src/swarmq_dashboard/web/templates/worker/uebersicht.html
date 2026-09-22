@@ -3,9 +3,17 @@
 {% block inhalt %}
 
 {#- Genau einmal, nicht an jeder Zelle: wiederholt waere der Hinweis Laerm und
-    verdeckte, was **da** ist (R33, AE15). -#}
+    verdeckte, was **da** ist (R33, AE15). Und nur, wenn wirklich etwas fehlt --
+    gegen eine Bibliothek mit Kontrollkanal waere der Satz selbst die
+    Falschaussage. -#}
+{%- if ohne_kontrollkanal %}
 <p class="notice"><span class="tag-dot"></span>
   {{ ohne_kontrollkanal }}</p>
+{%- elif kanal_fehler %}
+<p class="notice is-wait"><span class="tag-dot"></span>
+  Der Kontrollkanal antwortet nicht, Spielraum und Sollwerte fehlen darum:
+  {{ kanal_fehler }} Alles andere auf dieser Seite gilt.</p>
+{%- endif %}
 
 {%- if gruppen %}
 {%- for g in gruppen %}
@@ -17,6 +25,49 @@
   </div>
   <p class="card-meta">
     {{ g.verbunden|length }} von {{ g.worker|length }} verbunden
+    {#- Spielraum und Herkunft stehen nur da, wo der Kontrollkanal sie
+        wirklich gemeldet hat (R14, R15a). -#}
+    {%- set steuer = steuerung.get(g.name) %}
+    {%- if steuer and steuer.gruppe.supervisoren %}
+    · Spielraum {{ zahl(steuer.gruppe.spielraum) }}
+      ({{ steuer.gruppe.supervisoren }}&nbsp;Supervisor{% if steuer.gruppe.supervisoren != 1 %}en{% endif %})
+    · wirksame Werte aus {{ steuer.gruppe.herkunft }}
+    {%- endif %}
+    {#- Der Sollwert gehoert auf die Uebersicht: sonst muesste man jede
+        Gruppe einzeln aufmachen, um zu sehen, ob jemand etwas gesetzt hat
+        (R14, R15a). Ablehnung und Warten tragen verschiedene Marken (KTD13). -#}
+    {%- if steuer and not steuer.gruppe.supervisoren %}
+    {#- Der Kanal antwortet, aber fuer diese Gruppe meldet niemand. Die
+        beiden Ursachen stehen hier und nicht in einer Fussnote: die
+        zweite ist im Betrieb die haeufigere und von aussen unsichtbar
+        (R33). -#}
+    · <span class="notice is-wait"><span class="tag-dot"></span>
+      kein Supervisor dieser Gruppe meldet sich: entweder läuft der Worker
+      ohne <code>--max-processes</code>, oder er meldet unter einem anderen
+      Gruppennamen -- der Kontrollkanal nimmt <code>--group</code>, das
+      Dashboard <code>SQD_WORKER_GROUP</code>, und beide müssen
+      übereinstimmen.</span>
+    {%- endif %}
+    {%- if steuer %}
+    ·
+    {%- if steuer.sollwert %}
+    Sollwert {{ steuer.sollwert.unten }}..{{ steuer.sollwert.oben }} je Supervisor
+    {%- if steuer.stand %}
+    {%- if steuer.stand.zustand == ZUSTAND.BESTAETIGT %}
+    <span class="tag is-ok"><span class="tag-dot"></span> bestätigt</span>
+    {%- elif steuer.stand.zustand == ZUSTAND.ABGELEHNT %}
+    <span class="tag is-fail"><span class="tag-dot"></span> abgelehnt</span>
+    {%- elif steuer.stand.zustand == ZUSTAND.UNBESTAETIGT %}
+    <span class="tag is-wait"><span class="tag-dot"></span> unbestätigt</span>
+    {%- else %}
+    <span class="tag is-wait"><span class="tag-dot"></span> gesendet</span>
+    {%- endif %}
+    {%- endif %}
+    {%- else %}
+    kein Sollwert
+    {%- endif %}
+    · <a href="/worker/gruppe/{{ g.name|urlencode }}/sollwert">Sollwert ändern</a>
+    {%- endif %}
     {#- Der Rueckstau gehoert an die Gruppe, nicht in eine Tabelle am
         Seitenende: ohne Kontrollkanal ist er die einzige Antwort auf
         "staut es sich?" (R14 Satz 2), und die Frage entsteht hier. -#}
