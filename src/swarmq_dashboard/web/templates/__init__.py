@@ -54,6 +54,7 @@ BEREICHE = (
     Bereich("worker", "Worker", "/"),
     Bereich("tasks", "Tasks", "/tasks"),
     Bereich("dlq", "Dead Letter", "/dlq"),
+    Bereich("probe", "Probe", "/probe"),
 )
 
 #: Wortmarken der drei Kopfzeilen-Zustaende. Farbe allein traegt nie die

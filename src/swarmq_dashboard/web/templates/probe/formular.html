@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% block titel %}Probe{% endblock %}
+{% block inhalt %}
+
+{%- if hinweis %}
+<p class="notice is-ok" role="status"><span class="tag-dot"></span>{{ hinweis }}</p>
+{%- elif fehler %}
+<p class="notice is-fail" role="alert"><span class="tag-dot"></span>{{ fehler }}</p>
+{%- endif %}
+
+<section class="card">
+  <div class="card-head"><h2 class="card-name">Eine Probe losschicken</h2></div>
+  <p class="card-meta">
+    Reiht <span class="mono">{{ task_name }}</span> ein — einen Task, der auf
+    Ansage wartet, rechnet oder scheitert. Er muss im Worker <strong>bekannt</strong>
+    sein; sonst liegt die Probe in der Queue und wird nie aufgegriffen.
+    Ein Import im eigenen Task-Modul genügt:
+    <span class="mono">from swarmq_dashboard.probe import ProbeTask</span> —
+    <span class="mono">--module</span> lässt sich nicht zweimal angeben.
+  </p>
+
+  <form method="post" action="/probe" class="fields">
+    <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
+
+    <div>
+      <dt><label for="queue">Queue</label></dt>
+      <dd>
+        <select id="queue" name="queue">
+          {%- for q in queues %}
+          <option value="{{ q }}">{{ q }}</option>
+          {%- endfor %}
+        </select>
+        <span class="muted">Sie entscheidet, welcher Worker die Probe bekommt —
+          <span class="mono">io</span> wartende Arbeit,
+          <span class="mono">cpu</span> rechnende.</span>
+      </dd>
+    </div>
+
+    <div>
+      <dt><label for="anzahl">Anzahl</label></dt>
+      <dd><input type="number" id="anzahl" name="anzahl" min="1" max="{{ max_anzahl }}" value="1">
+        <span class="muted">Höchstens {{ max_anzahl }}. Eine einzelne Probe steht nie
+          in der Queue — für einen sichtbaren Rückstau braucht es mehrere.</span></dd>
+    </div>
+
+    <div>
+      <dt><label for="sleep_s">Warten (s)</label></dt>
+      <dd><input type="text" id="sleep_s" name="sleep_s" value="0" inputmode="decimal">
+        <span class="muted">Belegt einen Slot, ohne die CPU zu belasten. Höchstens
+          {{ max_dauer|int }} s.</span></dd>
+    </div>
+
+    <div>
+      <dt><label for="burn_s">Rechnen (s)</label></dt>
+      <dd><input type="text" id="burn_s" name="burn_s" value="0" inputmode="decimal">
+        <span class="muted">Belastet die CPU wirklich — die ehrliche Probe für den
+          Rechen-Pool, wo Warten nur einen Slot blockiert.</span></dd>
+    </div>
+
+    <div>
+      <dt><label for="delay_s">Verzögerung (s)</label></dt>
+      <dd><input type="text" id="delay_s" name="delay_s" placeholder="sofort" inputmode="decimal">
+        <span class="muted">Geht über den Scheduler statt direkt an den Broker.</span></dd>
+    </div>
+
+    <div>
+      <dt><label for="eta">Zeitpunkt</label></dt>
+      <dd><input type="datetime-local" id="eta" name="eta">
+        <span class="muted">Statt einer Verzögerung — nie beides zugleich.</span></dd>
+    </div>
+
+    <div>
+      <dt><label for="unique_for">Entdoppeln (s)</label></dt>
+      <dd><input type="number" id="unique_for" name="unique_for" min="1" placeholder="aus">
+        <select name="unique_until" aria-label="Entdoppelung endet">
+          <option value="">— endet bei —</option>
+          <option value="completion">Abschluss</option>
+          <option value="start">Start</option>
+        </select>
+        <span class="muted">Innerhalb der Frist gibt eine zweite gleiche Einreihung
+          die Kennung der ersten zurück, ohne neue Arbeit.</span></dd>
+    </div>
+
+    <div>
+      <dt><label for="note">Notiz</label></dt>
+      <dd><input type="text" id="note" name="note" maxlength="120"
+                 placeholder="woran man diesen Versuch wiedererkennt">
+        <span class="muted">Steht in den Argumenten und im Fehlertext — der Faden,
+          an dem der Versuch später in der Task-Liste hängt.</span></dd>
+    </div>
+
+    <div>
+      <dt><label for="fail">Scheitern</label></dt>
+      <dd><input type="checkbox" id="fail" name="fail" value="ja">
+        <label for="fail" class="muted">Der Task wirft absichtlich. Mit drei
+          Wiederholungen am Task landet er danach im Dead-Letter — so lässt sich
+          dieser Weg ohne echten Fehler ausprobieren.</label></dd>
+    </div>
+
+    <div><dt></dt><dd><button type="submit" class="btn">Probe einreihen</button></dd></div>
+  </form>
+</section>
+
+<section class="card">
+  <h3 class="card-section">Was hier nicht steht</h3>
+  <p class="card-meta">
+    Fristen, Wiederholungen, Ratenbegrenzung, Sperren, Verfall und Priorität
+    gehören zur <span class="mono">TaskInfo</span> des Tasks und gelten für
+    jede Einreihung gleich — die Bibliothek nimmt sie bei
+    <span class="mono">schedule()</span> nicht entgegen. Felder dafür
+    anzubieten hieße, eine Wirkung zu versprechen, die es nicht gibt. Wer sie
+    ausprobieren will, ändert sie an
+    <span class="mono">swarmq_dashboard.probe.ProbeTask</span> und startet die
+    Worker neu.
+  </p>
+</section>
+{% endblock %}

@@ -58,6 +58,7 @@ from swarmq_dashboard.web.auth import (
     session_guard,
 )
 from swarmq_dashboard.web.cancel import Canceller, SwarmQCanceller
+from swarmq_dashboard.web.probe import ProbeSender
 from swarmq_dashboard.web.routes.dlq import (
     alle_wiedereinreihen,
     leeren,
@@ -68,6 +69,8 @@ from swarmq_dashboard.web.routes.dlq import (
     uebersicht as dlq_uebersicht,
 )
 from swarmq_dashboard.web.routes.login import login, login_form, logout
+from swarmq_dashboard.web.routes.probe import formular as probe_formular
+from swarmq_dashboard.web.routes.probe import senden as probe_senden
 from swarmq_dashboard.web.routes.tasks import cancel, detail, liste
 from swarmq_dashboard.web.routes.worker import (
     entfernen,
@@ -211,6 +214,7 @@ class Services:
         dlq_admin: Any | None = None,
         stream: Any | None = None,
         setpoint_store: SetpointStore | None = None,
+        probe_sender: Any | None = None,
     ) -> None:
         self._config = config
         self._hasher = hasher
@@ -241,6 +245,12 @@ class Services:
         if self._setpoint_store is None and grund is None:
             self._setpoint_store = SwarmQSetpointStore(config.backend_url)
         self.steuerung = Steuerung(self._setpoint_store, grund=grund)
+        #: Das Einreihen von Proben -- die einzige Stelle, an der der
+        #: Dienst selbst Arbeit erzeugt. Traege verbunden wie das
+        #: Stornieren: wer nur hinsieht, bezahlt keine Broker-Verbindung.
+        self.probe_sender: Any = probe_sender or ProbeSender(
+            broker_url=config.broker_url, backend_url=config.backend_url
+        )
         #: Der Audit-Strom (R27). Er haengt am Ereignisstrom, nicht an der
         #: Kontendatei -- und er darf fehlen, ohne eine Aktion aufzuhalten.
         self.audit = AuditLog(None)
@@ -481,7 +491,7 @@ class Services:
         # Der Canceller gehoert dazu: er haelt eine eigene Valkey-Verbindung,
         # und ohne ihn leckte je Lebenszyklus eine.
         for teil in (self._stream, self._backend, self._broker, self._dlq_admin,
-                     self.canceller, self._setpoint_store):
+                     self.canceller, self._setpoint_store, self.probe_sender):
             await _leise_schliessen(teil)
         self._stream = self._stream_vorgabe
         self._backend = None
@@ -767,6 +777,7 @@ def create_app(
     dlq_admin: Any | None = None,
     stream: Any | None = None,
     setpoint_store: SetpointStore | None = None,
+    probe_sender: Any | None = None,
     secure_cookies: bool = True,
 ) -> Litestar:
     """Die Anwendung bauen. Der Lebenszyklus haelt die Aussenverbindungen.
@@ -777,7 +788,8 @@ def create_app(
     """
     services = Services(config, hasher=hasher, throttle_scale=throttle_scale,
                         canceller=canceller, broker=broker, dlq_admin=dlq_admin,
-                        stream=stream, setpoint_store=setpoint_store)
+                        stream=stream, setpoint_store=setpoint_store,
+                        probe_sender=probe_sender)
     # Die Registratur zeigt auf den Speicher des Dienstes, statt einen
     # eigenen zu halten: sonst bliebe eine vierte Verbindung auf die
     # Kontendatei offen, die niemand schliesst und deren abgelaufene Zeilen
@@ -891,6 +903,7 @@ def create_app(
         route_handlers=[zustand, login_form, login, logout, live, liste, detail,
                         cancel, uebersicht, entfernen, sollwert_dialog,
                         sollwert_setzen, sollwert_aufheben,
+                        probe_formular, probe_senden,
                         dlq_uebersicht, sichten,
                         wiedereinreihen, alle_wiedereinreihen, leeren,
                         statische_dateien()],

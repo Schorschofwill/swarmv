@@ -37,6 +37,7 @@ AUDIT_ACTIONS = (
     "setpoint_clear",
     "dlq_action",
     "worker_remove",
+    "probe_send",
 )
 #: Laengendeckel des Audit-Stroms -- eigenstaendig (R9). Gerechnet fuer sieben
 #: Tage: selbst bei tausend Aktionen am Tag bleibt reichlich Luft, und ein

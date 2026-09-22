@@ -72,14 +72,24 @@ def _zustand(**kw: object) -> dict[str, object]:
 # --- Zyklus 1 -----------------------------------------------------------
 
 
-def test_drei_bereiche_und_kein_vierter() -> None:
-    """Covers R24, R25."""
-    assert [b.slug for b in BEREICHE] == ["worker", "tasks", "dlq"]
+def test_die_bereiche_sind_abgezaehlt_und_begruendet() -> None:
+    """Covers R24, R25 -- mit einer benannten Abweichung.
+
+    R24 nennt drei Bereiche, R25 verbietet alles, was nicht zu R8--R19 oder
+    R28--R33 gehoert. **Probe** gehoert zu keiner dieser Anforderungen: die
+    Seite kam auf ausdruecklichen Wunsch dazu, um den Weg vom Einreihen bis
+    zum Dead-Letter ohne echte Arbeit ausprobieren zu koennen.
+
+    Der Test bleibt die Sperre gegen wildes Wachstum -- er zaehlt weiter ab
+    und faellt bei jedem fuenften Bereich. Was er nicht mehr tut, ist die
+    Abweichung zu verschweigen.
+    """
+    assert [b.slug for b in BEREICHE] == ["worker", "tasks", "dlq", "probe"]
     html = render("base.html", status=_zustand(), account="ops", aktiv="worker")
     for bereich in BEREICHE:
         assert bereich.titel in html, f"{bereich.titel} fehlt in der Navigation"
     treffer = re.findall(r'class="nav-link"', html)
-    assert len(treffer) == 3, f"{len(treffer)} Navigationseintraege statt drei"
+    assert len(treffer) == 4, f"{len(treffer)} Navigationseintraege statt vier"
     # Der aktive Bereich traegt ``aria-current`` statt einer eigenen Klasse:
     # das Stylesheet haengt seine Hervorhebung daran, und ein Vorleseprogramm
     # bekommt die Auskunft damit gleich mit.
