@@ -92,8 +92,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--data-dir",
         type=_datenverzeichnis,
-        default=Path(DEFAULT_DATA_DIR),
-        help=f"Verzeichnis fuer Verzeichnis- und Kontendatei (Vorgabe: {DEFAULT_DATA_DIR})",
+        # **Ohne** Vorgabewert: sonst liesse sich ein ausdruecklich
+        # angegebenes Verzeichnis nicht von der Vorgabe unterscheiden, und die
+        # Vorgabe wuerde ein gesetztes SQD_DATA_DIR ueberschreiben. Die
+        # Aufloesung macht ``_datenort``.
+        default=None,
+        help=("Verzeichnis fuer Verzeichnis- und Kontendatei "
+              f"(sonst SQD_DATA_DIR, sonst {DEFAULT_DATA_DIR})"),
     )
     unter = p.add_subparsers(dest="befehl", required=True)
 
@@ -164,7 +169,7 @@ def main(
         # zeigt, ein toter Symlink, ein Verzeichnis ohne Schreibrecht, eine
         # volle Platte -- kam sonst als Traceback heraus und sah aus, als
         # waere das Werkzeug kaputt.
-        store = AccountStore(accounts_path(args.data_dir), hasher=hasher)
+        store = AccountStore(accounts_path(_datenort(args)), hasher=hasher)
         return _konto(args, store, prompt, ziel)
     except AccountError as exc:
         # Benannt und mit Rueckgabewert ungleich null: ein Fehlschlag mit 0
@@ -172,11 +177,26 @@ def main(
         print(str(exc), file=ziel)
         return 1
     except (OSError, sqlite3.Error) as exc:
-        print(f"Die Kontendatei unter {args.data_dir} ist nicht benutzbar: {exc}", file=ziel)
+        print(f"Die Kontendatei unter {_datenort(args)} ist nicht benutzbar: {exc}", file=ziel)
         return 1
     finally:
         if store is not None:
             store.close()
+
+
+def _datenort(args: argparse.Namespace, umgebung: Mapping[str, str] | None = None) -> Path:
+    """Wo die beiden lokalen Dateien liegen -- fuer **alle** Unterbefehle gleich.
+
+    Die Rangfolge steht hier an einer Stelle, weil sie sonst auseinanderlief:
+    ``account`` und ``audit`` lasen nur die Kommandozeile, der Dienst nur die
+    Umgebung. Wer seine Konten mit ``--data-dir`` anlegte und den Dienst
+    genauso startete, bekam zwei verschiedene Verzeichnisse und eine
+    Anmeldung, die "Konto oder Passwort stimmt nicht" sagte.
+    """
+    if args.data_dir is not None:
+        return Path(args.data_dir)
+    quelle: Mapping[str, str] = os.environ if umgebung is None else umgebung
+    return Path(quelle.get("SQD_DATA_DIR", "").strip() or DEFAULT_DATA_DIR)
 
 
 #: Adressen, auf denen eine Klartextverbindung vertretbar ist: nur der eigene
@@ -241,9 +261,13 @@ def _serve(args: argparse.Namespace, out: TextIO, server: Any,
         print(f"Die Einstellungen taugen nicht: {exc}", file=out)
         return 2
 
+    if args.data_dir is not None:
+        # Derselbe Weg wie bei --insecure-http: Granian bekommt einen
+        # Modulpfad und ruft die Fabrik selbst auf; der Arbeitsprozess kennt
+        # die Kommandozeile nicht. Ohne diese Zeile lief der Dienst auf
+        # ./sqd-data, waehrend die Konten woanders lagen.
+        os.environ["SQD_DATA_DIR"] = str(args.data_dir)
     if args.insecure_http:
-        # Der Arbeitsprozess erfaehrt nur ueber die Umgebung davon: Granian
-        # bekommt einen Modulpfad und ruft die Fabrik selbst auf.
         os.environ["SQD_INSECURE_HTTP"] = "1"
 
     if server is None:

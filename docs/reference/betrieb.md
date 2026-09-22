@@ -8,8 +8,15 @@ R7a verlangt, dass der Ort der Datei mit den Klartext-Argumenten
 ## Das Datenverzeichnis
 
 Beide lokalen Dateien liegen in einem Verzeichnis, das mit `--data-dir`
-gesetzt wird. Vorgabe ist `./sqd-data` relativ zum Arbeitsverzeichnis des
-Prozesses — bei einer systemd-Unit also relativ zu `WorkingDirectory`.
+gesetzt wird — für **alle** Unterbefehle, auch `serve`. Ohne das Argument
+gilt `SQD_DATA_DIR`, sonst `./sqd-data` relativ zum Arbeitsverzeichnis des
+Prozesses; bei einer systemd-Unit also relativ zu `WorkingDirectory`.
+
+Die drei Wege müssen dasselbe Verzeichnis meinen. Wer Konten unter
+`--data-dir /var/lib/sqd` anlegt und den Dienst ohne dieses Argument startet,
+bekommt ein frisch angelegtes, leeres `./sqd-data` — und auf die Anmeldung
+„Konto oder Passwort stimmt nicht", ohne einen Hinweis darauf, dass der Dienst
+woanders hinsieht.
 
 ```
 sqd-data/                 0700, gehört dem Dienstbenutzer

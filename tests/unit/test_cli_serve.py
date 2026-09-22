@@ -40,6 +40,7 @@ Test-Liste (AGENTS.md):
 from __future__ import annotations
 
 import io
+import os
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -272,3 +273,51 @@ def test_die_anwendung_kennt_den_unterschied(tmp_path: Path) -> None:
     assert sicher(create_app(config, secure_cookies=False)) is False, (
         "der Schalter erreicht das Cookie nicht"
     )
+
+
+# --- Zyklus 5: --data-dir wirkt auch fuer den Dienst ---------------------
+
+
+def test_data_dir_erreicht_den_arbeitsprozess(tmp_path: Path, monkeypatch: Any) -> None:
+    """Der Befund aus dem ersten echten Start mit eigenem Datenverzeichnis.
+
+    ``--data-dir`` galt nur fuer ``account`` und ``audit``. ``serve`` reichte
+    es nirgends hin: Granian ruft ``aus_der_umgebung()``, und die liest
+    ``SQD_DATA_DIR`` oder faellt auf ``./sqd-data`` zurueck. Wer seine Konten
+    unter ``--data-dir /var/lib/sqd`` anlegte und den Dienst genauso startete,
+    bekam ein frisch angelegtes, leeres ``./sqd-data`` im Arbeitsverzeichnis
+    -- und auf die Anmeldung "Konto oder Passwort stimmt nicht". Ohne einen
+    Hinweis darauf, dass der Dienst woanders hinsieht.
+
+    Die bestehenden Tests konnten das nicht finden: sie setzten
+    ``SQD_DATA_DIR`` **und** ``--data-dir`` auf denselben Pfad.
+    """
+    monkeypatch.delenv("SQD_DATA_DIR", raising=False)
+    eigenes = tmp_path / "eigenes-verzeichnis"
+    eigenes.mkdir()
+    umgebung = {k: v for k, v in _umgebung(tmp_path).items() if k != "SQD_DATA_DIR"}
+    aus = io.StringIO()
+    code = main(["--data-dir", str(eigenes), "serve", "--insecure-http"],
+                out=aus, server=FakeServer, umgebung=umgebung)
+    assert code == 0, aus.getvalue()
+    assert os.environ.get("SQD_DATA_DIR") == str(eigenes), (
+        "der Arbeitsprozess sieht das Datenverzeichnis der Kommandozeile nicht"
+    )
+
+
+def test_ein_gesetztes_sqd_data_dir_bleibt_ohne_ausdrueckliches_argument(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Die Vorgabe des Arguments darf die Umgebung nicht ueberschreiben.
+
+    Sonst laege das Datenverzeichnis eines Dienstes, der seine Einstellungen
+    aus der Umgebung bezieht, ploetzlich im Arbeitsverzeichnis der Unit --
+    weil ``--data-dir`` einen Vorgabewert hat, den niemand angegeben hat.
+    """
+    aus_der_umgebung_pfad = str(tmp_path / "aus-der-umgebung")
+    monkeypatch.setenv("SQD_DATA_DIR", aus_der_umgebung_pfad)
+    umgebung = dict(_umgebung(tmp_path), SQD_DATA_DIR=aus_der_umgebung_pfad)
+    aus = io.StringIO()
+    code = main(["serve", "--insecure-http"], out=aus, server=FakeServer, umgebung=umgebung)
+    assert code == 0, aus.getvalue()
+    assert os.environ.get("SQD_DATA_DIR") == aus_der_umgebung_pfad
