@@ -11,6 +11,10 @@ Test-Liste (AGENTS.md):
 4. [x] Ein echter Supervisor bestaetigt einen geschriebenen Sollwert, die
        Ansicht folgt, und eine Ablehnung raeumt den Kanal (Verification
        aus U16, KTD13).
+5. [x] Covers AE5. Ein Sollwert, der schon im Kanal liegt, bevor der
+       Supervisor startet, wirkt vor dem ersten Kindprozess -- und die
+       Ansicht nennt ihn als Herkunft, obwohl dieser Dienst ihn nie
+       gesendet hat.
 """
 
 from __future__ import annotations
@@ -187,3 +191,69 @@ async def test_ein_echter_supervisor_bestaetigt_einen_geschriebenen_sollwert(
             proc.wait(timeout=40)
         except subprocess.TimeoutExpired:
             proc.kill()
+
+
+async def test_ein_vorhandener_sollwert_wirkt_vor_dem_ersten_kindprozess(
+    backend_url: str, broker_url: str
+) -> None:
+    """Covers AE5, R16. Der Sollwert liegt **vor** dem Supervisor da.
+
+    Das ist der Deploy-Fall: das Deployment startet mit ``--processes 2``,
+    im Kanal steht 4..4, und der Supervisor wendet es an, bevor das erste
+    Kind laeuft -- ohne dass jemand nach dem Start etwas tut.
+
+    Fuer das Dashboard ist es zugleich der Fall, den es am wenigsten
+    kennt: **es hat diesen Wert nie gesendet.** Es gibt keinen gemerkten
+    Sendezeitpunkt, gegen den eine Frist laufen koennte, und trotzdem darf
+    die Ansicht weder "unbestaetigt seit 1970" behaupten noch die Herkunft
+    verschweigen.
+    """
+    queue = f"sqdctl_{uuid.uuid4().hex[:8]}"
+    gruppe = f"grp-{uuid.uuid4().hex[:8]}"
+    steuerung = Steuerung(SwarmQSetpointStore(backend_url))
+    proc: subprocess.Popen[str] | None = None
+    ausgabe: list[str] = []
+    try:
+        # Erst der Sollwert -- dann erst der Supervisor.
+        await steuerung._store.schreiben(gruppe, Sollwert(4, 4))
+        assert await steuerung._store.gelesen(gruppe) == Sollwert(4, 4)
+
+        proc = _supervisor(queue, gruppe, backend_url, broker_url)
+        _mitlesen(proc, ausgabe)
+
+        bild = await _warten(
+            lambda: steuerung.bild(gruppe, now=time.time()),
+            lambda b: b.gruppe.supervisoren == 1 and b.stand is not None,
+            frist_s=60, ausgabe=ausgabe,
+        )
+        meldung = bild.gruppe.meldungen[0]
+        # Der Supervisor startete mit --processes 1 (siehe _supervisor);
+        # wirksam sind die 4 aus dem Sollwert, nicht die Startargumente.
+        assert meldung["effective"] == {"min": 4, "max": 4}, meldung
+        assert meldung["source"] == "setpoint"
+        assert bild.gruppe.herkunft == "Sollwert"
+        assert bild.sollwert == Sollwert(4, 4)
+
+        # Und die vier Kinder laufen wirklich -- nicht nur die Zahl in der
+        # Rueckmeldung.
+        belegt = await _warten(
+            lambda: steuerung.bild(gruppe, now=time.time()),
+            lambda b: b.gruppe.belegt == 4,
+            frist_s=40, ausgabe=ausgabe,
+        )
+        assert belegt.gruppe.worker == 4
+
+        # Kein gemerkter Sendezeitpunkt: der Zustand darf trotzdem nicht
+        # "unbestaetigt" sein, und eine Frist darf nicht gegen 0 rechnen.
+        assert steuerung.gesendet_at(gruppe) is None
+        assert belegt.stand is not None
+        assert belegt.stand.zustand is Zustand.BESTAETIGT
+    finally:
+        await steuerung.aufheben(gruppe)
+        await steuerung._store.close()
+        if proc is not None:
+            proc.send_signal(signal.SIGTERM)
+            try:
+                proc.wait(timeout=40)
+            except subprocess.TimeoutExpired:
+                proc.kill()
