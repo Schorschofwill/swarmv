@@ -39,6 +39,64 @@ lokale Konten mit Passwort; sieben Tage Aufbewahrung; Grundform „Seiten wie
 Flower“ (Worker, Tasks, DLQ); Steuerumfang nur Autoscale-Grenzen und
 Prozesszahl; Abhängigkeit von `swarmq` als Versionsspanne.
 
+## Installieren
+
+```bash
+pip install swarmq-dashboard        # oder: uv add swarmq-dashboard
+```
+
+Python 3.14 oder neuer. Die Bibliothek kommt als `swarmq>=0.7,<0.8` mit: Die
+Untergrenze ist der Kontrollkanal, ohne den es keine Sollwert-Steuerung gibt;
+die Obergrenze hält eine Änderung der Signal-Nutzlasten auf, bevor sie den
+Ereignisspiegel still beschädigt.
+
+### Die zwei Hooks
+
+Der Dienst liest keine Datenbank der Bibliothek, sondern einen eigenen
+Ereignisstrom. Gefüllt wird der von zwei Hooks, und beide sind eine Zeile:
+
+```bash
+# Im Worker -- Ausführung, Ergebnisse, Lebenszeichen, Stammdaten:
+export SQD_WORKER_GROUP=orders-eu          # muss zu --group passen
+swarmq worker --module app.tasks \
+  --configure swarmq_dashboard.hooks.worker:setup \
+  --queues orders --max-processes 16 --group orders-eu
+```
+
+```python
+# In der einreihenden Anwendung -- Tasks ab der Einreihung, mit Argumenten,
+# Einreihungszeitpunkt und als wartend stornierbar:
+from swarmq_dashboard.hooks.app import install
+install(app)
+```
+
+Ohne den Anwendungs-Hook kennt das Dashboard einen Task erst, wenn ein Worker
+ihn aufgreift — dann ohne Einreihungszeitpunkt. Scheduler-Auslösungen und
+verzögerte Einreihungen gehen auch am Anwendungs-Hook vorbei; sie
+veröffentlichen direkt am Broker.
+
+### Den Dienst starten
+
+```bash
+export SWARMQ_BROKER_URL="amqp://user:pass@rabbit:5672/"
+export SWARMQ_BACKEND_URL="valkey://valkey:6379/0"
+swarmq-dashboard --data-dir /var/lib/sqd account create ops
+swarmq-dashboard --data-dir /var/lib/sqd serve --tls-cert cert.pem --tls-key key.pem
+```
+
+`--data-dir` gilt für alle Unterbefehle; ohne das Argument greift
+`SQD_DATA_DIR`, sonst `./sqd-data`. Ohne TLS startet der Dienst nicht — die
+Sitzungscookies tragen `Secure`, und niemand käme sonst hinein; für die
+Entwicklung auf 127.0.0.1 gibt es `--insecure-http`.
+
+**Der Ereignisstrom liegt auf Valkey-Datenbankindex 1**, nicht 0. Index 0
+gehört der Bibliothek, und ihre Integrationstests führen dort ein `FLUSHDB`
+aus. Ein eigener Index lässt sich mit `SQD_STREAM_URL` setzen; ohne die
+Variable wird er aus `SWARMQ_BACKEND_URL` abgeleitet.
+
+Was wohin gehört, welche Datei gelöscht werden darf und welche nicht:
+`docs/reference/betrieb.md`.
+
 ## Lokale Dienste
 
 RabbitMQ `amqp://guest:guest@localhost:5699/`, Valkey `valkey://localhost:6399/0`
