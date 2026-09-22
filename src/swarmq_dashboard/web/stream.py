@@ -202,6 +202,31 @@ def _letzte_kennung(request: Request[Any, Any, Any]) -> int | None:
     return wert if wert >= 0 else None
 
 
+def kontowaechter(services: Any, konto: object) -> Callable[[], bool]:
+    """Die Pruefung, die der laufende Strom im Takt macht (R32, R21).
+
+    Eigene Funktion und nicht im Handler eingeschlossen, weil sie sonst nur
+    ueber eine offene HTTP-Verbindung pruefbar waere -- und daran sind drei
+    Anlaeufe gescheitert. So laesst sich die Kette aus Kontenspeicher,
+    Waechter und Schleife am Stueck fahren.
+
+    Sie schlaegt den **Kontenspeicher** nach, nicht die Sitzung. Das ist der
+    Unterschied, an dem R21 haengt: ein Sitzungs-Lesen mit ``renew_for``
+    schriebe die Inaktivitaetsfrist fort, und ein offener Bildschirm im
+    Einsatzraum bliebe fuer immer angemeldet. Eine offene Verbindung haelt
+    die Sitzung also nicht am Leben, sie liest den Zustand nur nach.
+    """
+
+    def gilt_noch() -> bool:
+        speicher = getattr(services, "accounts", None)
+        if speicher is None or not isinstance(konto, str):
+            return False
+        zustand = speicher.state_of(konto)
+        return zustand is not None and not zustand.locked
+
+    return gilt_noch
+
+
 @get("/live", opt={"no_csrf": True})
 async def live(request: Request[Any, Any, Any]) -> ServerSentEvent:
     """Der Live-Strom einer offenen Ansicht (R13, R13a, R32).
@@ -212,19 +237,7 @@ async def live(request: Request[Any, Any, Any]) -> ServerSentEvent:
     """
     services = request.app.state.services
     konto = request.session.get(SESSION_ACCOUNT_KEY) if request.session else None
-
-    def gilt_noch() -> bool:
-        """Sitzung und Kontosperre im Takt nachsehen (R32).
-
-        Eine offene Verbindung haelt eine Sitzung **nicht** am Leben -- sie
-        liest den Zustand nur nach. Sonst bliebe eine vergessene Ansicht
-        beliebig lange angemeldet.
-        """
-        speicher = getattr(services, "accounts", None)
-        if speicher is None or not isinstance(konto, str):
-            return False
-        zustand = speicher.state_of(konto)
-        return zustand is not None and not zustand.locked
+    gilt_noch = kontowaechter(services, konto)
 
     # ``Last-Event-ID`` schickt der Browser bei jeder Wiederverbindung von
     # selbst -- ``EventSource`` verbindet nach einem Abriss allein neu. Ohne

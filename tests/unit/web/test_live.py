@@ -289,20 +289,20 @@ async def test_ein_gesperrtes_konto_bekommt_keinen_live_strom(tmp_path: Path) ->
     Strom. Der Sitzungswaechter weist es ab, bevor der Handler laeuft; die
     Verbindung entsteht nie.
 
-    **Was hier nicht steht, und warum:** dass die Pruefung *im laufenden*
-    Strom den Sitzungsspeicher nicht anfasst. Daran haengt R32/R21 -- wuerde
-    sie ihn nachschlagen, verlaengerte jeder Herzschlag die Frist, und ein
-    offener Bildschirm im Einsatzraum bliebe fuer immer angemeldet. Drei
-    Anlaeufe sind daran gescheitert: der erste mass zwei Dinge, die einander
-    nicht beruehrten; der zweite ging von der falschen Annahme aus, Lesen
-    verlaengere nicht (``get`` mit ``renew_for`` schreibt die Frist sehr wohl
-    fort); der dritte brauchte einen Strom, der von selbst endet -- den gibt
-    es nicht, weil der Waechter schon vorher abweist.
+    **Was hier nicht steht:** der Fall, dass die Verbindung schon laeuft und
+    erst dann gesperrt wird (AE10a). Den prueft
+    ``test_eine_laufende_verbindung_endet_wenn_das_konto_gesperrt_wird``
+    weiter unten -- er war lange offen, weil drei Anlaeufe scheiterten: der
+    erste mass zwei Dinge, die einander nicht beruehrten; der zweite ging von
+    der falschen Annahme aus, Lesen verlaengere die Sitzungsfrist nicht
+    (``get`` mit ``renew_for`` schreibt sie sehr wohl fort); der dritte
+    brauchte einen Strom ueber HTTP, der von selbst endet -- und der
+    Testclient gibt den einer stehenden SSE-Verbindung nicht haeppchenweise
+    heraus. Loesung war, den Waechter aus dem Handler zu ziehen und die
+    Kette ohne HTTP zu fahren.
 
-    Der Code tut heute das Richtige (``gilt_noch`` schlaegt den
-    **Kontenspeicher** nach, nicht die Sitzung). Das steht hier als
-    ungeprueft, nicht als gruene Zusicherung: eine Zusicherung, die nichts
-    misst, ist schlimmer als eine benannte Luecke.
+    Dass die Pruefung den **Kontenspeicher** nachschlaegt und nicht die
+    Sitzung, ist dabei der Punkt, an dem R21 haengt.
     """
     import re as _re
 
@@ -342,3 +342,69 @@ async def test_ein_gesperrtes_konto_bekommt_keinen_live_strom(tmp_path: Path) ->
         )
     finally:
         await c.__aexit__(None, None, None)
+
+
+
+async def test_eine_laufende_verbindung_endet_wenn_das_konto_gesperrt_wird(
+    tmp_path: Path,
+) -> None:
+    """Covers AE10a, R32 -- die Luecke, die der Test darueber benannt hat.
+
+    Der Nachbar prueft den Aufbau: ein gesperrtes Konto kommt gar nicht erst
+    an den Strom. Ungeprueft blieb der Fall, um den es in R32 geht -- die
+    Verbindung steht **schon**, und erst dann sperrt der Betreiber. Daran
+    haengt alles an der Pruefung im laufenden Takt: wird sie nie gerufen,
+    oder merkt sich der Kontenspeicher den Zustand vom Verbindungsaufbau,
+    behaelt das gesperrte Konto seinen Datenstrom, bis jemand den Tab
+    schliesst -- und niemand saehe es.
+
+    Gefahren wird die Kette am Stueck: echter Kontenspeicher, echter
+    Waechter aus der Route, echte Schleife. **Nicht** ueber HTTP -- der
+    Testclient liefert den Strom einer stehenden SSE-Verbindung nicht
+    haeppchenweise, daran sind schon drei Anlaeufe gescheitert. Die eine
+    Stelle, die damit unbewiesen bleibt, ist die Zeile in ``live()``, die
+    genau diesen Waechter uebergibt.
+    """
+    from argon2 import PasswordHasher
+
+    from swarmq_dashboard.accounts import AccountStore
+    from swarmq_dashboard.web.stream import kontowaechter
+
+    konten = AccountStore(
+        tmp_path / "accounts.sqlite3",
+        hasher=PasswordHasher(time_cost=2, memory_cost=1024, parallelism=1),
+    )
+    konten.create("ops", "ein-langes-passwort")
+
+    class Dienst:
+        accounts = konten
+
+    waechter = kontowaechter(Dienst(), "ops")
+    assert waechter() is True, "Vorbedingung: das offene Konto gilt"
+
+    p = ChannelsPlugin(backend=MemoryChannelsBackend(history=0), channels=[LIVE_CHANNEL],
+                       subscriber_max_backlog=10, subscriber_backlog_strategy="dropleft")
+    await p._on_startup()
+    try:
+        async with p.start_subscription([LIVE_CHANNEL]) as abo:
+            strom = live_events(abo, heartbeat_s=0.05, still_valid=waechter)
+            gesehen: list[dict] = []
+
+            async def lesen() -> None:
+                async for n in strom:
+                    gesehen.append(n)
+                    # Erst sperren, wenn die Verbindung wirklich laeuft --
+                    # sonst prueft der Test den Aufbau und nicht den Takt.
+                    if len(gesehen) == 1:
+                        konten.lock("ops")
+
+            await asyncio.wait_for(lesen(), 3.0)
+
+        assert len(gesehen) >= 2, "die Verbindung lief gar nicht erst an"
+        assert gesehen[-1]["kind"] == "session_ended", (
+            f"die Verbindung lief nach dem Sperren weiter: {[n['kind'] for n in gesehen]}"
+        )
+        assert waechter() is False, "der Waechter merkt die Sperre nicht"
+    finally:
+        await p._on_shutdown()
+        konten.close()
