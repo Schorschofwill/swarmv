@@ -8,10 +8,12 @@ requires-python = ">=3.14"
 # Versionsspanne statt festem Pin (R1a): Dashboard und Bibliothek sind ueber die
 # Signal-Nutzlasten gekoppelt, aber getrennt veroeffentlicht. Die Obergrenze
 # haelt eine Nutzlast-Aenderung auf, bevor sie den Ereignisspiegel still
-# beschaedigt. Der Kontrollkanal kommt erst nach 0.6.2 -- die Steuerungs-Stufe
-# prueft ihn zur Laufzeit statt ihn hier zu erzwingen (KTD14).
+# beschaedigt. Die Untergrenze ist seit U16 0.7: der Kontrollkanal ist dort
+# erschienen, und die Steuerung braucht seine Typen. Die Seite bleibt
+# trotzdem benutzbar, wenn sie fehlen -- geprueft wird zur Laufzeit (KTD14,
+# R33).
 dependencies = [
-    "swarmq>=0.6.2,<0.8",
+    "swarmq>=0.7,<0.8",
     # Beide kommen heute ueber swarmq mit. Sie stehen trotzdem hier: das Paket
     # importiert sie selbst (events.py, stream.py), und ein Bibliotheks-Release
     # innerhalb der Spanne oben, das eines davon tauscht, wuerde den Dienst
@@ -44,6 +46,15 @@ dev = [
     "ruff>=0.9",
     "mypy>=1.14",
 ]
+
+# Die Bibliothek kommt aus ihrem Git-Repository, nicht von PyPI: 0.7.0 ist
+# getaggt, aber bewusst nicht hochgeladen. Der Tag ist die feste Groesse --
+# ein Branch oder gar der Arbeitsbaum waere es nicht, und der Kontrollkanal
+# ist die Schnittstelle, an der das Dashboard haengt. Sobald die Bibliothek
+# auf PyPI liegt, faellt dieser Abschnitt weg; die Spanne oben bleibt dann
+# unveraendert stehen (KTD14).
+[tool.uv.sources]
+swarmq = { git = "ssh://git@gitlab.com/Schorsch1984/swarmq.git", tag = "v0.7.0" }
 
 [build-system]
 requires = ["hatchling"]

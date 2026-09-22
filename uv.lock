@@ -1079,8 +1079,8 @@ wheels = [
 
 [[package]]
 name = "swarmq"
-version = "0.6.2"
-source = { registry = "https://pypi.org/simple" }
+version = "0.7.0"
+source = { git = "ssh://git@gitlab.com/Schorsch1984/swarmq.git?tag=v0.7.0#713e442f0404ea4f3449250857c6a3137a76d1c0" }
 dependencies = [
     { name = "aio-pika" },
     { name = "croniter" },
@@ -1088,10 +1088,6 @@ dependencies = [
     { name = "msgspec" },
     { name = "structlog" },
     { name = "valkey" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/86/c1/568cdbce05a3a75f7a54d38a7fae046be2f9f5878240e2c3778499db056c/swarmq-0.6.2.tar.gz", hash = "sha256:1296f2abb280e3feb25bcf6ba1aeb1744ddf5f1611e33b87c81d56cf4fdb3848", size = 271722, upload-time = "2026-09-15T14:30:50.775Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/fb/e4/b2b61652456a41b54fe264fd312626eafc0dce8d453524f6503f1f2c64ab/swarmq-0.6.2-py3-none-any.whl", hash = "sha256:aa4b6fa8116d2a856f0ba2d143556545e2a4cc9903d761fa9003c2f7f3155ed4", size = 334611, upload-time = "2026-09-15T14:30:49.267Z" },
 ]
 
 [[package]]
@@ -1129,7 +1125,7 @@ requires-dist = [
     { name = "litestar", specifier = ">=2.24,<3" },
     { name = "markupsafe", specifier = ">=2.1" },
     { name = "msgspec", specifier = ">=0.18" },
-    { name = "swarmq", specifier = ">=0.6.2,<0.8" },
+    { name = "swarmq", git = "ssh://git@gitlab.com/Schorsch1984/swarmq.git?tag=v0.7.0" },
     { name = "valkey", specifier = ">=6" },
 ]
 

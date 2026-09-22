@@ -20,13 +20,13 @@ Veröffentlichung; die Bibliothek bekommt dadurch keine neue Pflichtabhängigkei
 - Oberfläche: `docs/reference/oberflaeche.md` und `docs/mockup/` (freigegeben).
 - **Betrieb: `docs/reference/betrieb.md`** — Datenverzeichnis, Rechte, was
   gelöscht werden darf, Konten anlegen.
-- Voraussetzung im Kern: der Kontrollkanal, MR !60 in swarmq
-  (`docs/plans/2026-09-16-1753-feat-kontrollkanal-plan.md`); Schnittstelle in
-  `docs/reference/kontrollkanal-schnittstelle.md`. Er ist dort **fertig, aber
-  noch nicht veröffentlicht**: bis zum Release nach 0.6.2 baut dieses Paket
-  über `[tool.uv.sources]` gegen den Arbeitsbaum der Bibliothek (siehe
-  Kommentar in `pyproject.toml`). Fehlt der Kanal, bleibt die Steuerung
-  abgeschaltet und begründet — jede andere Seite trägt weiter.
+- Voraussetzung im Kern: der Kontrollkanal, erschienen in **swarmq 0.7.0**
+  (MR !60, `docs/plans/2026-09-16-1753-feat-kontrollkanal-plan.md`);
+  Schnittstelle in `docs/reference/kontrollkanal-schnittstelle.md`. Die
+  Bibliothek ist getaggt, aber nicht auf PyPI — `pyproject.toml` zieht sie
+  darum über `[tool.uv.sources]` aus dem Git-Repository am Tag `v0.7.0`.
+  Fehlt der Kanal, bleibt die Steuerung abgeschaltet und begründet — jede
+  andere Seite trägt weiter.
 - Ankerpunkte in swarmq (Signale, Middleware-Haken, Cancel, DLQ, Schlüssel,
   Konventionen): `docs/reference/swarmq-ankerpunkte.md`.
 - Testmethodik gegen abtastende Prozesse: `docs/reference/scheduler-cron-sync-clobber-test-flake-2026-06-01.md`.
@@ -98,7 +98,8 @@ unter zwei Namen und findet nie einen Supervisor. Einzelheiten:
 
 ## Offen
 
-Die Versionsspanne zu swarmq wartet auf das Release des Kontrollkanals; danach
-entfällt der `[tool.uv.sources]`-Block und die Spanne wird auf `>=0.7,<0.8`
-gezogen. Die Ansicht des Audit-Stroms im Browser ist nach R27 ausdrücklich
-Stufe 2 und bleibt vorerst bei der Kommandozeile.
+Solange swarmq 0.7.0 nicht auf PyPI liegt, braucht die Installation dieses
+Pakets Lesezugriff auf das Git-Repository der Bibliothek; der
+`[tool.uv.sources]`-Block entfällt mit dem ersten Upload. Die Ansicht des
+Audit-Stroms im Browser ist nach R27 ausdrücklich Stufe 2 und bleibt vorerst
+bei der Kommandozeile.
