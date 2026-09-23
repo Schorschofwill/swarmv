@@ -103,6 +103,31 @@ class Gruppe:
     last: dict[str, tuple[int, int]] = field(default_factory=dict)
     #: Wartende Nachrichten der Queues dieser Gruppe, je Queue.
     stats: dict[str, QueueStats] = field(default_factory=dict)
+    #: Meldet ein Supervisor dieser Gruppe gerade? Das ist die **erste** der
+    #: drei Quellen aus R14a und die einzige, die ohne Tasks und ohne
+    #: Metrik-Port etwas sagt. Sie gilt je Gruppe, nicht je Worker -- der
+    #: Kanal kennt Supervisoren, keine Slots.
+    supervisor_meldet: bool = False
+
+    def verbunden_laut(self, w: Worker) -> Quelle:
+        """Aus welcher Quelle die Verbundenheit dieses Workers stammt (R14a).
+
+        Meldet der Supervisor der Gruppe, ist das die belastbarste Auskunft,
+        die es gibt -- belastbarer als eine Stille, die nur heisst, dass
+        gerade nichts zu tun war.
+        """
+        if self.supervisor_meldet:
+            return Quelle.SUPERVISOR
+        return w.source
+
+    def ist_verbunden(self, w: Worker) -> bool:
+        """Gilt der Worker als verbunden?
+
+        Ohne meldenden Supervisor wie bisher ueber die Frist seiner Quelle.
+        Mit ihm laeuft die Gruppe, und ein Worker darin steht nicht auf
+        getrennt, weil er nichts zu tun hatte.
+        """
+        return self.supervisor_meldet or w.connected(now=self.now)
 
     def belegt(self, w: Worker) -> str:
         """"2 von 4" -- Belegung **und** Kapazitaet.
@@ -120,7 +145,7 @@ class Gruppe:
         falsche Richtung schickt. Ein getrennter Worker belegt nichts; was
         wir sehen, sind Karteileichen.
         """
-        if not w.connected(now=self.now):
+        if not self.ist_verbunden(w):
             return "--"
         laufend = self.last.get(w.worker_id, (0, 0))[0]
         if w.concurrency is None:
@@ -181,11 +206,17 @@ class Gruppe:
 
     @property
     def verbunden(self) -> list[Worker]:
-        return [w for w in self.worker if w.connected(now=self.now)]
+        return [w for w in self.worker if self.ist_verbunden(w)]
 
     @property
     def eingeschraenkt(self) -> bool:
-        """Beruht die Aussage nur auf der schwaechsten Quelle? (R14a)"""
+        """Beruht die Aussage nur auf der schwaechsten Quelle? (R14a)
+
+        Mit meldendem Supervisor nicht: dann traegt die erste der drei
+        Quellen, und die ist die belastbarste.
+        """
+        if self.supervisor_meldet:
+            return False
         return any(w.source is Quelle.SIGNAL for w in self.worker)
 
 
@@ -230,7 +261,10 @@ async def uebersicht(request: Request[Any, Any, Any]) -> Template:
             # Grund -- an jeder Karte wiederholt verdeckte er den Rest.
             kanal_fehler = kanal_fehler or steuerung[name].fehler
     gruppen = [
-        Gruppe(name=name, worker=worker, now=jetzt, last=last, stats=stats)
+        Gruppe(name=name, worker=worker, now=jetzt, last=last, stats=stats,
+               supervisor_meldet=bool(
+                   (bild := steuerung.get(name)) and bild.gruppe.supervisoren
+               ))
         for name, worker in sorted(gebuendelt.items())
     ]
     # Die Queue-Uebersicht steht **neben** den Gruppen, nicht in ihnen: ohne

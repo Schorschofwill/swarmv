@@ -105,7 +105,20 @@ class ProbeTask(Task):
         if dauer:
             await asyncio.sleep(dauer)
         if rechnen:
-            _rechnen(rechnen)
+            # **In einem Thread**, nicht im Ereignis-Loop. Die Schleife
+            # rechnet und gibt nichts ab; im Loop stuende damit alles
+            # andere still, was der Worker nebenher tut -- der Flusher des
+            # Dashboard-Hooks, die Lebenszeichen, die Annahme weiterer
+            # Nachrichten. Eine Minute Rechenlast hiess eine Minute, in der
+            # der Task auf seinem letzten gemeldeten Stand stehenblieb und
+            # der Worker danach als getrennt galt.
+            #
+            # Im Rechen-Pool faellt das nicht auf -- dort hat der Task einen
+            # eigenen Prozess. Im io-Pool schon, und dorthin schickt das
+            # Formular die Probe als Vorgabe. Der GIL macht die Auslagerung
+            # nicht umsonst, aber die Schleife gibt ihn regelmaessig ab,
+            # und darauf kommt es hier an.
+            await asyncio.to_thread(_rechnen, rechnen)
 
         if fail:
             raise ProbeFehler(f"auf Ansage gescheitert{f': {note}' if note else ''}")

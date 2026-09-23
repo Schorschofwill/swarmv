@@ -517,3 +517,38 @@ async def test_bei_einem_einzigen_supervisor_stimmen_die_saetze(tmp_path: Path) 
         assert "Supervisor" in text
     finally:
         await c.__aexit__(None, None, None)
+
+
+async def test_ein_meldender_supervisor_haelt_seine_worker_verbunden(tmp_path: Path) -> None:
+    """R14a, erste Quelle: die Rueckmeldung des Supervisors.
+
+    Im Betrieb gemeldet: "alle cpu worker stehen auf getrennt" -- waehrend
+    die Prozesse liefen, vier Konsumenten an der Queue hingen und der
+    Supervisor sich im Kontrollkanal meldete. Auf derselben Seite stand
+    "Spielraum 4 (1 Supervisor)" aus genau dieser Rueckmeldung.
+
+    Der Grund: die Verbundenheit haengt an Ereignissen im Strom, und ohne
+    Tasks und ohne Metrik-Port schickt ein Worker keine. Nach der Frist der
+    schwaechsten Quelle steht er auf getrennt -- obwohl die belastbarste
+    Quelle danebenliegt und das Gegenteil sagt.
+
+    R14a nennt sie als **erste** der drei. Sie zaehlt je Gruppe, nicht je
+    Worker: der Kanal kennt Supervisoren, keine Slots. Mehr als "diese
+    Gruppe laeuft" ist daraus nicht abzuleiten -- und genau das soll dort
+    stehen, statt einer Stille, die nach Ausfall aussieht.
+    """
+    config = _config(tmp_path)
+    _worker(config, gruppe="reports", wid="phx-r1:0")
+    kanal = FakeKanal({"reports": [_meldung("a:p1", workers=2,
+                                            slots={"size": 8, "occupied": 2, "locked": 0})]})
+    c, _ = await _angemeldet(config, kanal=kanal)
+    try:
+        # Weit hinter jeder Frist der schwaechsten Quelle.
+        text = (await c.get(f"/?jetzt={JETZT + 100_000}")).text
+        assert "phx-r1:0" in text
+        assert "getrennt" not in text.lower(), (
+            "der Worker steht auf getrennt, obwohl sein Supervisor meldet"
+        )
+        assert "Supervisor-Rückmeldung" in text, "die Quelle wird nicht genannt"
+    finally:
+        await c.__aexit__(None, None, None)

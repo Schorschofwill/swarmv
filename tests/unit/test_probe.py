@@ -27,6 +27,7 @@ Test-Liste (AGENTS.md):
 
 from __future__ import annotations
 
+import asyncio
 import time
 
 import pytest
@@ -121,3 +122,34 @@ async def test_das_ergebnis_nennt_worker_und_laufzeit() -> None:
     assert ergebnis["pid"] > 0
     assert ergebnis["laufzeit_s"] >= 0.05
     assert ergebnis["note"] == "Probe 1"
+
+
+async def test_rechnen_laesst_den_ereignis_loop_atmen() -> None:
+    """Im Betrieb gemeldet: "Task steht auf wartend", 60 s lang.
+
+    Der Grund war diese Schleife. Sie rechnete im Ereignis-Loop des Workers,
+    und dort haengt alles andere mit dran: der Flusher des Dashboard-Hooks,
+    der die Ereignisse nach Valkey schreibt, die Lebenszeichen, die Annahme
+    weiterer Nachrichten. Eine Minute Rechenlast hiess eine Minute ohne
+    jedes Lebenszeichen -- der Task blieb auf seinem letzten gemeldeten
+    Stand stehen ("wartend"), und der Worker galt danach als getrennt.
+
+    Im Rechen-Pool faellt das nicht auf, weil der Task dort ohnehin einen
+    eigenen Prozess hat. Im io-Pool schon, und genau dorthin schickt das
+    Formular die Probe als Vorgabe.
+    """
+    takte = 0
+
+    async def nebenher() -> None:
+        nonlocal takte
+        for _ in range(40):
+            await asyncio.sleep(0.01)
+            takte += 1
+
+    mit = asyncio.create_task(nebenher())
+    await ProbeTask().run(burn_s=0.3)
+    mit.cancel()
+
+    assert takte >= 5, (
+        f"nur {takte} Takte waehrend 0,3 s Rechenlast -- der Loop stand still"
+    )

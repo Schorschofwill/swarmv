@@ -130,6 +130,21 @@
     stelle.hidden = !text;
   }
 
+  /* Beim Verlassen der Seite schliessen. Ein Browser haelt je Host nur
+     eine Handvoll gleichzeitiger HTTP/1.1-Verbindungen -- ueblich sechs --
+     und diese hier belegt dauerhaft eine davon. Geht die Seite beim
+     Zurueckspringen in den Back-Forward-Cache, lebt sie samt EventSource
+     weiter und haelt ihren Platz; nach ein paar Wechseln sind alle Slots
+     belegt, und die naechste Seite wartet, bis einer frei wird. Gemeldet
+     als "das Laden hat fast dreissig Sekunden gedauert".
+
+     ``pagehide`` und nicht ``beforeunload``: das eine feuert auch beim Weg
+     in den Cache, das andere verhindert ihn und bleibt auf Mobilgeraeten
+     ganz aus. */
+  window.addEventListener("pagehide", function () {
+    quelle.close();
+  });
+
   document.addEventListener("visibilitychange", function () {
     /* Nur nachholen, wenn waehrend der Verdeckung wirklich etwas kam.
        Vorher loeste jeder Reiterwechsel einen vollen Seitenabruf aus. */

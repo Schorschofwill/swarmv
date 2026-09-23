@@ -49,6 +49,10 @@ _TREIBER = textwrap.dedent("""
         querySelector: () => el,
       },
       location: { href: 'http://x/tasks', reload: () => rufe.push('reload') },
+      // Das Fenster nimmt Hoerer entgegen wie im Browser. Ohne das schlug
+      // die Quelle beim Anmelden von ``pagehide`` fehl -- eine Luecke der
+      // Attrappe, die aussah wie ein Fehler im Skript.
+      addEventListener: () => {},
       setTimeout: (fn) => { fn(); return 1; },
       clearTimeout: () => {},
       EventSource: function () {
@@ -114,4 +118,74 @@ def test_getauscht_wird_mit_innerhtml() -> None:
     assert rufe and "morphStyle:'innerHTML'" in rufe[0], rufe
     assert not any(r == "ajax:morph" for r in rufe), (
         "getauscht wird mit outerHTML -- das loescht den Koerper der Seite"
+    )
+
+
+_TREIBER_SEITENWECHSEL = textwrap.dedent("""
+    const fs = require('fs'), vm = require('vm');
+    const quelle = fs.readFileSync(process.argv[2], 'utf8');
+    const rufe = [], fensterHoerer = {};
+    const el = { textContent: '', hidden: true, tagName: 'SPAN' };
+    const ctx = {
+      console,
+      document: {
+        hidden: false, activeElement: null,
+        addEventListener: () => {},
+        querySelector: () => el,
+      },
+      location: { href: 'http://x/tasks', assign: () => {}, reload: () => {} },
+      setTimeout: (fn) => 1, clearTimeout: () => {},
+      addEventListener: (art, fn) => { (fensterHoerer[art] ||= []).push(fn); },
+      EventSource: function () {
+        this.readyState = 1;
+        this.addEventListener = () => {};
+        this.dispatchEvent = () => true;
+        this.close = () => { rufe.push('close'); };
+      },
+      htmx: { ajax: () => Promise.resolve() },
+    };
+    ctx.window = ctx;
+    vm.createContext(ctx);
+    vm.runInContext(quelle, ctx);
+    for (const fn of (fensterHoerer[process.argv[3]] || [])) fn({ persisted: true });
+    console.log(JSON.stringify({ rufe, angemeldet: Object.keys(fensterHoerer) }));
+""")
+
+
+def _seitenwechsel(art: str) -> dict:
+    """``live.js`` laden und dieses Fenster-Ereignis ausloesen."""
+    treiber = Path(__file__).parent / "_live_treiber_wechsel.js"
+    treiber.write_text(_TREIBER_SEITENWECHSEL, encoding="utf-8")
+    quelle = Path(__file__).parent / "_live_quelle_wechsel.js"
+    quelle.write_text((STATIC_DIR / "live.js").read_text(encoding="utf-8"), encoding="utf-8")
+    try:
+        ergebnis = subprocess.run(
+            [node or "node", str(treiber), str(quelle), art],
+            capture_output=True, text=True, timeout=30, check=True,
+        )
+        return dict(json.loads(ergebnis.stdout.strip().splitlines()[-1]))
+    finally:
+        treiber.unlink(missing_ok=True)
+        quelle.unlink(missing_ok=True)
+
+
+def test_beim_verlassen_der_seite_wird_die_live_verbindung_geschlossen() -> None:
+    """Im Betrieb gemeldet: eine Seite lud fast dreissig Sekunden.
+
+    Ein Browser haelt je Host nur eine Handvoll gleichzeitiger
+    HTTP/1.1-Verbindungen -- ueblich sechs. Eine Live-Verbindung belegt
+    davon dauerhaft eine. Geht die Seite beim Zurueckspringen in den
+    Back-Forward-Cache, **lebt sie samt ihrer ``EventSource`` weiter**, und
+    ihre Verbindung bleibt belegt. Nach ein paar Wechseln sind alle Slots
+    voll, und die naechste Seite wartet, bis eine frei wird.
+
+    ``pagehide`` ist das Ereignis, das dabei zuverlaessig feuert --
+    ``beforeunload`` und ``unload`` verhindern den Cache oder bleiben aus.
+    """
+    ergebnis = _seitenwechsel("pagehide")
+    assert "pagehide" in ergebnis["angemeldet"], (
+        f"kein pagehide-Hoerer angemeldet: {ergebnis['angemeldet']}"
+    )
+    assert "close" in ergebnis["rufe"], (
+        "die Verbindung bleibt beim Verlassen der Seite offen"
     )

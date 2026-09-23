@@ -109,7 +109,7 @@
     </tr></thead>
     <tbody>
       {%- for w in g.worker %}
-      <tr id="worker-{{ w.worker_id }}"{% if not w.connected(now=jetzt) %} class="is-gone"{% endif %}>
+      <tr id="worker-{{ w.worker_id }}"{% if not g.ist_verbunden(w) %} class="is-gone"{% endif %}>
         <td class="mono num right">{{ w.slot if w.slot is not none else '--' }}</td>
         <td class="mono">{{ w.worker_id }}</td>
         {#- Zustand **und** Quelle in einer Zelle (KTD10): "getrennt" heisst je
@@ -117,20 +117,29 @@
             Metrik-Port ohne Fehlermeldung. Als eigene Spalte trug die Quelle
             ganze Saetze und drueckte die Tabelle auseinander. -#}
         <td>
-          {%- if w.connected(now=jetzt) %}
+          {%- if g.ist_verbunden(w) %}
           <span class="tag is-ok"><span class="tag-dot"></span> verbunden</span>
           {%- else %}
           <span class="tag is-fail"><span class="tag-dot"></span> getrennt</span>
           {%- endif %}
+          {#- Die Quelle gehoert zur Aussage (KTD10). Meldet der Supervisor,
+              ist sie die erste der drei aus R14a -- und dann sagt die Zeile
+              auch, dass sie fuer die Gruppe gilt und nicht fuer diesen einen
+              Slot: der Kanal kennt Supervisoren, keine Slots. -#}
+          {%- if g.supervisor_meldet %}
+          <div class="dim">nach {{ quellenname[g.verbunden_laut(w)] }}
+            <span class="mono">(je Gruppe)</span></div>
+          {%- else %}
           <div class="dim">nach {{ quellenname[w.source] }}
             <span class="mono">({{ '%.0f'|format(w.stale_after_s) }} s)</span></div>
+          {%- endif %}
         </td>
         <td class="mono num right">{{ g.belegt(w) }}</td>
         <td class="mono num right">{{ zahl(g.erledigt(w)) }}</td>
         <td class="mono right">{{ laufzeit(w.started_at, now=jetzt) }}</td>
         <td class="mono">{{ zeitpunkt(w.last_seen_at) }}</td>
         <td>
-          {%- if not w.connected(now=jetzt) %}
+          {%- if not g.ist_verbunden(w) %}
           <form method="post" action="/worker/{{ w.worker_id|urlencode }}/remove">
             <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
             <button class="btn btn-sm">Entfernen</button>
