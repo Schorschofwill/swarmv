@@ -3,6 +3,7 @@ cd /home/georg/Dokumente/Development-Privat/swarmv
 export SWARMQ_BROKER_URL="amqp://guest:guest@localhost:5699/"
 export SWARMQ_BACKEND_URL="valkey://localhost:6399/0"
 export PYTHONPATH="$PWD/demo"
+export PYTHONUNBUFFERED=1
 export SWARMQ_WORKER_ID=io-host
 export SQD_WORKER_GROUP=io-gruppe
 exec uv run swarmq worker --module tasks \

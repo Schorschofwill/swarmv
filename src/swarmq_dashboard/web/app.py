@@ -249,7 +249,8 @@ class Services:
         #: Dienst selbst Arbeit erzeugt. Traege verbunden wie das
         #: Stornieren: wer nur hinsieht, bezahlt keine Broker-Verbindung.
         self.probe_sender: Any = probe_sender or ProbeSender(
-            broker_url=config.broker_url, backend_url=config.backend_url
+            broker_url=config.broker_url, backend_url=config.backend_url,
+            stream_url=config.stream_url,
         )
         #: Der Audit-Strom (R27). Er haengt am Ereignisstrom, nicht an der
         #: Kontendatei -- und er darf fehlen, ohne eine Aktion aufzuhalten.
