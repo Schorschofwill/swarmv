@@ -416,8 +416,12 @@ def test_eine_unbekannte_variable_wirft_statt_zu_schweigen() -> None:
 
 #: Bausteine, die eine Karte als unmittelbares Kind haben darf. Jeder bringt
 #: seine eigene Polsterung mit -- die Karte selbst hat keine.
+#: ``eingabe`` ist der Baustein des Probe-Formulars: er polstert wie die
+#: uebrigen (16 px) und gruppiert die Felder, was ``fields`` nicht kann --
+#: das ist ein Anzeigeraster mit drei starren Spalten.
 KARTEN_KINDER = {"card-head", "card-meta", "card-section", "card-body",
-                 "card-table", "card-foot", "empty", "fields", "args", "trail"}
+                 "card-table", "card-foot", "empty", "fields", "args", "trail",
+                 "eingabe"}
 
 
 def test_keine_nackte_ueberschrift_in_einer_karte() -> None:

@@ -12,111 +12,139 @@
   <div class="card-head"><h2 class="card-name">Eine Probe losschicken</h2></div>
   <p class="card-meta">
     Reiht <span class="mono">{{ task_name }}</span> ein — einen Task, der auf
-    Ansage wartet, rechnet oder scheitert. Er muss im Worker <strong>bekannt</strong>
-    sein; sonst liegt die Probe in der Queue und wird nie aufgegriffen.
-    Ein Import im eigenen Task-Modul genügt:
-    <span class="mono">from swarmq_dashboard.probe import ProbeTask</span> —
-    <span class="mono">--module</span> lässt sich nicht zweimal angeben.
+    Ansage wartet, rechnet oder scheitert. Er muss im Worker bekannt sein:
+    <span class="mono">from swarmq_dashboard.probe import ProbeTask</span> im
+    eigenen Task-Modul.
   </p>
 
-  <form method="post" action="/probe" class="fields">
+  {#- Vier Gruppen statt neun gleich gewichteter Felder: wohin, was sie tut,
+      wann, und woran man sie wiedererkennt. Das Feldraster ``.fields`` war
+      hier falsch -- es ist fuer die **Anzeige** gedacht, und neun Eingaben
+      darin standen ohne Ordnung nebeneinander. -#}
+  <form method="post" action="/probe" class="eingabe">
     <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
 
-    <div>
-      <dt><label for="queue">Queue</label></dt>
-      <dd>
-        <select id="queue" name="queue">
-          {%- for q in queues %}
-          <option value="{{ q }}">{{ q }}</option>
-          {%- endfor %}
-        </select>
-        <span class="muted">Sie entscheidet, welcher Worker die Probe bekommt —
-          <span class="mono">io</span> wartende Arbeit,
-          <span class="mono">cpu</span> rechnende.</span>
-      </dd>
+    <div class="eingabe-gruppe">
+      <div class="eingabe-titel">Wohin</div>
+      <div class="eingabe-reihe">
+        <div class="eingabe-feld">
+          <label for="queue">Queue</label>
+          <select id="queue" name="queue">
+            {%- for q in queues %}
+            <option value="{{ q }}">{{ q }}</option>
+            {%- endfor %}
+          </select>
+        </div>
+        <div class="eingabe-feld ist-schmal">
+          <label for="anzahl">Anzahl</label>
+          <input type="number" id="anzahl" name="anzahl" min="1" max="{{ max_anzahl }}" value="1">
+        </div>
+      </div>
+      <p class="eingabe-hinweis">
+        <span class="mono">io</span> für wartende Arbeit,
+        <span class="mono">cpu</span> für rechnende. Höchstens {{ max_anzahl }}
+        auf einmal — eine einzelne Probe steht nie in der Queue, für einen
+        sichtbaren Rückstau braucht es mehrere.
+      </p>
     </div>
 
-    <div>
-      <dt><label for="anzahl">Anzahl</label></dt>
-      <dd><input type="number" id="anzahl" name="anzahl" min="1" max="{{ max_anzahl }}" value="1">
-        <span class="muted">Höchstens {{ max_anzahl }}. Eine einzelne Probe steht nie
-          in der Queue — für einen sichtbaren Rückstau braucht es mehrere.</span></dd>
+    <div class="eingabe-gruppe">
+      <div class="eingabe-titel">Was sie tut</div>
+      <div class="eingabe-reihe">
+        <div class="eingabe-feld ist-schmal">
+          <label for="sleep_s">Warten (s)</label>
+          <input type="text" id="sleep_s" name="sleep_s" value="0" inputmode="decimal">
+        </div>
+        <div class="eingabe-feld ist-schmal">
+          <label for="burn_s">Rechnen (s)</label>
+          <input type="text" id="burn_s" name="burn_s" value="0" inputmode="decimal">
+        </div>
+        <div class="eingabe-schalter">
+          <input type="checkbox" id="fail" name="fail" value="ja">
+          <label for="fail">scheitert absichtlich</label>
+        </div>
+      </div>
+      <p class="eingabe-hinweis">
+        Warten belegt einen Slot, Rechnen belastet die CPU — höchstens
+        {{ max_dauer|int }} s. Ein Fehlschlag wird dreimal wiederholt und
+        landet dann im Dead Letter; so lässt sich dieser Weg ohne echten
+        Fehler gehen.
+      </p>
     </div>
 
-    <div>
-      <dt><label for="sleep_s">Warten (s)</label></dt>
-      <dd><input type="text" id="sleep_s" name="sleep_s" value="0" inputmode="decimal">
-        <span class="muted">Belegt einen Slot, ohne die CPU zu belasten. Höchstens
-          {{ max_dauer|int }} s.</span></dd>
+    <div class="eingabe-gruppe">
+      <div class="eingabe-titel">Wann</div>
+      <div class="eingabe-reihe">
+        <div class="eingabe-feld ist-schmal">
+          <label for="delay_s">in … Sekunden</label>
+          <input type="text" id="delay_s" name="delay_s" placeholder="sofort" inputmode="decimal">
+        </div>
+        <div class="eingabe-feld">
+          <label for="eta">oder um</label>
+          <input type="datetime-local" id="eta" name="eta">
+        </div>
+      </div>
+      <p class="eingabe-hinweis">
+        Eines von beidem, nie zusammen. Beides geht über den Scheduler, und
+        der vergibt beim Auslösen eine <strong>neue Kennung</strong> — die
+        Probe erscheint also erst später und unter einer anderen als der
+        gemeldeten.
+      </p>
     </div>
 
-    <div>
-      <dt><label for="burn_s">Rechnen (s)</label></dt>
-      <dd><input type="text" id="burn_s" name="burn_s" value="0" inputmode="decimal">
-        <span class="muted">Belastet die CPU wirklich — die ehrliche Probe für den
-          Rechen-Pool, wo Warten nur einen Slot blockiert. <strong>In der
-          Queue <span class="mono">io</span> blockiert sie den ganzen
-          Worker</strong>, solange sie läuft: dort rechnet sie im
-          Ereignis-Loop, nicht in einem eigenen Prozess.</span></dd>
-    </div>
-
-    <div>
-      <dt><label for="delay_s">Verzögerung (s)</label></dt>
-      <dd><input type="text" id="delay_s" name="delay_s" placeholder="sofort" inputmode="decimal">
-        <span class="muted">Geht über den Scheduler statt direkt an den Broker.
-          Der vergibt beim Auslösen eine <strong>neue Kennung</strong> — die
-          Probe erscheint also nicht unter der geplanten, sondern erst beim
-          Auslösen und unter einer anderen. Die Notiz bleibt der verlässliche
-          Faden.</span></dd>
-    </div>
-
-    <div>
-      <dt><label for="eta">Zeitpunkt</label></dt>
-      <dd><input type="datetime-local" id="eta" name="eta">
-        <span class="muted">Statt einer Verzögerung — nie beides zugleich.</span></dd>
-    </div>
-
-    <div>
-      <dt><label for="unique_for">Entdoppeln (s)</label></dt>
-      <dd><input type="number" id="unique_for" name="unique_for" min="1" placeholder="aus">
-        <select name="unique_until" aria-label="Entdoppelung endet">
-          <option value="">— endet bei —</option>
-          <option value="completion">Abschluss</option>
-          <option value="start">Start</option>
-        </select>
-        <span class="muted">Innerhalb der Frist gibt eine zweite gleiche Einreihung
-          die Kennung der ersten zurück, ohne neue Arbeit.</span></dd>
-    </div>
-
-    <div>
-      <dt><label for="note">Notiz</label></dt>
-      <dd><input type="text" id="note" name="note" maxlength="120"
+    <div class="eingabe-gruppe">
+      <div class="eingabe-titel">Wiedererkennen</div>
+      <div class="eingabe-reihe">
+        <div class="eingabe-feld ist-breit">
+          <label for="note">Notiz</label>
+          <input type="text" id="note" name="note" maxlength="120"
                  placeholder="woran man diesen Versuch wiedererkennt">
-        <span class="muted">Steht in den Argumenten und im Fehlertext — der Faden,
-          an dem der Versuch später in der Task-Liste hängt.</span></dd>
+        </div>
+      </div>
+      <p class="eingabe-hinweis">
+        Steht in den Argumenten und im Fehlertext und ist über die Suche
+        auffindbar — der verlässliche Faden, besonders bei Verzögerung.
+      </p>
     </div>
 
-    <div>
-      <dt><label for="fail">Scheitern</label></dt>
-      <dd><input type="checkbox" id="fail" name="fail" value="ja">
-        <label for="fail" class="muted">Der Task wirft absichtlich. Mit drei
-          Wiederholungen am Task landet er danach im Dead-Letter — so lässt sich
-          dieser Weg ohne echten Fehler ausprobieren.</label></dd>
-    </div>
+    <details>
+      <summary>Entdoppelung (selten gebraucht)</summary>
+      <div class="eingabe-reihe">
+        <div class="eingabe-feld ist-schmal">
+          <label for="unique_for">Frist (s)</label>
+          <input type="number" id="unique_for" name="unique_for" min="1" placeholder="aus">
+        </div>
+        <div class="eingabe-feld">
+          <label for="unique_until">endet bei</label>
+          <select id="unique_until" name="unique_until">
+            <option value="">—</option>
+            <option value="completion">Abschluss</option>
+            <option value="start">Start</option>
+          </select>
+        </div>
+      </div>
+      <p class="eingabe-hinweis">
+        Innerhalb der Frist gibt eine zweite gleiche Einreihung die Kennung
+        der ersten zurück, ohne neue Arbeit zu erzeugen.
+      </p>
+    </details>
 
-    <div><dt></dt><dd><button type="submit" class="btn">Probe einreihen</button></dd></div>
+    <div class="eingabe-fuss">
+      <button type="submit" class="btn btn-lg">Probe einreihen</button>
+      <span class="eingabe-hinweis">Geprüft wird vor dem Senden — was nicht
+        durchgeht, erzeugt keine Arbeit.</span>
+    </div>
   </form>
 </section>
 
 <section class="card">
-  <h3 class="card-section">Was hier nicht steht</h3>
+  <h3 class="card-section">Was sich hier nicht einstellen lässt</h3>
   <p class="card-meta">
     Fristen, Wiederholungen, Ratenbegrenzung, Sperren, Verfall und Priorität
-    gehören zur <span class="mono">TaskInfo</span> des Tasks und gelten für
-    jede Einreihung gleich — die Bibliothek nimmt sie bei
-    <span class="mono">schedule()</span> nicht entgegen. Felder dafür
-    anzubieten hieße, eine Wirkung zu versprechen, die es nicht gibt. Wer sie
-    ausprobieren will, ändert sie an
+    stehen in der <span class="mono">TaskInfo</span> des Tasks und gelten für
+    jede Einreihung gleich — <span class="mono">schedule()</span> nimmt sie
+    nicht entgegen. Felder dafür anzubieten hieße, eine Wirkung zu
+    versprechen, die es nicht gibt. Wer sie ausprobieren will, ändert sie an
     <span class="mono">swarmq_dashboard.probe.ProbeTask</span> und startet die
     Worker neu.
   </p>

@@ -312,6 +312,38 @@
   }
   .search { height: 32px; width: 322px; padding-left: 29px; }
 
+  /* Eingabeformular (Probe). Das Feldraster ``.fields`` ist fuer die
+     **Anzeige** gedacht -- drei starre Spalten, Beschriftung ueber Wert.
+     Neun Eingabefelder darin standen gleich gewichtet nebeneinander, jedes
+     mit drei Zeilen Erklaerung: nichts fuehrte das Auge, und die Frage
+     "was muss ich hier ausfuellen" blieb unbeantwortet. Diese Bausteine
+     gruppieren stattdessen und lassen kurze Felder kurz sein. */
+  .eingabe { padding: 16px; display: grid; gap: 16px; }
+  .eingabe-gruppe { display: grid; gap: 7px; }
+  .eingabe-titel {
+    font-size: 10.5px; letter-spacing: .07em; text-transform: uppercase;
+    color: var(--dim);
+  }
+  .eingabe-reihe { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+  .eingabe-feld { display: grid; gap: 4px; }
+  .eingabe-feld > label { font-size: 11px; color: var(--muted); }
+  .eingabe-feld > input, .eingabe-feld > select { height: 34px; font-size: 13px; }
+  .eingabe-feld.ist-schmal > input { width: 96px; }
+  .eingabe-feld.ist-breit { flex: 1 1 260px; }
+  .eingabe-feld.ist-breit > input { width: 100%; }
+  /* Der Schalter steht in derselben Reihe wie die Zahlenfelder und muss
+     auf deren Grundlinie sitzen, nicht auf der Zeilenmitte. */
+  .eingabe-schalter { display: flex; align-items: center; gap: 7px; height: 34px; }
+  .eingabe-schalter > input { height: auto; }
+  .eingabe-hinweis { font-size: 12px; color: var(--muted); line-height: 1.45; }
+  .eingabe-fuss { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  /* Selten Gebrauchtes zusammengeklappt: sichtbar, dass es da ist, ohne
+     jedem Absender zwei Felder vorzulegen, die er nie braucht. */
+  .eingabe details > summary {
+    font-size: 12px; color: var(--muted); cursor: pointer; padding: 2px 0;
+  }
+  .eingabe details[open] > summary { margin-bottom: 7px; }
+
   /* Anmeldeformular (R20) */
   .formfield { margin-bottom: 15px; }
   .formfield > label {
