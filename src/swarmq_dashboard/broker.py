@@ -176,31 +176,41 @@ class BrokerObserver:
         bevor ein Worker sie angelegt hat.
         """
         namen = [queue, *(f"{queue}.{s}" for s in PRIORITY_SUFFIXES)]
-        teile: dict[str, int | None] = {}
+        alle = [*namen, f"{queue}.{DELAY_SUFFIX}", f"{queue}.{DEAD_LETTER_SUFFIX}"]
+
+        # Die fuenf Proben **einer** Queue gleichzeitig (U14 Punkt 3). Sie
+        # haengen nicht voneinander ab, und nacheinander kostet jede eine
+        # eigene Netzlaufzeit: gemessen 3,2 s ueber dreissig Queues bei 4 ms
+        # Laufzeit -- und die Worker-Uebersicht wartet darauf, weil sie die
+        # Zahlen im Anfrageweg holt.
+        #
+        # Die Queues bleiben nacheinander (``stats_many``): fuenf Kanaele
+        # gleichzeitig sind die Grenze aus KTD11, dreissig Queues auf einmal
+        # waeren hundertfuenfzig.
+        proben = await asyncio.gather(*(self._probe(n) for n in alle))
+        teile: dict[str, int | None] = {
+            name: probe.messages for name, probe in zip(alle, proben, strict=True)
+        }
 
         tiefe = 0
         konsumenten = 0
         vorhanden = False
         for name in namen:
-            probe = await self._probe(name)
-            teile[name] = probe.messages
-            if probe.messages is None:
+            probe = teile[name]
+            if probe is None:
                 continue
             vorhanden = True
-            tiefe += probe.messages
-            konsumenten = max(konsumenten, probe.consumers)
-
-        verzoegert = await self._probe(f"{queue}.{DELAY_SUFFIX}")
-        teile[f"{queue}.{DELAY_SUFFIX}"] = verzoegert.messages
-        tot = await self._probe(f"{queue}.{DEAD_LETTER_SUFFIX}")
-        teile[f"{queue}.{DEAD_LETTER_SUFFIX}"] = tot.messages
+            tiefe += probe
+            konsumenten = max(
+                konsumenten, proben[alle.index(name)].consumers
+            )
 
         return QueueStats(
             queue=queue,
             exists=vorhanden,
             depth=tiefe,
-            delayed=verzoegert.messages or 0,
-            dead_letter=tot.messages or 0,
+            delayed=teile[f"{queue}.{DELAY_SUFFIX}"] or 0,
+            dead_letter=teile[f"{queue}.{DEAD_LETTER_SUFFIX}"] or 0,
             consumers=konsumenten,
             parts=teile,
         )
@@ -208,10 +218,15 @@ class BrokerObserver:
     async def stats_many(self, queues: list[str]) -> dict[str, QueueStats]:
         """Mehrere Queues nacheinander abfragen.
 
-        Nacheinander, nicht gleichzeitig: jede Abfrage oeffnet fuenf Kanaele,
-        und ein Dashboard mit dreissig Queues brauchte sonst schlagartig
-        hundertfuenfzig. Die Abfrage laeuft im Hintergrund, nicht im
-        Anfrageweg -- Dauer ist hier billiger als eine Kanalflut.
+        Nacheinander, nicht gleichzeitig: jede Abfrage oeffnet fuenf Kanaele
+        (die gleichzeitig, siehe ``stats``), und ein Dashboard mit dreissig
+        Queues brauchte sonst schlagartig hundertfuenfzig.
+
+        **Diese Schleife laeuft im Anfrageweg**, nicht im Hintergrund: die
+        Worker-Uebersicht wartet auf sie. Frueher stand hier das Gegenteil,
+        und das war nie wahr -- die Route ruft sie seit U14 direkt. Die
+        Kosten sind damit eine Netzlaufzeit je Queue; bei vielen Queues oder
+        einem entfernten Broker ist das die langsamste Stelle der Seite.
 
         Je Queue gekapselt: faellt der Broker mitten im Lauf weg, sind die
         bereits gemessenen Queues trotzdem etwas wert. Frueher verwarf eine

@@ -31,6 +31,8 @@ Test-Liste (AGENTS.md):
 
 from __future__ import annotations
 
+import time
+
 import pytest
 from aio_pika.exceptions import ChannelNotFoundEntity
 
@@ -299,3 +301,64 @@ async def test_zulaessige_namen_werden_nicht_abgewiesen() -> None:
     for name in bestand:
         s = await o.stats(name)
         assert s.exists and s.depth == 3, f"zulaessiger Name abgewiesen: {name!r} -> {s}"
+
+
+async def test_die_fuenf_proben_einer_queue_laufen_gleichzeitig() -> None:
+    """U14 Punkt 3 -- im Plan gefordert, bisher nicht umgesetzt.
+
+    Eine Queue braucht fuenf passive Deklarationen: sie selbst, ihre beiden
+    Prioritaetsvarianten, die Verzoegerungs- und die Dead-Letter-Queue.
+    Nacheinander kostet das fuenf Netzlaufzeiten je Queue -- gemessen 3,2 s
+    ueber dreissig Queues bei 4 ms Laufzeit, und die Worker-Uebersicht
+    wartet darauf, weil sie die Zahlen im Anfrageweg holt.
+
+    Gleichzeitig gefahren kostet es eine Laufzeit je Queue und oeffnet
+    trotzdem nur fuenf Kanaele auf einmal -- die Grenze, die KTD11 meint.
+    """
+    import asyncio
+
+    beobachtet = {"gleichzeitig": 0, "hoechstens": 0}
+
+    class LangsamerKanal:
+        is_closed = False
+
+        async def declare_queue(self, name: str, passive: bool = False) -> object:
+            beobachtet["gleichzeitig"] += 1
+            beobachtet["hoechstens"] = max(beobachtet["hoechstens"],
+                                           beobachtet["gleichzeitig"])
+            await asyncio.sleep(0.02)          # steht fuer die Netzlaufzeit
+            beobachtet["gleichzeitig"] -= 1
+
+            class Ergebnis:
+                message_count = 3
+                consumer_count = 1
+
+            class Queue:
+                declaration_result = Ergebnis()
+
+            return Queue()
+
+        async def close(self) -> None: ...
+
+    class Verbindung:
+        is_closed = False
+
+        async def channel(self) -> LangsamerKanal:
+            return LangsamerKanal()
+
+    beobachter = BrokerObserver("amqp://guest:guest@127.0.0.1:1/")
+    beobachter._connection = Verbindung()  # type: ignore[assignment]
+
+    begonnen = time.perf_counter()
+    ergebnis = await beobachter.stats("orders")
+    gebraucht = time.perf_counter() - begonnen
+
+    assert ergebnis.depth == 9, "drei Queues à drei Nachrichten erwartet"
+    assert beobachtet["hoechstens"] >= 5, (
+        f"hoechstens {beobachtet['hoechstens']} Probe(n) gleichzeitig -- "
+        "die fuenf laufen weiterhin nacheinander"
+    )
+    assert gebraucht < 0.08, (
+        f"{gebraucht:.3f}s fuer fuenf Proben à 20 ms -- das ist die Summe, "
+        "nicht das Maximum"
+    )
