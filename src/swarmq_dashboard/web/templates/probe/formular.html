@@ -54,13 +54,20 @@
       <dt><label for="burn_s">Rechnen (s)</label></dt>
       <dd><input type="text" id="burn_s" name="burn_s" value="0" inputmode="decimal">
         <span class="muted">Belastet die CPU wirklich — die ehrliche Probe für den
-          Rechen-Pool, wo Warten nur einen Slot blockiert.</span></dd>
+          Rechen-Pool, wo Warten nur einen Slot blockiert. <strong>In der
+          Queue <span class="mono">io</span> blockiert sie den ganzen
+          Worker</strong>, solange sie läuft: dort rechnet sie im
+          Ereignis-Loop, nicht in einem eigenen Prozess.</span></dd>
     </div>
 
     <div>
       <dt><label for="delay_s">Verzögerung (s)</label></dt>
       <dd><input type="text" id="delay_s" name="delay_s" placeholder="sofort" inputmode="decimal">
-        <span class="muted">Geht über den Scheduler statt direkt an den Broker.</span></dd>
+        <span class="muted">Geht über den Scheduler statt direkt an den Broker.
+          Der vergibt beim Auslösen eine <strong>neue Kennung</strong> — die
+          Probe erscheint also nicht unter der geplanten, sondern erst beim
+          Auslösen und unter einer anderen. Die Notiz bleibt der verlässliche
+          Faden.</span></dd>
     </div>
 
     <div>

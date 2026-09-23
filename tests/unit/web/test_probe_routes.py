@@ -55,6 +55,12 @@ class FakeSender:
     async def close(self) -> None: ...
 
 
+def _rueckmeldung(html: str) -> str:
+    """Nur den Hinweis nach dem Abschicken, ohne den Rest der Seite."""
+    treffer = re.search(r'role="(?:status|alert)">(.*?)</p>', html, re.S)
+    return re.sub(r"<[^>]+>", " ", treffer.group(1)).strip() if treffer else ""
+
+
 def _config(tmp_path: Path) -> DashboardConfig:
     c = DashboardConfig(
         broker_url="amqp://guest:guest@127.0.0.1:1/", backend_url="valkey://127.0.0.1:1/0",
@@ -191,3 +197,58 @@ async def test_einreihen_braucht_sitzung_und_merkmal(tmp_path: Path) -> None:
         assert antwort.status_code in (302, 303, 401)
     finally:
         await fremd.__aexit__(None, None, None)
+
+
+async def test_bei_verzoegerung_sagt_die_rueckmeldung_was_sie_nicht_weiss(tmp_path: Path) -> None:
+    """Der Scheduler vergibt beim Feuern eine **neue** Kennung.
+
+    ``schedule(delay=...)`` gibt die des geplanten Eintrags zurueck; der
+    spaeter laufende Task bekommt eine andere (``_fire_one`` in swarmq).
+    Wer die Probe unter der gemeldeten Kennung sucht, findet nichts -- im
+    Betrieb genau so passiert, und die Suche ging erst zum Worker, dann zum
+    Scheduler, bevor der Grund gefunden war.
+
+    Die Ansicht sagt das jetzt, und sie nennt den Weg, der traegt: die Notiz.
+    """
+    sender = FakeSender()
+    c, _ = await _angemeldet(_config(tmp_path), sender=sender)
+    try:
+        merkmal = str(c.cookies.get("csrftoken"))
+        antwort = await c.post("/probe", data={
+            "queue": "io", "anzahl": "1", "delay_s": "30", "note": "spaeter",
+        }, headers={"x-csrftoken": merkmal}, follow_redirects=True)
+        # Nur die Rueckmeldung, nicht die ganze Seite: das Formular nennt
+        # "Verzögerung" und "Notiz" ohnehin als Feldbeschriftung, und ein
+        # Test, der darauf trifft, misst nichts.
+        hinweis = _rueckmeldung(antwort.text)
+        assert hinweis, "es gibt gar keine Rueckmeldung"
+        assert "andere" in hinweis and "Kennung" in hinweis, (
+            f"die neue Kennung wird nicht erklaert: {hinweis!r}"
+        )
+        assert "Notiz" in hinweis, f"der Weg zum Wiederfinden fehlt: {hinweis!r}"
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+async def test_rechenlast_im_io_pool_wird_benannt(tmp_path: Path) -> None:
+    """Eine rechnende Probe im io-Pool legt den Worker still, solange sie laeuft.
+
+    Der Probe-Task rechnet in einer Schleife; im Rechen-Pool laeuft die in
+    einem eigenen Prozess, im io-Pool im Ereignis-Loop des Workers. Zwanzig
+    Sekunden Rechenlast heissen dort zwanzig Sekunden, in denen der Worker
+    nichts anderes tut -- auch keine Lebenszeichen sendet. Das gehoert
+    dazugesagt, bevor jemand es an einem stehenden Dashboard bemerkt.
+    """
+    sender = FakeSender()
+    c, _ = await _angemeldet(_config(tmp_path), sender=sender)
+    try:
+        merkmal = str(c.cookies.get("csrftoken"))
+        antwort = await c.post("/probe", data={
+            "queue": "io", "anzahl": "1", "burn_s": "5",
+        }, headers={"x-csrftoken": merkmal}, follow_redirects=True)
+        hinweis = _rueckmeldung(antwort.text)
+        assert hinweis and "blockiert" in hinweis, (
+            f"die Rechenlast im io-Pool wird nicht benannt: {hinweis!r}"
+        )
+    finally:
+        await c.__aexit__(None, None, None)

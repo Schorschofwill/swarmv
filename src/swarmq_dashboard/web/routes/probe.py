@@ -133,8 +133,29 @@ async def senden(
                 f"burn={auftrag.burn_s:g}s" + (", scheitert" if auftrag.fail else "")),
     )
     zeit = time.strftime("%H:%M:%S")
-    return _zurueck(hinweis=f"{len(kennungen)} Probe(n) um {zeit} in die Queue "
-                            f"{auftrag.queue} eingereiht.")
+    teile = [f"{len(kennungen)} Probe(n) um {zeit} in die Queue {auftrag.queue} eingereiht."]
+    if auftrag.delay_s or auftrag.eta is not None:
+        # Der Scheduler vergibt beim Feuern eine **neue** Kennung: die von
+        # ``schedule()`` gehoert zum geplanten Eintrag, der spaeter laufende
+        # Task bekommt eine andere. Wer unter der gemeldeten sucht, findet
+        # nichts -- genau daran ist eine Fehlersuche schon einmal
+        # hochgelaufen, vom Worker ueber den Broker bis in den Scheduler.
+        wann = (f"in {auftrag.delay_s:g} s" if auftrag.delay_s
+                else f"um {auftrag.eta:%H:%M:%S}" if auftrag.eta else "später")
+        teile.append(
+            f"Sie läuft erst {wann} und bekommt dabei eine **andere** Kennung "
+            "als die geplante — suchen Sie sie über die Notiz, nicht über eine ID."
+        )
+    if auftrag.burn_s and auftrag.queue != "cpu":
+        # Der Probe-Task rechnet in einer Schleife. Im Rechen-Pool laeuft die
+        # in einem eigenen Prozess, hier im Ereignis-Loop des Workers.
+        teile.append(
+            f"Achtung: {auftrag.burn_s:g} s Rechenlast in der Queue "
+            f"{auftrag.queue} blockiert den Worker für diese Zeit — er nimmt "
+            "solange nichts an und sendet keine Lebenszeichen. Für Rechenlast "
+            "ist die Queue cpu gedacht."
+        )
+    return _zurueck(hinweis=" ".join(teile))
 
 
 def _zurueck(*, hinweis: str = "", fehler: str = "") -> Redirect:
