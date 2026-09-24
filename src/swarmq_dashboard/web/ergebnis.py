@@ -31,6 +31,10 @@ GRENZE_B = 8 * 1024
 #: Rueckkehr des Backends zu lange unbemerkt.
 SPERRE_S = 30.0
 
+#: Frist fuer den Aufbau und fuer jede einzelne Abfrage (KTD4). Kurz: Die
+#: Detailseite ist kein Ort zum Warten.
+CONNECT_TIMEOUT_S = 2.0
+
 
 def _kuerzen(text: str) -> tuple[str, bool, int]:
     """``(Text, abgeschnitten, volle UTF-8-Laenge)``.
@@ -90,12 +94,14 @@ class SwarmQErgebnisleser:
 
     def __init__(
         self,
+        broker_url: str,
         backend_url: str,
         *,
         app: Any | None = None,
         verbinden: Callable[[], Awaitable[Any]] | None = None,
         uhr: Callable[[], float] | None = None,
     ) -> None:
+        self._broker_url = broker_url
         self._backend_url = backend_url
         self._app = app
         self._verbinden = verbinden or self._kern_verbinden
@@ -103,9 +109,41 @@ class SwarmQErgebnisleser:
         #: Bis wann nicht erneut gewaehlt wird, und warum.
         self._gesperrt_bis = 0.0
         self._grund = ""
+        #: Der eigene Klient. Die Bibliothek schliesst einen eingesetzten
+        #: Klienten nicht -- das ist ihr Vertrag, und hier unsere Pflicht.
+        self._client: Any | None = None
 
-    async def _kern_verbinden(self) -> Any:   # pragma: no cover -- echtes Backend
-        raise NotImplementedError
+    async def _kern_verbinden(self) -> Any:
+        """Die Bibliothek auf einem **eigenen** Valkey-Klienten.
+
+        Hier und nirgendwo sonst entsteht KTD4s Frist: ``get_result`` reicht
+        keine durch -- mit ``timeout=0`` ist es ein blanker GET ohne Deadline
+        --, und der Klient, den die Bibliothek sich sonst selbst baut, ist
+        fuer den Worker-Pfad eingestellt: fuenf Versuche mit Backoff, gemessen
+        3,2 s bis zur Aufgabe. Fuer einen Worker richtig, fuer die
+        Detailseite falsch.
+
+        Der ``ping()`` ist Pflicht: Mit eingesetztem Klienten ist ``connect()``
+        ein Nichts, und ``from_url`` baut keine Verbindung auf. Ohne ihn
+        meldete diese Methode Erfolg gegen einen toten Port -- und der
+        Fehlschlag kaeme erst beim Lesen, also nach der Sperre statt vor ihr.
+        """
+        import valkey.asyncio
+        from swarmq import SwarmQ
+        from swarmq.backend.valkey import ValkeyBackend
+        from swarmq.broker.rabbitmq import RabbitMQBroker
+
+        self._client = valkey.asyncio.Valkey.from_url(
+            self._backend_url,
+            socket_connect_timeout=CONNECT_TIMEOUT_S,
+            socket_timeout=CONNECT_TIMEOUT_S,
+        )
+        await self._client.ping()
+        backend = ValkeyBackend(client=self._client)
+        # Der Broker wird zum Lesen nicht gebraucht -- das Ergebnis liegt im
+        # Backend. Das Objekt muss es trotzdem geben, weil die Bibliothek
+        # beides zusammen haelt; verbunden wird es nie.
+        return SwarmQ(broker=RabbitMQBroker(self._broker_url), backend=backend)
 
     async def connect(self) -> None:
         """Verbindung aufbauen. Idempotent. Wirft benannt.
@@ -133,14 +171,19 @@ class SwarmQErgebnisleser:
         """
         app, self._app = self._app, None
         schliessen = getattr(app, "close", None)
-        if schliessen is None:
-            return
-        try:
-            ergebnis = schliessen()
-            if hasattr(ergebnis, "__await__"):
-                await ergebnis
-        except Exception:
-            pass
+        if schliessen is not None:
+            try:
+                ergebnis = schliessen()
+                if hasattr(ergebnis, "__await__"):
+                    await ergebnis
+            except Exception:
+                pass
+        if self._client is not None:
+            try:
+                await self._client.aclose()
+            except Exception:
+                pass
+            self._client = None
 
     def _sperren(self, grund: str) -> None:
         """Fuer ``SPERRE_S`` nicht mehr waehlen, mit diesem Grund."""

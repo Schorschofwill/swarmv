@@ -60,7 +60,7 @@ class _App:
 @pytest.mark.timeout(5)
 async def test_ein_vorliegendes_ergebnis_kommt_als_da() -> None:
     """Der einfachste Fall: es liegt etwas vor, und es steht da."""
-    leser = SwarmQErgebnisleser("valkey://x", app=_App({"pid": 42}))
+    leser = SwarmQErgebnisleser("amqp://x", "valkey://x", app=_App({"pid": 42}))
 
     bild = await leser.lesen("t1")
 
@@ -80,7 +80,7 @@ async def test_ein_fehlendes_ergebnis_ist_kein_fehler() -> None:
     """
     from swarmq.exceptions import ResultNotReadyError
 
-    leser = SwarmQErgebnisleser("valkey://x", app=_App(wirft=ResultNotReadyError("t1")))
+    leser = SwarmQErgebnisleser("amqp://x", "valkey://x", app=_App(wirft=ResultNotReadyError("t1")))
 
     bild = await leser.lesen("t1")
 
@@ -98,7 +98,7 @@ async def test_die_darstellung_ist_json_wie_bei_den_argumenten() -> None:
     dieselbe Art Daten in zwei Schreibweisen -- einfache Anfuehrungszeichen,
     ``True`` statt ``true``, unsortierte Schluessel.
     """
-    leser = SwarmQErgebnisleser("valkey://x", app=_App({"pid": 42, "ok": True, "note": "grün"}))
+    leser = SwarmQErgebnisleser("amqp://x", "valkey://x", app=_App({"pid": 42, "ok": True, "note": "grün"}))
 
     bild = await leser.lesen("t1")
 
@@ -120,7 +120,7 @@ async def test_was_json_nicht_kodieren_kann_faellt_auf_repr_zurueck() -> None:
     aber ein Ext-Typ ist eben kein JSON-Wert. Lieber ``repr`` als eine leere
     Karte.
     """
-    leser = SwarmQErgebnisleser("valkey://x", app=_App(_Eigen()))
+    leser = SwarmQErgebnisleser("amqp://x", "valkey://x", app=_App(_Eigen()))
 
     bild = await leser.lesen("t1")
 
@@ -142,7 +142,7 @@ async def test_ein_objekt_dessen_repr_wirft_ergibt_trotzdem_eine_auskunft() -> N
     Sonst wuerde die Detailseite an der Darstellung scheitern -- eine
     Fehlerseite statt der Auskunft, wegen der sie geoeffnet wurde.
     """
-    leser = SwarmQErgebnisleser("valkey://x", app=_App(_ReprWirft()))
+    leser = SwarmQErgebnisleser("amqp://x", "valkey://x", app=_App(_ReprWirft()))
 
     bild = await leser.lesen("t1")
 
@@ -161,7 +161,7 @@ async def test_ueber_der_grenze_wird_abgeschnitten_und_die_laenge_genannt() -> N
     """
     from swarmq_dashboard.web.ergebnis import GRENZE_B
 
-    leser = SwarmQErgebnisleser("valkey://x", app=_App("ä" * 20_000))
+    leser = SwarmQErgebnisleser("amqp://x", "valkey://x", app=_App("ä" * 20_000))
 
     bild = await leser.lesen("t1")
 
@@ -187,7 +187,7 @@ async def test_ein_gescheiterter_task_zeigt_seinen_gespeicherten_fehlertext() ->
     from swarmq.exceptions import TaskError
 
     leser = SwarmQErgebnisleser(
-        "valkey://x", app=_App(wirft=TaskError("ZeroDivisionError: division by zero")),
+        "amqp://x", "valkey://x", app=_App(wirft=TaskError("ZeroDivisionError: division by zero")),
     )
 
     bild = await leser.lesen("t1")
@@ -211,7 +211,7 @@ async def test_ein_stornierter_task_verschwindet_nicht_im_fehlerzweig() -> None:
 
     assert issubclass(TaskCancelledError, TaskError), "die Falle ist weggefallen"
 
-    leser = SwarmQErgebnisleser("valkey://x", app=_App(wirft=TaskCancelledError("t1")))
+    leser = SwarmQErgebnisleser("amqp://x", "valkey://x", app=_App(wirft=TaskCancelledError("t1")))
 
     bild = await leser.lesen("t1")
 
@@ -234,7 +234,7 @@ async def test_ein_nicht_entpackbares_ergebnis_ist_keine_aussage_ueber_den_task(
     from swarmq.exceptions import ResultSerializationError
 
     leser = SwarmQErgebnisleser(
-        "valkey://x", app=_App(wirft=ResultSerializationError("unknown ext code 7")),
+        "amqp://x", "valkey://x", app=_App(wirft=ResultSerializationError("unknown ext code 7")),
     )
 
     bild = await leser.lesen("t1")
@@ -255,7 +255,7 @@ async def test_ein_totes_backend_ist_eine_auskunft_keine_fehlerseite() -> None:
     async def verbinden() -> Any:
         raise OSError("connection refused")
 
-    leser = SwarmQErgebnisleser("valkey://x", verbinden=verbinden)
+    leser = SwarmQErgebnisleser("amqp://x", "valkey://x", verbinden=verbinden)
 
     bild = await leser.lesen("t1")
 
@@ -275,7 +275,7 @@ async def test_abschneiden_verdraengt_die_art_nicht() -> None:
     """
     from swarmq.exceptions import TaskError
 
-    leser = SwarmQErgebnisleser("valkey://x", app=_App(wirft=TaskError("x" * 20_000)))
+    leser = SwarmQErgebnisleser("amqp://x", "valkey://x", app=_App(wirft=TaskError("x" * 20_000)))
 
     bild = await leser.lesen("t1")
 
@@ -307,7 +307,7 @@ async def test_nach_gescheitertem_verbinden_wird_innerhalb_der_frist_nicht_gewae
         versuche.append(1)
         raise OSError("connection refused")
 
-    leser = SwarmQErgebnisleser("valkey://x", verbinden=verbinden, uhr=_Uhr())
+    leser = SwarmQErgebnisleser("amqp://x", "valkey://x", verbinden=verbinden, uhr=_Uhr())
 
     await leser.lesen("t1")
     zweites = await leser.lesen("t2")
@@ -328,7 +328,7 @@ async def test_nach_gescheitertem_lesen_wird_gar_nicht_mehr_zugegriffen() -> Non
     dieselbe Sperre setzen wie ein gescheiterter Verbindungsaufbau.
     """
     app = _App(wirft=OSError("connection lost"))
-    leser = SwarmQErgebnisleser("valkey://x", app=app, uhr=_Uhr())
+    leser = SwarmQErgebnisleser("amqp://x", "valkey://x", app=app, uhr=_Uhr())
 
     erstes = await leser.lesen("t1")
     zweites = await leser.lesen("t2")
@@ -357,7 +357,7 @@ async def test_nach_ablauf_der_frist_wird_wieder_versucht() -> None:
             raise OSError("connection refused")
         return _App({"pid": 7})
 
-    leser = SwarmQErgebnisleser("valkey://x", verbinden=verbinden, uhr=uhr)
+    leser = SwarmQErgebnisleser("amqp://x", "valkey://x", verbinden=verbinden, uhr=uhr)
 
     assert (await leser.lesen("t1")).zustand == "nicht_erreichbar"
     uhr.jetzt += SPERRE_S + 1
