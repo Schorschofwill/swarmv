@@ -4,6 +4,9 @@ Test-Liste (AGENTS.md):
 
 === ZYKLUS 1: Eigene Abhaengigkeitsliste ===
 1. Jedes fremde Top-Level-Paket, das der Quellcode importiert, steht in pyproject.toml.
+
+=== ZYKLUS 2: Die Version steht an einer Stelle ===
+2. ``__version__`` und die Version in pyproject.toml sind dieselbe.
 """
 
 from __future__ import annotations
@@ -52,3 +55,17 @@ def test_jeder_import_steht_in_der_abhaengigkeitsliste() -> None:
         "Sie kommen heute nur ueber swarmq mit — ein Release, das sie tauscht, "
         "bricht den Dienst beim Start (R1, KTD14)."
     )
+
+
+def test_die_version_steht_nur_an_einer_stelle() -> None:
+    """Beim Schnitt von 0.1.0 liefen die beiden auseinander.
+
+    ``pyproject.toml`` trug ``0.1.0``, das Paket noch ``0.1.0.dev0`` -- wer
+    ``swarmq_dashboard.__version__`` abfragt, bekam eine Vorabfassung
+    gemeldet, die es nie gab. Das faellt beim Schnitt niemandem auf, weil
+    beide Zahlen an verschiedenen Enden des Baums stehen.
+    """
+    import swarmq_dashboard
+
+    daten = tomllib.loads(pathlib.Path("pyproject.toml").read_text(encoding="utf-8"))
+    assert swarmq_dashboard.__version__ == daten["project"]["version"]

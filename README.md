@@ -5,7 +5,7 @@ Worker-Übersicht, Task-Verzeichnis, Dead-Letter-Bedienung und Steuerung der
 Worker-Gruppen über den Kontrollkanal. Eigenes Paket, eigener Prozess, eigene
 Veröffentlichung; die Bibliothek bekommt dadurch keine neue Pflichtabhängigkeit.
 
-## Stand (2026-09-22)
+## Stand (2026-09-24)
 
 - Plan: `docs/plans/2026-09-16-1558-feat-dashboard-plan.md` — Anforderungen
   (R1–R33), Entscheidungen (KD1–KD16, KTD1–KTD14) und 19 Implementierungs-
@@ -15,6 +15,11 @@ Veröffentlichung; die Bibliothek bekommt dadurch keine neue Pflichtabhängigkei
   Filter, Broker-Beobachtung), Stufe C (Konten, Sitzung, Audit), Stufe D
   (Oberfläche: Worker, Tasks, Dead-Letter, Live-Schicht), U18 (`serve`) und
   **U16** (Sollwert-Steuerung über den Kontrollkanal).
+- Seit 0.1.0 dazugekommen: ein **Container-Abbild** (`Dockerfile`), das
+  **Absenden einer Probe** über die Oberfläche — mit allen Parametern, die
+  das System für Tasks trägt, für `io` wie für `cpu` — und die
+  **Ergebnisanzeige** auf der Detailseite
+  (`docs/plans/2026-09-23-1050-feat-ergebnisanzeige-plan.md`).
 - Stack: `docs/reference/stack-entscheidung.md` — Litestar, msgspec, Granian,
   Jinja2 + HTMX, SQLite mit FTS5-Trigrammen, argon2id.
 - Oberfläche: `docs/reference/oberflaeche.md` und `docs/mockup/` (freigegeben).
