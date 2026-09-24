@@ -144,16 +144,21 @@ integration-tests:
     - uv run pytest tests/integration -q -rs
 
 # Das Abbild muss sich bauen lassen -- es ist der Weg, auf dem der Dienst
-# ausgeliefert wird. Nur bauen, nicht veroeffentlichen: Das Paket ist noch
-# nicht auf PyPI, und ein Push in eine Registry ist eine eigene Entscheidung.
+# ausgeliefert wird, und es war schon einmal kaputt ("ein Abbild, das sich
+# auch wirklich starten laesst").
+#
+# Gebaut wird mit **kaniko**, nicht mit ``docker build`` samt ``dind``: Das
+# braucht keinen privilegierten Runner, und ein selbst betriebener Runner
+# laeuft ueblicherweise mit ``privileged = false``. Nur bauen, nicht
+# veroeffentlichen -- ein Push in eine Registry ist eine eigene Entscheidung.
 abbild:
   stage: test
-  image: docker:27
-  services:
-    - docker:27-dind
-  variables:
-    DOCKER_HOST: tcp://docker:2375
-    DOCKER_TLS_CERTDIR: ""
+  image:
+    name: gcr.io/kaniko-project/executor:debug
+    entrypoint: [""]
   before_script: []
   script:
-    - docker build -t swarmq-dashboard:$CI_COMMIT_SHORT_SHA .
+    - /kaniko/executor
+      --context "$CI_PROJECT_DIR"
+      --dockerfile "$CI_PROJECT_DIR/Dockerfile"
+      --no-push
