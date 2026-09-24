@@ -65,6 +65,50 @@ Wer das nicht will, muss die Aufbewahrung kürzen (`SQD_RETENTION_DAYS`) — es
 gibt keinen Schalter, der die Argumente weglässt, ohne das Werkzeug zu
 entwerten.
 
+## Wo die Ergebnisse liegen — und wann sie verschwinden
+
+Anders als die Argumente steht das **Ergebnis** eines Tasks nirgends im
+Dashboard. Es liegt im Backend der Bibliothek unter `sq:result:<task_id>`;
+die Detailseite schlägt es bei jedem Aufruf dort nach und speichert es nicht
+(R7, KD1). Eine Kopie im Verzeichnis wäre ein zweiter Ort mit einer zweiten
+Löschpflicht — und das Verzeichnis könnte die Verfallsfrist des Ergebnisses
+gar nicht einhalten, weil es sie nicht kennt.
+
+**Die Frist ist eine Kaskade, kein Feld.** Wer in `TaskInfo.result_ttl`
+nachsieht, findet dort meist `None`. Der Worker löst sie in dieser Reihenfolge
+auf:
+
+1. `TaskInfo.result_ttl` des Tasks, wenn gesetzt;
+2. sonst `SWARMQ_RESULT_TTL` beziehungsweise `config.result_ttl` der
+   Anwendung — **Vorgabe 86400 Sekunden, also 24 Stunden**;
+3. sonst 24 Stunden.
+
+Ein aufgelöster Wert von `0` heißt: es wird **gar nichts** abgelegt. Das
+trifft auf Fire-and-Forget ohne eigene Frist zu und auf ein ausdrücklich
+gesetztes `SWARMQ_RESULT_TTL=0`. Der Dead-Letter-Pfad nimmt immer den
+globalen Wert, nie den des Tasks.
+
+Darum nennt die Seite bei einem fehlenden Ergebnis **beide** Ursachen —
+abgelaufen oder nie gespeichert. Unterscheiden kann sie die zwei nicht, und
+eine davon zu behaupten wäre geraten.
+
+**Die beiden Aufbewahrungen sind verschieden lang.** Das Verzeichnis hält
+Tasks sieben Tage (`SQD_RETENTION_DAYS`, bewusst so gewählt, damit ein
+Vorfall vom Wochenende am Montag noch dasteht). Ergebnisse verfallen per
+Vorgabe nach einem Tag. Der Montagsblick auf den Samstagstask zeigt den Task
+also, aber keine Antwort mehr darauf, was er zurückgab. Wer das anders will,
+setzt `SWARMQ_RESULT_TTL` **in der Anwendung** entsprechend hoch — das
+Dashboard hat dafür keinen Schalter, und einen zu bauen hieße, das Ergebnis
+doch zu kopieren.
+
+**Was das für die Sichtbarkeit bedeutet.** Jedes angemeldete Konto sieht auf
+der Detailseite den vollständigen Rückgabewert jedes beendeten Tasks — auch
+dann, wenn darin etwas steht, das in keinem Argument vorkam: ein Token, eine
+signierte URL, ein ausgelesener Datensatz. Für die Argumente ist diese
+Offenheit oben als bewusste Entscheidung festgehalten; für Rückgabewerte
+liegt der einzige Hebel in der Anwendung. Solche Werte nicht zurückgeben,
+oder die Frist kurz halten.
+
 ## Konten anlegen
 
 ```

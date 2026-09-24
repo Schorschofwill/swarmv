@@ -19,7 +19,12 @@ Veröffentlichung; die Bibliothek bekommt dadurch keine neue Pflichtabhängigkei
   Jinja2 + HTMX, SQLite mit FTS5-Trigrammen, argon2id.
 - Oberfläche: `docs/reference/oberflaeche.md` und `docs/mockup/` (freigegeben).
 - **Betrieb: `docs/reference/betrieb.md`** — Datenverzeichnis, Rechte, was
-  gelöscht werden darf, Konten anlegen.
+  gelöscht werden darf, Konten anlegen, und wo die Ergebnisse liegen.
+- Die Task-Detailseite zeigt neben Argumenten und Signalfolge auch das
+  **Ergebnis**. Es wird bei jedem Aufruf im Backend der Bibliothek
+  nachgeschlagen und nirgends gespeichert: Es hat eine eigene Verfallsfrist
+  (per Vorgabe 24 Stunden, siehe `betrieb.md`), die das Verzeichnis mit seinen
+  sieben Tagen nicht einhalten könnte.
 - Voraussetzung im Kern: der Kontrollkanal, erschienen in **swarmq 0.7.0**
   (MR !60, `docs/plans/2026-09-16-1753-feat-kontrollkanal-plan.md`);
   Schnittstelle in `docs/reference/kontrollkanal-schnittstelle.md`. Die
