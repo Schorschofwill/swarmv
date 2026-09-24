@@ -187,18 +187,20 @@ async def test_verzoegerter_strom_wird_als_solcher_gemeldet(tmp_path: Path) -> N
 # --- Zyklus 3 -----------------------------------------------------------
 
 
-async def test_rueckkehr_ohne_neustart(tmp_path: Path) -> None:
+async def test_rueckkehr_ohne_neustart(tmp_path: Path,
+                                      valkey_adresse: tuple[str, int]) -> None:
     """Kehrt ein Dienst zurueck, muss die Anzeige umspringen -- sonst startet
     der Betreiber das Dashboard neu, weil es faelschlich "weg" sagt.
     """
-    if not _erreichbar("127.0.0.1", 6399):
+    wirt, port = valkey_adresse
+    if not _erreichbar(wirt, port):
         pytest.skip("Valkey laeuft nicht -- dieser Test braucht den echten Dienst")
 
     s = Services(_config(tmp_path))
     await s.startup()
     try:
         assert s.status()["stream"]["ok"] is False
-        s._stream_url = "valkey://127.0.0.1:6399/1"    # der Dienst ist zurueck
+        s._stream_url = f"valkey://{wirt}:{port}/1"    # der Dienst ist zurueck
         await s.refresh()
         zustand = s.status()
         # Die Ausweichklausel steht **oben**, vor dem Aufbau: haenge sie

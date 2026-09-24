@@ -1,0 +1,159 @@
+# CI des Dashboards.
+#
+# Die Tore sind die aus AGENTS.md und dem Verification Contract der Plaene:
+# ruff, mypy --strict, Unit-Suite, Integrationssuite. Sie blockieren alle --
+# ein rotes Tor ist ein Regress, kein Hinweis.
+#
+# Zwei Dinge, die hier bewusst anders sind als in einer Standard-Pipeline:
+#
+#   * **node gehoert in den Unit-Job.** ``tests/unit/web/test_live_js.py``
+#     fuehrt ``live.js`` in einer Node-Umgebung aus, statt Zeichenketten darin
+#     zu suchen -- so wurde der schwerste Fehler des Projekts gefunden (ein
+#     ``swap: "morph"``, das den Seitenkoerper loeschte). Ohne node
+#     ueberspringt sich die Datei **stillschweigend**, und genau die
+#     Fehlerklasse bliebe wieder unentdeckt.
+#   * **Auch der Unit-Job bekommt Valkey.** Zwei Unit-Tests brauchen eine
+#     echte Verbindung (Rueckkehr eines Dienstes ohne Neustart, die beiden
+#     Socket-Fristen) und ueberspringen sich sonst. Ein Job, der gruen meldet,
+#     ohne geprueft zu haben, ist schlechter als keiner -- diese Lektion hat
+#     das Chaos-Gate im Kern schon einmal gekostet.
+#
+# Die Adressen kommen aus ``SQD_TEST_*``; beide Testebenen lesen dieselben
+# Variablen (siehe tests/conftest.py und tests/integration/conftest.py).
+
+workflow:
+  rules:
+    - if: '$CI_COMMIT_TAG'
+    - if: '$CI_COMMIT_BRANCH'
+
+stages:
+  - test
+
+variables:
+  UV_CACHE_DIR: "$CI_PROJECT_DIR/.uv-cache"
+  UV_FROZEN: "1"
+
+# Gemeinsame uv-Grundlage: das gepinnte Python 3.14 des Projekts und ein
+# Abhaengigkeits-Cache, der am Lockfile haengt.
+#
+# ``build-essential`` ist Pflicht, solange ``valkey`` fuer cp314 kein fertiges
+# Rad mitbringt: die C-Erweiterung wird dann aus dem Quelltext uebersetzt, und
+# das schlanke uv-Abbild bringt keinen Uebersetzer mit.
+.uv:
+  image: ghcr.io/astral-sh/uv:python3.14-bookworm-slim
+  cache:
+    key:
+      files:
+        - uv.lock
+    paths:
+      - .uv-cache
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends build-essential
+
+# Echte Dienste plus ein Bereitschaftstor. Beide Testebenen ueberspringen sich,
+# wenn ein Dienst fehlt -- ohne dieses Tor liesse ein langsam startender Broker
+# die ganze Suite mit null gelaufenen Tests gruen werden.
+.mit-diensten:
+  extends: .uv
+  services:
+    - name: rabbitmq:4-management
+    - name: valkey/valkey:8
+      alias: valkey
+  variables:
+    SQD_TEST_RABBITMQ_HOST: rabbitmq
+    SQD_TEST_RABBITMQ_PORT: "5672"
+    SQD_TEST_VALKEY_HOST: valkey
+    SQD_TEST_VALKEY_PORT: "6379"
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends build-essential
+    - |
+      uv run python - <<'PY'
+      import socket, sys, time
+      ziele = [("rabbitmq", 5672), ("valkey", 6379)]
+      frist = time.time() + 120
+      for wirt, port in ziele:
+          while True:
+              try:
+                  with socket.create_connection((wirt, port), timeout=2):
+                      break
+              except OSError:
+                  if time.time() > frist:
+                      sys.exit(f"Dienst {wirt}:{port} war nicht rechtzeitig bereit")
+                  time.sleep(1)
+      print("alle Dienste bereit")
+      PY
+
+# Stil und Typen. Braucht keinen Uebersetzer -- ruff und mypy fassen die
+# C-Erweiterung nicht an.
+lint-und-typen:
+  extends: .uv
+  stage: test
+  before_script: []
+  script:
+    - uv run ruff check src/ tests/
+    - uv run mypy --strict src/
+
+# Haelt uv.lock gegen pyproject.toml. Unter UV_FROZEN=1 prueft
+# ``uv lock --check`` nur die Gueltigkeit der Sperrdatei, nicht ihre
+# Aktualitaet -- darum hier ausdruecklich auf 0.
+sperrdatei:
+  extends: .uv
+  stage: test
+  variables:
+    UV_FROZEN: "0"
+  before_script: []
+  script:
+    - uv lock --check
+
+# Das schnelle Tor. Die Suite haelt sich oertlich unter 30 s (AGENTS.md); auf
+# einem geteilten Runner ist sie langsamer, darum steht hier keine Zeitschwelle
+# -- die gehoert an die Werkbank, nicht in die Pipeline.
+#
+# ``-rs`` meldet jeden uebersprungenen Test im Bericht. Uebersprungenes ist
+# hier ein Befund: Es heisst, dass ein Dienst oder node fehlte.
+unit-tests:
+  extends: .mit-diensten
+  stage: test
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends build-essential nodejs
+    - node --version
+    - |
+      uv run python - <<'PY'
+      import socket, sys, time
+      frist = time.time() + 120
+      while True:
+          try:
+              with socket.create_connection(("valkey", 6379), timeout=2):
+                  break
+          except OSError:
+              if time.time() > frist:
+                  sys.exit("valkey:6379 war nicht rechtzeitig bereit")
+              time.sleep(1)
+      print("valkey bereit")
+      PY
+  script:
+    - uv run pytest tests/unit -q -rs
+
+# Gegen echte Verbindungen zu RabbitMQ und Valkey. Der Valkey-Index des
+# Dashboards ist bewusst nicht 0 (KTD9): Die Integrationsvorrichtung von
+# swarmq fuehrt dort ein FLUSHDB aus.
+integration-tests:
+  extends: .mit-diensten
+  stage: test
+  script:
+    - uv run pytest tests/integration -q -rs
+
+# Das Abbild muss sich bauen lassen -- es ist der Weg, auf dem der Dienst
+# ausgeliefert wird. Nur bauen, nicht veroeffentlichen: Das Paket ist noch
+# nicht auf PyPI, und ein Push in eine Registry ist eine eigene Entscheidung.
+abbild:
+  stage: test
+  image: docker:27
+  services:
+    - docker:27-dind
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+  before_script: []
+  script:
+    - docker build -t swarmq-dashboard:$CI_COMMIT_SHORT_SHA .

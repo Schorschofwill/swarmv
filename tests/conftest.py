@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterator
 
 import pytest
@@ -35,3 +36,20 @@ def frischer_puffer_registry() -> Iterator[None]:
     reset_shared()
     yield
     reset_shared()
+
+
+@pytest.fixture(scope="session")
+def valkey_adresse() -> tuple[str, int]:
+    """Wo der Valkey der Testreihe erreichbar ist.
+
+    Zwei Unit-Tests brauchen eine **echte** Verbindung und ueberspringen sich
+    sonst -- in einer Pipeline, in der der Dienst unter einem anderen Namen
+    laeuft, waeren sie damit stillschweigend wirkungslos. Dieselben Variablen
+    wie auf der Integrationsebene, damit beide Ebenen denselben Dienst meinen.
+
+    Als Fixture und nicht als Konstante: ``uv run pytest`` legt das
+    Arbeitsverzeichnis nicht in den Suchpfad, ein ``from tests.conftest
+    import ...`` scheitert dort also -- und genau so faehrt die Pipeline.
+    """
+    return (os.environ.get("SQD_TEST_VALKEY_HOST", "127.0.0.1"),
+            int(os.environ.get("SQD_TEST_VALKEY_PORT", "6399")))

@@ -88,7 +88,7 @@ async def test_aufbau_gegen_ein_schweigendes_gegenueber(tmp_path: object) -> Non
         await server.wait_closed()
 
 
-async def test_zeitgrenzen_erreichen_den_client() -> None:
+async def test_zeitgrenzen_erreichen_den_client(valkey_adresse: tuple[str, int]) -> None:
     """Die beiden Grenzen muessen im Client ankommen, nicht nur im Aufruf.
 
     ``wait_for`` umspannt nur den Aufbau. Alles danach -- und jede
@@ -96,8 +96,9 @@ async def test_zeitgrenzen_erreichen_den_client() -> None:
     diesen beiden Werten. Ohne sie wartet ein Aufruf gegen eine tote Leitung
     so lange, wie das Betriebssystem meint.
     """
-    c = ValkeyStreamClient("valkey://127.0.0.1:6399/1", connect_timeout_s=1.5,
-                           socket_timeout_s=2.5)
+    wirt, port = valkey_adresse
+    c = ValkeyStreamClient(f"valkey://{wirt}:{port}/1",
+                           connect_timeout_s=1.5, socket_timeout_s=2.5)
     try:
         await c.connect()
     except StreamUnavailable:
