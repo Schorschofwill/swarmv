@@ -66,6 +66,23 @@ _AKTUELL = "aktuell"
 _VERZOEGERT = "verzögert"
 
 
+def datenmenge(bytes_: int | None) -> str:
+    """Eine Byte-Zahl lesbar machen: ``2097152`` -> ``2,0 MB``.
+
+    Dezimalkomma, wie ueberall sonst auf diesen Seiten.
+    """
+    if bytes_ is None:
+        return "--"
+    zahl_ = float(bytes_)
+    for einheit in ("B", "KB", "MB", "GB"):
+        if zahl_ < 1024 or einheit == "GB":
+            if einheit == "B":
+                return f"{int(zahl_)} B"
+            return f"{zahl_:.1f} {einheit}".replace(".", ",")
+        zahl_ /= 1024
+    return f"{zahl_:.1f} GB".replace(".", ",")   # pragma: no cover -- unerreichbar
+
+
 def zeitpunkt(ts: float | None) -> str:
     """Einen Zeitstempel lesbar machen. ``None`` heisst "noch nie"."""
     if ts is None:
@@ -181,6 +198,7 @@ def _environment() -> Environment:
     )
     env.globals["marke"] = marke
     env.globals["zeitpunkt"] = zeitpunkt
+    env.globals["datenmenge"] = datenmenge
     env.globals["zahl"] = zahl
     env.globals["weiterlink"] = weiterlink
     env.globals["zustandsart"] = zustandsart
@@ -219,6 +237,7 @@ def _engine_callback(engine: JinjaTemplateEngine) -> None:
     engine.engine.undefined = StrictUndefined
     engine.engine.globals["marke"] = marke
     engine.engine.globals["zeitpunkt"] = zeitpunkt
+    engine.engine.globals["datenmenge"] = datenmenge
     engine.engine.globals["zahl"] = zahl
     engine.engine.globals["weiterlink"] = weiterlink
     engine.engine.globals["zustandsart"] = zustandsart

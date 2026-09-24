@@ -62,6 +62,64 @@
   <pre class="mono args">{{ task['args_text'] or '--' }}</pre>
 </section>
 
+{%- set ergebnis_marke = {'fertig': 'is-ok', 'gescheitert': 'is-fail',
+                          'storniert': 'is-idle'}.get(ergebnis.art, 'is-idle') %}
+{%- set ergebnis_wort = {'fertig': 'da', 'gescheitert': 'gescheitert',
+                         'storniert': 'storniert'}.get(ergebnis.art) %}
+<section class="card ergebnis">
+  <h3 class="card-section">Ergebnis
+  {%- if ergebnis.zustand == 'da' %}
+  {#- Die Marke kommt allein aus der **Art**, nie aus dem Abschneiden: Sonst
+      truege ein gescheiterter Task mit langem Fehlertext zwei Zustaende
+      zugleich. Und "storniert" ist hier neutral -- so, wie der
+      Status-Marker desselben Tasks weiter oben. -#}
+  <span class="tag {{ ergebnis_marke }}"><span class="tag-dot"></span> {{ ergebnis_wort }}</span>
+  {%- endif %}
+  </h3>
+  {#- Gelesen, nicht gespeichert (KD1): Es hat eine eigene Verfallsfrist, die
+      das Verzeichnis nicht kennt, und eine zweite Kopie waere ein zweiter
+      Ort mit einer zweiten Loeschpflicht. -#}
+  {%- if ergebnis.zustand == 'offen' %}
+  <p class="notice is-idle"><span class="tag-dot"></span>
+    Der Task ist noch nicht beendet -- ein Ergebnis gibt es erst danach.</p>
+  {%- elif ergebnis.zustand == 'fehlt' %}
+  {#- Beide Ursachen, keine behauptet: Das Dashboard kann sie nicht
+      unterscheiden. Fire-and-Forget ohne eigene Frist loest auf 0 auf, und
+      dann legt die Anwendung nie etwas ab. -#}
+  <p class="notice is-idle"><span class="tag-dot"></span>
+    Kein Ergebnis im Backend -- <strong>abgelaufen</strong> nach der
+    Aufbewahrungsfrist der Anwendung, oder diese Anwendung
+    <strong>speichert keine Ergebnisse</strong>.</p>
+  {%- elif ergebnis.zustand in ('nicht_erreichbar', 'nicht_lesbar') %}
+  {#- ``is-fail`` wie im Storno-Fluss darunter: Beides sind Aussagen ueber
+      die **Ablage**, nicht ueber den Task -- und beide bedeuten, dass hier
+      gerade keine Auskunft zu haben ist. -#}
+  <p class="notice is-fail" role="alert"><span class="tag-dot"></span>
+    {{ ergebnis.grund }}</p>
+  {%- elif ergebnis.art == 'gescheitert' %}
+  {#- Zwei Quellen, beide beschriftet (F2): das Verzeichnis haelt den Fehler
+      aus dem Signal, das Backend den aus dem Ergebnis. Gingen Signale
+      verloren, gehen sie auseinander -- und eines stillschweigend zu
+      bevorzugen hiesse, sich festzulegen, ohne zu sagen worauf. -#}
+  <p class="feldname">aus dem Ergebnis</p>
+  <pre class="mono args fehlertext">{{ ergebnis.text }}</pre>
+  {%- if task['error'] %}
+  <p class="feldname">aus dem Signal</p>
+  <pre class="mono args fehlertext">{{ task['error'] }}</pre>
+  {%- endif %}
+  {%- else %}
+  <pre class="mono args">{{ ergebnis.text }}</pre>
+  {%- endif %}
+  {%- if ergebnis.abgeschnitten %}
+  {#- Ein stumm gekuerzter Text laese sich als das Ganze. Die Zahl ist die
+      Laenge der **Darstellung**, nicht die des abgelegten Pakets -- an
+      dessen Rohbytes kommt das Dashboard nach KD2 nicht heran. -#}
+  <p class="notice is-wait"><span class="tag-dot"></span>
+    Hier <strong>abgeschnitten</strong> -- die ganze Darstellung wäre
+    {{ datenmenge(ergebnis.groesse) }} lang.</p>
+  {%- endif %}
+</section>
+
 <section class="card">
   <h3 class="card-section">Signalfolge</h3>
   {#- In **Stromreihenfolge**, nicht nach Zeitstempel: Anwendungs- und

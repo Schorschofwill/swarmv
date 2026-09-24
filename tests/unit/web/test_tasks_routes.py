@@ -49,6 +49,24 @@ Test-Liste (AGENTS.md):
 17. Ein nicht erreichbares Backend wird benannt, statt eine Anforderung zu
     behaupten.
 18. Stornieren ohne Sitzung und ohne Merkmal wird abgewiesen.
+
+=== ZYKLUS 6: Das Ergebnis (U2, F1) ===
+19. Covers AE1. Ein fertiger Task zeigt sein Ergebnis im Klartext.
+20. Ein laufender Task loest keinen Backend-Zugriff aus -- und traegt
+    trotzdem ein Wort.
+21. Eine als unvollstaendig markierte Zeile loest den Nachschlag **doch**
+    aus: Ging das Abschlusssignal verloren, ist das Backend die letzte
+    Quelle (R4a).
+22. Covers AE2. Ein fehlendes Ergebnis nennt beide Ursachen, ohne eine zu
+    behaupten.
+23. Covers AE3, R5. Ein totes Backend nennt den Grund, und die Seite bleibt
+    vollstaendig.
+24. Covers AE4, F2. Ein gescheiterter Task zeigt beide Fehlertexte, jeden
+    beschriftet.
+25. Covers AE5, R4. Ein abgeschnittenes Ergebnis ist gekennzeichnet und
+    nennt die Laenge der Darstellung.
+26. Ein storniertes Ergebnis traegt dieselbe Marke wie sein Status.
+27. Covers R6a, KD1. Das Ergebnis landet weder im Verzeichnis noch im Audit.
 """
 
 from __future__ import annotations
@@ -126,8 +144,10 @@ def _verzeichnis_fuellen(config: DashboardConfig) -> None:
 
 
 async def _angemeldet(config: DashboardConfig, *, canceller: object | None = None,
+                      ergebnisleser: object | None = None,
                       mit_app: bool = False) -> Any:
-    app = create_app(config, hasher=_BILLIG, canceller=canceller)
+    app = create_app(config, hasher=_BILLIG, canceller=canceller,
+                     ergebnisleser=ergebnisleser)
     c = AsyncTestClient(app=app, base_url=BASIS)
     await c.__aenter__()
     seite = await c.get("/login")
@@ -730,3 +750,283 @@ async def test_der_zeitraum_ueberlebt_das_blaettern(tmp_path: Path) -> None:
         )
     finally:
         await c.__aexit__(None, None, None)
+
+
+# --- Zyklus 6: Das Ergebnis (U2) ----------------------------------------
+
+
+def _ergebniskarte(html: str) -> str:
+    """Nur die Ergebniskarte, nicht die ganze Seite.
+
+    Zwei Tests dieses Projekts waren schon einmal gruen, ohne zu messen, was
+    sie messen sollten: Sie suchten Woerter im gesamten Seitentext, und die
+    standen dort aus einem anderen Grund. Hier wird der Abschnitt
+    herausgeschnitten, bevor etwas behauptet wird.
+    """
+    treffer = re.search(r'<section class="card ergebnis".*?</section>', html, re.S)
+    return treffer.group(0) if treffer else ""
+
+
+async def test_ein_fertiger_task_zeigt_sein_ergebnis_im_klartext(tmp_path: Path) -> None:
+    """Covers AE1. Die Frage, wegen der dieser Plan entstand.
+
+    Das Ergebnis steht **unter** den Argumenten, in derselben Form: Bisher
+    endete die Seite bei "fertig" und der Laufzeit, und wer wissen wollte,
+    was herauskam, griff zur Konsole.
+    """
+    from swarmq_dashboard.web.ergebnis import Ergebnisbild
+
+    class _Leser:
+        async def lesen(self, task_id: str) -> Ergebnisbild:
+            return Ergebnisbild(zustand="da", art="fertig",
+                                text='{"pid": 4711, "worker": "phx-w1"}')
+
+    config = _config(tmp_path)
+    _verzeichnis_fuellen(config)
+    c = await _angemeldet(config, ergebnisleser=_Leser())
+    try:
+        seite = await c.get("/tasks/a41f")
+    finally:
+        await c.__aexit__(None, None, None)
+
+    karte = _ergebniskarte(seite.text)
+    assert karte, "es gibt keine Ergebniskarte auf der Seite"
+    assert "4711" in karte
+
+
+class _Zaehlleser:
+    """Ein Leser, der jeden Aufruf mitzaehlt."""
+
+    def __init__(self, bild: Any = None) -> None:
+        from swarmq_dashboard.web.ergebnis import Ergebnisbild
+
+        self.rufe: list[str] = []
+        self.bild = bild or Ergebnisbild(zustand="da", art="fertig", text="{}")
+
+    async def lesen(self, task_id: str) -> Any:
+        self.rufe.append(task_id)
+        return self.bild
+
+
+async def test_ein_laufender_task_loest_keinen_backend_zugriff_aus(tmp_path: Path) -> None:
+    """Und traegt trotzdem ein Wort -- keines der beiden allein genuegt.
+
+    Der Zugriff waere fuer nichts: Ein Task, der noch rechnet, hat kein
+    Ergebnis. Eine leere Karte waere aber die stille Falschaussage, gegen die
+    R33 steht -- sie laese sich wie "nichts zurueckgegeben".
+    """
+    leser = _Zaehlleser()
+    config = _config(tmp_path)
+    _verzeichnis_fuellen(config)
+    c = await _angemeldet(config, ergebnisleser=leser)
+    try:
+        seite = await c.get("/tasks/b22c")
+    finally:
+        await c.__aexit__(None, None, None)
+
+    assert leser.rufe == [], "fuer einen laufenden Task wurde das Backend gefragt"
+    karte = _ergebniskarte(seite.text)
+    assert "noch nicht beendet" in karte, karte
+
+
+async def test_eine_unvollstaendige_zeile_loest_den_nachschlag_doch_aus(tmp_path: Path) -> None:
+    """Der Fall, in dem das Backend die letzte verbliebene Quelle ist.
+
+    Ging das Abschlusssignal verloren, steht die Zeile auf einem nicht
+    beendeten Status, obwohl das Ergebnis im Backend liegt. Ohne diese
+    Ausnahme verweigerte die Seite die Auskunft ausgerechnet im Vorfall --
+    und das Verzeichnis weiss hier sogar, dass ihm etwas fehlt: Es hat die
+    Zeitspanne als unvollstaendig markiert (R4a).
+    """
+    from swarmq_dashboard.web.ergebnis import Ergebnisbild
+
+    leser = _Zaehlleser(Ergebnisbild(zustand="da", art="fertig", text='{"gerettet": true}'))
+    config = _config(tmp_path)
+    _verzeichnis_fuellen(config)
+    c = await _angemeldet(config, ergebnisleser=leser)
+    try:
+        seite = await c.get("/tasks/c33d")
+    finally:
+        await c.__aexit__(None, None, None)
+
+    assert leser.rufe == ["c33d"], "die Luecke wurde nicht beruecksichtigt"
+    assert "gerettet" in _ergebniskarte(seite.text)
+
+
+async def _detailseite(tmp_path: Path, bild: Any, tid: str = "a41f") -> str:
+    """Die Detailseite mit diesem Ergebnisbild."""
+    class _Leser:
+        async def lesen(self, task_id: str) -> Any:
+            return bild
+
+    config = _config(tmp_path)
+    _verzeichnis_fuellen(config)
+    c = await _angemeldet(config, ergebnisleser=_Leser())
+    try:
+        return (await c.get(f"/tasks/{tid}")).text
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+async def test_ein_fehlendes_ergebnis_nennt_beide_ursachen(tmp_path: Path) -> None:
+    """Covers AE2. Ein leeres Feld waere die stille Falschaussage (R33).
+
+    Und die Seite darf sich nicht auf **eine** Ursache festlegen: Sie kann
+    nicht unterscheiden, ob die Frist abgelaufen ist oder die Anwendung
+    ueberhaupt keine Ergebnisse ablegt -- Fire-and-Forget ohne eigene Frist
+    loest auf 0 auf, und dann wird nie etwas gespeichert.
+    """
+    from swarmq_dashboard.web.ergebnis import Ergebnisbild
+
+    karte = _ergebniskarte(await _detailseite(
+        tmp_path, Ergebnisbild(zustand="fehlt", art=None, text="")))
+
+    assert "abgelaufen" in karte, karte
+    assert "speichert keine Ergebnisse" in karte, karte
+
+
+async def test_ein_totes_backend_nennt_den_grund_und_die_seite_bleibt_ganz(tmp_path: Path) -> None:
+    """Covers AE3, R5. Die Seite traegt mehr als das Ergebnis.
+
+    Argumente, Signalfolge und der Stornier-Knopf muessen stehen, auch wenn
+    das Backend weg ist. Waere der Nachschlag ein Fehler statt einer
+    Auskunft, verloere man im Vorfall die ganze Seite -- wegen des einen
+    Feldes, das gerade nicht zu haben ist.
+    """
+    from swarmq_dashboard.web.ergebnis import Ergebnisbild
+
+    seite = await _detailseite(tmp_path, Ergebnisbild(
+        zustand="nicht_erreichbar", art=None, text="",
+        grund="das Backend ist nicht erreichbar: connection refused"))
+
+    karte = _ergebniskarte(seite)
+    assert "connection refused" in karte, karte
+    # Die Seite selbst ist vollstaendig geblieben.
+    assert "Signalfolge" in seite
+    assert "render_pdf" in seite
+
+
+async def test_ein_gescheiterter_task_zeigt_beide_fehlertexte_beschriftet(tmp_path: Path) -> None:
+    """Covers AE4, F2. Zwei Quellen, die auseinandergehen koennen.
+
+    Das Verzeichnis haelt den Fehler aus dem **Signal**, das Backend den aus
+    dem **Ergebnis**. Gingen Signale verloren, stehen dort verschiedene
+    Texte -- und eines davon stillschweigend zu bevorzugen hiesse, sich auf
+    eine Quelle festzulegen, ohne zu sagen welche.
+    """
+    from swarmq_dashboard.web.ergebnis import Ergebnisbild
+
+    config = _config(tmp_path)
+    _verzeichnis_fuellen(config)
+    w = DirectoryWriter(connect(config.directory_file))
+    w.apply([
+        ("6000-0", Event(type="task_pickup", ts=1_700_000_300.0, source="phx-w3:0",
+                         origin=Origin.PICKUP,
+                         payload={"task_id": "d44e", "task_name": "charge", "queue": "billing",
+                                  "args": [], "kwargs": {}})),
+        ("7000-0", Event(type="task_failed", ts=1_700_000_301.0, source="phx-w3:0",
+                         origin=Origin.PICKUP,
+                         payload={"task_id": "d44e", "task_name": "charge",
+                                  "error": "Timeout beim ersten Versuch"})),
+    ])
+    w.close()
+
+    class _Leser:
+        async def lesen(self, task_id: str) -> Any:
+            return Ergebnisbild(zustand="da", art="gescheitert",
+                                text="ConnectionError: gateway weg")
+
+    c = await _angemeldet(config, ergebnisleser=_Leser())
+    try:
+        seite = (await c.get("/tasks/d44e")).text
+    finally:
+        await c.__aexit__(None, None, None)
+
+    karte = _ergebniskarte(seite)
+    assert "gateway weg" in karte, karte
+    assert "aus dem Ergebnis" in karte, karte
+    assert "Timeout beim ersten Versuch" in karte, karte
+    assert "aus dem Signal" in karte, karte
+
+
+async def test_ein_abgeschnittenes_ergebnis_ist_gekennzeichnet(tmp_path: Path) -> None:
+    """Covers AE5, R4. Ein stumm gekuerzter Text waere eine Falschaussage.
+
+    Wer die ersten acht Kilobyte eines Datensatzes sieht und nicht weiss,
+    dass er gekuerzt ist, liest sie als das Ganze. Die genannte Zahl ist die
+    Laenge der **Darstellung** -- nicht die des im Backend abgelegten
+    Pakets, an dessen Rohbytes das Dashboard nach KD2 nicht herankommt.
+    """
+    from swarmq_dashboard.web.ergebnis import Ergebnisbild
+
+    karte = _ergebniskarte(await _detailseite(tmp_path, Ergebnisbild(
+        zustand="da", art="fertig", text="x" * 100,
+        abgeschnitten=True, groesse=2_097_152)))
+
+    assert "abgeschnitten" in karte, karte
+    assert "2,0 MB" in karte, karte
+    assert "Darstellung" in karte, "die Zahl wird als Speicherbelegung gelesen"
+
+
+async def test_ein_storniertes_ergebnis_traegt_dieselbe_marke_wie_sein_status(
+    tmp_path: Path,
+) -> None:
+    """Der Befund des Gestaltungs-Reviews am Plan.
+
+    Der Plan bildete "storniert" zunaechst auf die Warte-Marke ab. Dann
+    stuende auf **derselben Seite** der Status-Marker neutral und die
+    Ergebniskarte gelb -- fuer denselben Sachverhalt. ``_ZUSTANDSART`` fuehrt
+    "storniert" als ``is-idle``, und die Farbtabelle der Oberflaeche meint
+    mit "wartet" die *angeforderte* Stornierung, nicht den Ausgang.
+    """
+    from swarmq_dashboard.web.ergebnis import Ergebnisbild
+    from swarmq_dashboard.web.templates import zustandsart
+
+    assert zustandsart("storniert") == "is-idle", "die Vorlage hat sich geaendert"
+
+    karte = _ergebniskarte(await _detailseite(tmp_path, Ergebnisbild(
+        zustand="da", art="storniert", text="Der Task wurde storniert.")))
+
+    treffer = re.search(r'<span class="tag (is-\w+)"', karte)
+    assert treffer, f"die Karte traegt keine Zustandsmarke: {karte}"
+    assert treffer.group(1) == "is-idle", treffer.group(1)
+
+
+async def test_das_ergebnis_landet_weder_im_audit_noch_im_verzeichnis(tmp_path: Path) -> None:
+    """Covers R6a, KD1. Gelesen, nicht gespeichert.
+
+    Es hat eine eigene Verfallsfrist, die das Verzeichnis nicht kennt und
+    nicht einhalten koennte -- eine Kopie dort waere ein zweiter Ort mit
+    einer zweiten Loeschpflicht (R7a). Und ein Seitenaufruf ist keine
+    Nutzeraktion, die ins Protokoll gehoert.
+    """
+    from swarmq_dashboard.web.ergebnis import Ergebnisbild
+
+    geheim = "KONTONUMMER-9917-SICHTBAR"
+
+    class _Leser:
+        async def lesen(self, task_id: str) -> Any:
+            return Ergebnisbild(zustand="da", art="fertig", text=geheim)
+
+    config = _config(tmp_path)
+    _verzeichnis_fuellen(config)
+    c, app = await _angemeldet(config, ergebnisleser=_Leser(), mit_app=True)
+    protokolliert: list[tuple[Any, ...]] = []
+    app.state.services.audit.record = (          # type: ignore[method-assign]
+        lambda *a, **k: protokolliert.append((a, k)))  # type: ignore[func-returns-value]
+    try:
+        seite = (await c.get("/tasks/a41f")).text
+        # **Vor** dem Herunterfahren: danach ist der Schreiber geschlossen,
+        # und die Abfrage liefe gegen None -- gruen, ohne etwas zu pruefen.
+        schreiber = app.state.services.services_directory_writer
+        treffer = schreiber._con.execute(
+            "select count(*) from task where coalesce(args_text,'') like ? "
+            "or coalesce(error,'') like ?",
+            (f"%{geheim}%", f"%{geheim}%"),
+        ).fetchone()[0]
+    finally:
+        await c.__aexit__(None, None, None)
+
+    assert geheim in _ergebniskarte(seite), "die Karte zeigt es gar nicht"
+    assert treffer == 0, "das Ergebnis steht im Verzeichnis"
+    assert protokolliert == [], "ein Seitenaufruf hat einen Audit-Eintrag erzeugt"

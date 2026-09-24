@@ -28,6 +28,7 @@ from litestar.response import Redirect, Template
 
 from swarmq_dashboard.directory.queries import DirectoryQueries, Filter
 from swarmq_dashboard.web.auth import SESSION_ACCOUNT_KEY
+from swarmq_dashboard.web.ergebnis import Ergebnisbild
 
 #: Der stehende Hinweis aus R31. Er steht auf **jeder** Listenseite, nicht nur
 #: wenn gerade eine betroffene Zeile sichtbar ist: die Abwesenheit einer
@@ -165,6 +166,28 @@ async def liste(request: Request[Any, Any, Any]) -> Template:
     )
 
 
+async def _ergebnis_zu(request: Request[Any, Any, Any], zeile: Any) -> Ergebnisbild:
+    """Das Ergebnis dieses Tasks -- oder das Wort dafuer, dass keines faellig ist.
+
+    Nachgeschlagen wird nur fuer beendete Tasks: Ein wartender hat kein
+    Ergebnis, und der Aufruf waere ein Backend-Zugriff fuer nichts.
+
+    Ein leeres Feld waere trotzdem die falsche Antwort -- es laese sich wie
+    "nichts zurueckgegeben". Darum ein eigener Zustand, ohne Zugriff.
+
+    **Ausser bei einer Luecke** (R4a): Ging das Abschlusssignal verloren,
+    steht die Zeile auf einem nicht beendeten Status, obwohl das Ergebnis im
+    Backend liegt. Genau dann ist das Backend die letzte verbliebene Quelle,
+    und die Seite darf die Auskunft nicht verweigern.
+    """
+    if zeile["status"] not in BEENDET and not zeile["incomplete"]:
+        return Ergebnisbild(zustand="offen", art=None, text="")
+    bild: Ergebnisbild = await request.app.state.services.ergebnisse.lesen(
+        zeile["task_id"]
+    )
+    return bild
+
+
 @get("/tasks/{task_id:str}")
 async def detail(request: Request[Any, Any, Any], task_id: FromPath[str]) -> Template:
     """Die Task-Ansicht mit allen Feldern, Argumenten und der Signalfolge."""
@@ -182,6 +205,7 @@ async def detail(request: Request[Any, Any, Any], task_id: FromPath[str]) -> Tem
         "tasks/detail.html",
         context={
             "task": zeile,
+            "ergebnis": await _ergebnis_zu(request, zeile),
             "signale": q.signals(task_id),
             "hinweis": request.query_params.get("hinweis"),
             "beendet": BEENDET,

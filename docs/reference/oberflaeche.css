@@ -398,6 +398,21 @@
   /* In einer Tabellenzelle bringt die Zelle ihre Polsterung schon mit. */
   td .args { padding: 0; }
 
+  /* Das Ergebnis (U2). Es steht unter den Argumenten und sieht aus wie sie:
+     dieselbe Art Daten, dieselbe Schreibweise -- nur kommt es aus dem
+     Backend und liegt nirgends im Dashboard (KD1). Die Marke in der
+     Ueberschrift traegt die Aussage, nicht eine eigene Farbe der Karte. */
+  .ergebnis .card-section { display: flex; align-items: center; gap: 8px; }
+  .ergebnis .args { max-height: 22rem; }
+
+  /* Beschriftung ueber einem der beiden Fehlertexte (F2). Wie eine
+     Feldbeschriftung in der Felderliste, damit auf einer Seite nicht zwei
+     Arten von Beschriftung stehen. */
+  .feldname {
+    font-size: 10.5px; letter-spacing: .07em; text-transform: uppercase;
+    color: var(--dim); margin: 12px 0 3px;
+  }
+
   /* Ein Traceback ist das Erste, was man auf der Detailseite sucht. Ohne
      ``pre-wrap`` faltet ``<dd>`` seine zwanzig Zeilen zu einem Absatz ohne
      Einrueckung -- die Zeile mit dem Dateinamen ist darin nicht mehr zu
