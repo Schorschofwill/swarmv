@@ -76,6 +76,10 @@ Test-Liste (AGENTS.md):
 === ZYKLUS 11: Nachtraege ===
 43. Der zuletzt angezeigte Zustand kommt in die Kopie: "verfallen, zuletzt:
     Stornierung angefordert" (KTD6, R17).
+44. Eine Kopie, deren Topologie erst unter der Wurzel kaputt ist, reisst die
+    Liste nicht mit: sie steht mit dem flachen Baum aus ihren Task-Zeilen
+    und ``topologie_lesbar`` False da, die anderen Zeilen daneben.
+45. Dasselbe im Detail: flacher Baum statt Ausnahme.
 """
 
 from __future__ import annotations
@@ -788,3 +792,34 @@ def test_verfallen_nennt_den_zuletzt_angezeigten_zustand(tmp_path: Path) -> None
     assert zeile.kopie.zuletzt_angezeigt == "angefordert"
     assert zeile.baum.status.text == "Zustand verfallen, zuletzt: Stornierung angefordert"
     assert zeile.baum.status.gelesen_at == 510.0
+
+
+def test_kaputte_topologie_reisst_die_liste_nicht_mit(tmp_path: Path) -> None:
+    """Der Leser prueft nur die Wurzel; ``chain`` ohne ``steps`` besteht das."""
+    w, q = _setup(tmp_path)
+    kaputt, heil = _wf(1), _wf(2)
+    w.apply([(None, _schritt(kaputt, "/0", 100.0)), (None, _schritt(heil, "", 200.0))])
+    _lesung(w, kaputt, topologie={"kind": "chain"}, step_tasks={"/0": f"{kaputt}#/0"})
+    _lesung(w, heil, topologie=_sig_top("a"))
+
+    zeilen = {z.kopie.workflow_id: z for z in q.workflows(Workflowfilter()).zeilen}
+    assert set(zeilen) == {kaputt, heil}
+    assert not zeilen[kaputt].topologie_lesbar
+    assert zeilen[kaputt].baum.form is None
+    assert [b.task_id for b in zeilen[kaputt].baum.blaetter] == [f"{kaputt}#/0"]
+    assert zeilen[kaputt].baum.status.code == "laeuft"
+    assert zeilen[heil].topologie_lesbar
+
+
+def test_kaputte_topologie_ergibt_im_detail_den_flachen_baum(tmp_path: Path) -> None:
+    """Chord mit leerem Body: die Wurzel ist ein Chord, darunter steht nichts."""
+    w, q = _setup(tmp_path)
+    wf = _wf(1)
+    w.apply([(None, _schritt(wf, "/h/0", 100.0))])
+    _lesung(w, wf, topologie={"kind": "chord", "header": {"kind": "group", "members": []},
+                              "body": {"kind": "group", "members": []}})
+    detail = q.workflow_detail(wf)
+    assert detail is not None
+    assert not detail.topologie_lesbar
+    assert detail.baum.form is None
+    assert [b.task_id for b in detail.baum.blaetter] == [f"{wf}#/h/0"]

@@ -2,10 +2,6 @@
 {% block titel %}Workflows{% endblock %}
 {% block inhalt %}
 
-{#- Form der Wurzel als Wort (R2). Die Codes kommen aus ``Baum.form``. -#}
-{%- set formname = {'schritt': 'Schritt', 'kette': 'Kette', 'gruppe': 'Gruppe',
-                    'chord': 'Chord'} %}
-
 <section class="card">
   <div class="card-body">
   <form class="filters" method="get" action="/workflows">
@@ -66,9 +62,12 @@
           {#- R17: ohne den Zeitpunkt liest sich "verfallen" wie "gerade eben". -#}
           <div class="dim">zuletzt gelesen {{ zeitpunkt(anzeige.gelesen_at) }}</div>
           {%- endif %}
+          {%- if not z.topologie_lesbar %}
+          <div class="dim">Topologie nicht lesbar, nur bekannte Schritte</div>
+          {%- endif %}
         </td>
         <td class="mono"><a class="trunc" href="/workflows/{{ z.kopie.workflow_id|urlencode }}">{{ z.kopie.workflow_id }}</a></td>
-        <td>{{ formname.get(z.baum.form, '--') }}</td>
+        <td>{#- Form der Wurzel als Wort (R2). -#}{{ artname(z.baum.form) }}</td>
         <td class="mono"><span class="trunc">{{ z.baum.erster_schritt or '--' }}</span></td>
         <td class="mono num"
             {%- if anzeige.code == 'nie_gesehen' %} title="nur die bekannten Schritte -- die Topologie war nie lesbar"{% endif %}>

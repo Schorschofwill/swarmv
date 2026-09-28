@@ -202,6 +202,9 @@ create table if not exists workflow (
 ) without rowid;
 
 create index if not exists workflow_last_seen on workflow(last_seen_at);
+-- Sortierung und Keyset der Liste, wie ``task_first_seen`` fuer die Tasks:
+-- ohne ihn ist jede Seite ein voller Durchlauf plus Sortierung.
+create index if not exists workflow_first_seen on workflow(first_seen_at desc, workflow_id desc);
 
 -- Lesefortschritt im Strom und der Zustand des Neuaufbaus (R8).
 create table if not exists progress (

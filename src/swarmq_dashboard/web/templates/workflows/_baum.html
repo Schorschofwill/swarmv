@@ -11,9 +11,7 @@
   {%- else %}knoten{{ k.pfad|replace('/', '-') }}{% endif -%}
 {%- endmacro %}
 
-{#- Art und Rolle eines Knotens als Wort. -#}
-{%- set artname = {'kette': 'Kette', 'gruppe': 'Gruppe', 'chord': 'Chord',
-                   'unbekannt': 'Bekannte Schritte'} %}
+{#- Rolle eines Knotens als Wort; die Art nennt ``artname``. -#}
 {%- set rollenname = {'kopf': 'Kopf', 'body': 'Body'} %}
 {%- set statusname = {'eingereiht': 'eingereiht, noch nicht gemeldet',
                       'nicht_eingereiht': 'nicht eingereiht'} %}
@@ -95,7 +93,7 @@
   {%- else %}
   <tr id="{{ knoten_id(k) }}">
     {{ pfadzelle(k, tiefe) }}
-    <td>{{ artname.get(k.art, k.art) }}{% if k.rolle %} <span class="dim">{{ rollenname[k.rolle] }}</span>{% endif %}
+    <td>{{ artname(k.art) }}{% if k.rolle %} <span class="dim">{{ rollenname[k.rolle] }}</span>{% endif %}
       {{- ergebniszeile(k) }}</td>
     <td class="mono">{{ zaehlertext(k) or '--' }}{{ wartet(k) }}</td>
     <td class="mono">--</td>

@@ -81,6 +81,12 @@ Test-Liste (AGENTS.md):
 32. Covers F3. Nach dem Stornieren und dem Abbruch aller wartenden Glieder
     zeigt die Ansicht "Stornierung angefordert, nichts mehr aktiv" und
     keinen Knopf.
+
+=== ZYKLUS 7: Kaputte Topologie ===
+33. Eine Kopie, deren Topologie erst unter der Wurzel kaputt ist: die Liste
+    zeigt sie und die anderen, das Detail antwortet 200 mit den bekannten
+    Schritten und dem Hinweis "Topologie nicht lesbar", die Gliederseite
+    nennt ihren Grund -- keine Seite antwortet 500.
 """
 
 from __future__ import annotations
@@ -1139,5 +1145,33 @@ async def test_nach_dem_abbruch_aller_wartenden_ist_nichts_mehr_aktiv(tmp_path: 
         assert _text(status.group(1)) == "Stornierung angefordert, nichts mehr aktiv"
         assert f"/workflows/{wf}/cancel" not in seite.text
         assert [e.outcome for e in await _workflow_audit(app)] == ["ok"]
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+async def test_kaputte_topologie_ist_ein_benannter_zustand(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    v = _Verzeichnis(config)
+    kaputt, heil = _wf(1), _wf(2)
+    v.schritt(kaputt, "/0", 1_700_000_000.0, "task_started", name="a")
+    v.lesung(kaputt, {"kind": "chain"}, step_tasks={"/0": f"{kaputt}#/0"})
+    v.schritt(heil, "", 1_700_000_010.0, "task_started", name="einzeln")
+    v.lesung(heil, _sig_top("einzeln"))
+    v.close()
+    c = await _angemeldet(config)
+    try:
+        liste = await c.get("/workflows")
+        assert liste.status_code == 200
+        assert "Topologie nicht lesbar" in _zeile(liste.text, f"workflow-{kaputt}")
+        assert "Topologie nicht lesbar" not in _zeile(liste.text, f"workflow-{heil}")
+
+        detail = await c.get(f"/workflows/{kaputt}")
+        assert detail.status_code == 200
+        oben = _text(detail.text[:detail.text.index('id="workflow-baum"')])
+        assert "Topologie nicht lesbar" in oben
+        assert "a" in _text(_zeile(detail.text, "knoten-0"))
+
+        glieder = await c.get(f"/workflows/{kaputt}/glieder", params={"gruppe": ""})
+        assert glieder.status_code == 200
     finally:
         await c.__aexit__(None, None, None)

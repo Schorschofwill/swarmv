@@ -5,8 +5,6 @@
 
 {%- set anzeige = baum.status %}
 {%- set fortschritt = baum.fortschritt %}
-{%- set formname = {'schritt': 'Schritt', 'kette': 'Kette', 'gruppe': 'Gruppe',
-                    'chord': 'Chord'} %}
 
 {%- if hinweis == "angefordert" %}
 {#- "angefordert", nicht "storniert": storniert ist der Workflow erst, wenn
@@ -42,7 +40,7 @@
       <span class="tag {{ zustandsart(anzeige.code) }}">
         <span class="tag-dot"></span> {{ anzeige.text }}
       </span></dd></div>
-    <div><dt>Form</dt><dd>{{ formname.get(baum.form, '--') }}</dd></div>
+    <div><dt>Form</dt><dd>{{ artname(baum.form) }}</dd></div>
     <div><dt>Erster Schritt</dt><dd class="mono">{{ baum.erster_schritt or '--' }}</dd></div>
     <div><dt>Fortschritt</dt><dd class="mono">{{ fortschritt.fertig }}/{{ fortschritt.gesamt }}</dd></div>
     <div><dt>Start</dt><dd class="mono">{{ zeitpunkt(first_seen_at) }}</dd></div>
@@ -60,6 +58,13 @@
   <p class="card-meta"><span class="notice is-idle"><span class="tag-dot"></span>
     Den Zustand dieses Workflows hat der Dienst nie lesen können, bevor er verfiel.
     Hier stehen nur die Schritte, die das Verzeichnis kennt -- ohne Topologie und ohne Status.</span></p>
+  {%- endif %}
+  {%- if not topologie_lesbar %}
+  {#- Die Kopie traegt eine Topologie, die erst unter der Wurzel kaputt ist.
+      Der Status oben kommt weiter aus der Kopie; geraten wird nichts (R6). -#}
+  <p class="card-meta"><span class="notice is-idle"><span class="tag-dot"></span>
+    Topologie nicht lesbar: der gelesene Zustand beschreibt keinen gültigen Baum.
+    Hier stehen nur die Schritte, die das Verzeichnis kennt, und der Fortschritt zählt nur sie.</span></p>
   {%- endif %}
 </section>
 

@@ -966,3 +966,33 @@ def test_eine_dauer_ist_auf_einen_blick_lesbar() -> None:
     assert dauer(245.0) == "4 min 05 s"
     assert dauer(7380.0) == "2 h 03 min"
     assert dauer(-1.0) == "--"
+
+
+def test_die_topologie_art_hat_einen_namen_in_beiden_umgebungen() -> None:
+    """Workflow-Ansicht, Review #5. Die Zuordnung Art -> Wort stand in drei
+    Vorlagen und lief schon auseinander (``unbekannt`` fehlte in zweien).
+    Sie steht jetzt an **einer** Stelle, und beide Umgebungen -- die der
+    Anwendung und die von ``render`` -- kennen sie.
+
+    Keine Art ist "--"; eine Art, die diese Fassung nicht kennt, bleibt als
+    Code stehen statt zu verschwinden.
+    """
+    from litestar.plugins.jinja import JinjaTemplateEngine
+
+    from swarmq_dashboard.web.templates import artname, template_config
+
+    erwartet = {"schritt": "Schritt", "kette": "Kette", "gruppe": "Gruppe",
+                "chord": "Chord", "unbekannt": "Bekannte Schritte"}
+    falsch = {k: artname(k) for k, v in erwartet.items() if artname(k) != v}
+    assert not falsch, f"falscher Name: {falsch}"
+    assert artname(None) == "--"
+    assert artname("spirale") == "spirale"
+
+    config = template_config()
+    engine = JinjaTemplateEngine(directory=TEMPLATE_DIR)
+    assert config.engine_callback is not None
+    config.engine_callback(engine)
+    vorlage = "{{ artname('chord') }}"
+    assert engine.engine.from_string(vorlage).render() == "Chord"
+    from swarmq_dashboard.web.templates import _env
+    assert _env.from_string(vorlage).render() == "Chord"

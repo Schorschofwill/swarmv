@@ -34,11 +34,13 @@ Drei Entscheidungen tragen diese Schicht, und jede hat einen Test:
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 import sqlite3
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from functools import cached_property
 
 from swarmq_dashboard.directory.schema import GuardedConnection
 from swarmq_dashboard.workflow_baum import (
@@ -51,6 +53,8 @@ from swarmq_dashboard.workflow_baum import (
     knoten_wobei,
     taskzeile_aus,
 )
+
+logger = logging.getLogger("swarmq_dashboard.directory.queries")
 
 #: Kuerzestes Fragment, das ein Trigramm-Index finden kann.
 MIN_FRAGMENT = 3
@@ -166,6 +170,25 @@ class Workflowzeile:
     #: Start und letzte Aktivitaet laut Strom (R2).
     first_seen_at: float
     last_seen_at: float
+    #: False, wenn die Topologie der Kopie keinen Baum ergab und ``baum`` der
+    #: flache Rueckfall aus den Task-Zeilen ist (siehe ``baum_oder_flach``).
+    topologie_lesbar: bool = True
+
+
+def baum_oder_flach(kopie: Workflowkopie, zeilen: list[Taskzeile]) -> tuple[Baum, bool]:
+    """Der Baum aus Kopie und Task-Zeilen -- oder, wenn die Topologie unter
+    der Wurzel kaputt ist, der flache aus den bekannten Schritten.
+
+    Der Leser prueft nur die Wurzelform (wie im Abgleich); ohne den Rueckfall
+    risse eine kaputte Kopie die ganze Liste in eine 500. Der Status kommt
+    weiter aus der Kopie (KTD6), geraten wird nichts (R6). Das zweite Glied
+    sagt, ob die Topologie lesbar war, damit die Ansicht es benennt.
+    """
+    try:
+        return baue_baum(kopie, zeilen), True
+    except Exception as exc:
+        logger.warning("Workflow %s: Topologie nicht lesbar: %r", kopie.workflow_id, exc)
+        return baue_baum(replace(kopie, topologie=None), zeilen), False
 
 
 @dataclass(frozen=True)
@@ -180,7 +203,18 @@ class Workflowdetail:
 
     @property
     def baum(self) -> Baum:
-        return baue_baum(self.kopie, self.zeilen)
+        return self._baum_und_lesbar[0]
+
+    @property
+    def topologie_lesbar(self) -> bool:
+        """False, wenn ``baum`` der flache Rueckfall ist (``baum_oder_flach``)."""
+        return self._baum_und_lesbar[1]
+
+    @cached_property
+    def _baum_und_lesbar(self) -> tuple[Baum, bool]:
+        # Einmal gebaut: Route und Gliederseite fragen ``baum`` mehrfach, und
+        # die Warnung zu einer kaputten Topologie soll je Abruf einmal stehen.
+        return baum_oder_flach(self.kopie, self.zeilen)
 
 
 @dataclass
@@ -457,12 +491,12 @@ class DirectoryQueries:
             schritte = self._taskzeilen([z["workflow_id"] for z in stapel])
             for z in stapel:
                 kopie = _kopie(z)
-                baum = baue_baum(kopie, schritte.get(kopie.workflow_id, []))
+                baum, lesbar = baum_oder_flach(kopie, schritte.get(kopie.workflow_id, []))
                 if f.status and baum.status.code != f.status:
                     continue
                 ergebnis.append(Workflowzeile(
                     kopie=kopie, baum=baum, first_seen_at=float(z["first_seen_at"]),
-                    last_seen_at=float(z["last_seen_at"]),
+                    last_seen_at=float(z["last_seen_at"]), topologie_lesbar=lesbar,
                 ))
                 if len(ergebnis) == limit:
                     # Anschluss nur bei voller Seite, wie in ``search``.

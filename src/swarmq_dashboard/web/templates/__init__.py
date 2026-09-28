@@ -214,6 +214,31 @@ def zustandsart(status: str | None) -> str:
     return _ZUSTANDSART.get(status or "", "is-idle")
 
 
+#: Topologie-Art (``Knoten.art``, ``Baum.form``) -> Wort. Wie
+#: ``_ZUSTANDSART`` an **einer** Stelle: in drei Vorlagen nachgebaut, fehlte
+#: "unbekannt" bereits in zweien.
+_ARTNAME = {
+    "schritt": "Schritt",
+    "kette": "Kette",
+    "gruppe": "Gruppe",
+    "chord": "Chord",
+    # Flacher Baum ohne lesbare Topologie: nur die Schritte, die das
+    # Verzeichnis kennt.
+    "unbekannt": "Bekannte Schritte",
+}
+
+
+def artname(art: str | None) -> str:
+    """Der Name einer Topologie-Art. Keine Art ist "--".
+
+    Eine Art, die diese Fassung nicht kennt, bleibt als Code stehen: ein
+    leeres Feld saehe aus wie "keine Form".
+    """
+    if art is None:
+        return "--"
+    return _ARTNAME.get(art, art)
+
+
 def weiterlink(f: object, cursor: str, seit: str = "") -> str:
     """Die Adresszeile fuer die naechste Seite, mit allen Filtern."""
     from urllib.parse import urlencode
@@ -247,6 +272,7 @@ def _environment() -> Environment:
     env.globals["dauer"] = dauer
     env.globals["weiterlink"] = weiterlink
     env.globals["zustandsart"] = zustandsart
+    env.globals["artname"] = artname
     env.globals["bereiche"] = BEREICHE
     return env
 
@@ -287,6 +313,7 @@ def _engine_callback(engine: JinjaTemplateEngine) -> None:
     engine.engine.globals["dauer"] = dauer
     engine.engine.globals["weiterlink"] = weiterlink
     engine.engine.globals["zustandsart"] = zustandsart
+    engine.engine.globals["artname"] = artname
     engine.engine.globals["bereiche"] = BEREICHE
 
 

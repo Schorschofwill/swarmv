@@ -27,6 +27,8 @@ Test-Liste (AGENTS.md):
     Detailansicht holt alle Schritte eines Workflows darueber.
 11. Eine bestehende Datei aus Stufe 1 bekommt Tabelle und Index beim Oeffnen
     nachgezogen und behaelt ihre Zeilen.
+12. Die Workflow-Kopie hat einen Index passend zu Sortierung und Keyset der
+    Liste (``first_seen_at desc, workflow_id desc``), wie ``task_first_seen``.
 """
 
 from __future__ import annotations
@@ -204,3 +206,22 @@ def test_bestehende_datei_bekommt_kopie_und_index_nachgezogen(tmp_path: Path) ->
     assert "workflow_id" in _index_spalten(con2, "task")
     assert con2.execute("select count(*) from task").fetchone()[0] == 1
     con2.close()
+
+
+def test_workflow_liste_hat_einen_index_auf_ihre_sortierung(tmp_path: Path) -> None:
+    """Covers R1. Die Liste sortiert und blaettert ueber
+    ``(first_seen_at, workflow_id)`` absteigend; ohne passenden Index ist
+    jede Seite ein voller Durchlauf plus Sortierung.
+    """
+    con = connect(tmp_path / "v.sqlite3")
+    plan = " ".join(
+        str(r[3]) for r in con.execute(
+            "explain query plan select workflow_id from workflow "
+            "where (first_seen_at, workflow_id) < (?, ?) "
+            "order by first_seen_at desc, workflow_id desc limit 50",
+            (1.0, "w"),
+        )
+    )
+    assert "TEMP B-TREE" not in plan, f"die Liste sortiert ohne Index: {plan}"
+    assert "INDEX" in plan, f"die Liste liest ohne Index: {plan}"
+    con.close()
