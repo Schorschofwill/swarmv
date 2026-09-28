@@ -44,12 +44,55 @@ Test-Liste (AGENTS.md):
 22. Ein offener Leser laesst das Loeschversprechen erkennbar offen.
 23. Verdichten und Index-Zusammenraeumen haben je einen eigenen, geprueften
     Zweck -- Platz und Suchdauer, nicht die Loeschzusage.
+
+=== ZYKLUS 7: Zugehoerigkeit der Schritte (Workflow-Ansicht U2, KTD5) ===
+24. Ein ``task_enqueue`` mit ``workflow_id`` legt einen bestaetigten Workflow an.
+25. Ein ``task_cancelled`` mit Kennung ``<uuid>#/h/g3`` ohne ``workflow_id``
+    legt einen unbestaetigten Kandidaten an; die Task-Zeile traegt Kennung
+    und Pfad, damit die Detailansicht sie ueber den Index findet.
+26. Ein ``task_completed`` mit ``<uuid>#/h/g0`` ohne ``workflow_id`` legt
+    ebenso einen Kandidaten an -- der Normalfall ohne Anwendungs-Hook.
+27. Eine Kennung mit ``#``, deren Teil davor keine Workflow-Kennung ist,
+    legt nichts an.
+28. Eine uebergrosse ``workflow_id`` wird verworfen und protokolliert, der
+    Task selbst bleibt erhalten.
+29. Ein missgestalteter ``step_path`` wird verworfen, die Zugehoerigkeit bleibt.
+30. Ein spaeteres Ereignis mit ``workflow_id`` bestaetigt einen Kandidaten;
+    das Muster senkt einen bestaetigten Workflow nicht zurueck.
+31. Die letzte Aktivitaet eines Workflows folgt seinen Ereignissen und wird
+    nur gehoben.
+
+=== ZYKLUS 8: Kopie aus einer Lesung (KTD4, KTD6) ===
+32. Eine Lesung schreibt Status, Wurzelform, Topologie, ``step_tasks``,
+    Fehler und Zeitpunkt, bestaetigt und macht den Zustand "gesehen".
+33. Eine Lesung ergaenzt ``step_tasks`` um neue Pfade und entfernt keinen.
+34. Eine Lesung ueberschreibt Status und Fehler.
+35. Ein gespeicherter Endstatus wird nie durch "running" ueberschrieben.
+36. Eine Lesung fuer einen unbekannten Workflow legt nichts an.
+
+=== ZYKLUS 9: Verfallen, nie gesehen, Kandidaten, Storno (R7, R16, R17) ===
+37. "Verfallen" wird nur vermerkt, wenn die letzte Lesung "running" war;
+    Zeitpunkt der letzten Lesung und Status bleiben stehen.
+38. "Nie gesehen" wird nur ohne jede Lesung vermerkt.
+39. Ein Kandidat wird bestaetigt.
+40. Verwerfen loescht nur einen unbestaetigten Kandidaten.
+41. Der eigene Storno-Vermerk wird einmal gesetzt und nie verschoben.
+42. Offen sind alle Workflows ohne Endstatus, bestaetigt oder nicht.
+
+=== ZYKLUS 10: Aufbewahrung der Kopie (R5, KTD4) ===
+43. ``expire()`` entfernt einen Workflow, dessen letzte Aktivitaet aelter
+    als die Aufbewahrung ist, und laesst einen juengeren stehen.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
+from types import MappingProxyType
+from typing import Any
+
+import pytest
 
 from swarmq_dashboard.directory.schema import connect
 from swarmq_dashboard.directory.writer import DirectoryWriter
@@ -440,3 +483,330 @@ def test_ablauf_raeumt_den_volltextindex_zusammen(tmp_path: Path) -> None:
     w.expire(older_than=5000.0)
     nachher = w._con.execute("select count(*) from task_fts_data").fetchone()[0]
     assert nachher < vorher // 2, f"der Index blieb zersplittert: {vorher} -> {nachher}"
+
+
+# --- Zyklus 7: Zugehoerigkeit der Schritte -------------------------------
+
+#: Eine Kennung in der Form, die die Bibliothek vergibt (``uuid7``).
+WF = "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"
+WF2 = "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5c"
+
+
+def test_einreihung_mit_workflow_id_legt_bestaetigten_workflow_an(tmp_path: Path) -> None:
+    """Covers R1."""
+    w = _w(tmp_path)
+    w.apply([(None, _enq(f"{WF}#/0", workflow_id=WF, step_path="/0"))])
+    wf = w.workflow(WF)
+    assert wf is not None, "der Workflow wurde nicht angelegt"
+    assert wf["bestaetigt"] == 1
+
+
+def test_stornierung_mit_musterkennung_legt_kandidaten_an(tmp_path: Path) -> None:
+    """Covers R1, R4.
+
+    Der Worker gibt ``workflow_id`` nicht in seinen Kontext; ohne
+    Anwendungs-Hook ist die erste Front nur ueber die Kennung erkennbar.
+    """
+    w = _w(tmp_path)
+    w.apply([(None, _sig(f"{WF}#/h/g3", "task_cancelled", 105.0))])
+    wf = w.workflow(WF)
+    assert wf is not None, "der Kandidat wurde nicht angelegt"
+    assert wf["bestaetigt"] == 0, "ein Kandidat nur aus dem Muster gilt als bestaetigt"
+    z = w.row(f"{WF}#/h/g3")
+    assert z["workflow_id"] == WF
+    assert z["step_path"] == "/h/g3"
+
+
+def test_abschluss_mit_musterkennung_legt_kandidaten_an(tmp_path: Path) -> None:
+    """Covers R1, R4. Der Normalfall ohne Anwendungs-Hook: die erste Meldung
+    eines Kopf-Glieds ist sein Abschluss, und sie traegt keine ``workflow_id``."""
+    w = _w(tmp_path)
+    w.apply([(None, _sig(f"{WF}#/h/g0", "task_completed", 105.0, duration_ms=1.0))])
+    wf = w.workflow(WF)
+    assert wf is not None and wf["bestaetigt"] == 0
+    assert w.row(f"{WF}#/h/g0")["status"] == "fertig", "der Task selbst leidet nicht"
+
+
+def test_raute_ohne_workflow_kennung_davor_legt_nichts_an(tmp_path: Path) -> None:
+    """Covers R1. Eigene Task-Kennungen duerfen ein ``#`` enthalten."""
+    w = _w(tmp_path)
+    w.apply([(None, _enq("rechnung#2026-09")),
+             (None, _enq("0190A1B2-C3D4-7E5F-8A9B-0C1D2E3F4A5B#/0")),   # Grossbuchstaben
+             (None, _enq("0190a1b2c3d47e5f8a9b0c1d2e3f4a5b1234#/0"))])   # ohne Striche
+    anzahl = w._con.execute("select count(*) from workflow").fetchone()[0]
+    assert anzahl == 0, "eine fremde Kennung wurde als Workflow gefuehrt"
+    assert w.row("rechnung#2026-09")["workflow_id"] is None
+
+
+def test_uebergrosse_workflow_id_wird_verworfen_und_protokolliert(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Covers R1. Die Nutzlast kommt von aussen; eine Kennung, die die
+    Bibliothek so nie vergibt, wird kein Workflow und kein Valkey-Schluessel
+    fuer den Abgleich. Der Task selbst bleibt -- er ist gelaufen."""
+    w = _w(tmp_path)
+    riesig = "x" * 100_000
+    with caplog.at_level(logging.WARNING, logger="swarmq_dashboard.directory.writer"):
+        w.apply([(None, _enq("a", workflow_id=riesig, step_path="/0"))])
+    assert w.row("a") is not None, "der Task ging mit verloren"
+    assert w.row("a")["workflow_id"] is None, "die Kennung steht an der Task-Zeile"
+    assert w._con.execute("select count(*) from workflow").fetchone()[0] == 0
+    assert "workflow_id" in caplog.text, "das Verwerfen blieb stumm"
+    assert riesig not in caplog.text, "die Protokollzeile traegt die ganze Nutzlast"
+
+
+@pytest.mark.parametrize("pfad", ["/0" * 1000, "h/g3", "/h/<script>", 17],
+                         ids=["uebergross", "ohne-schraegstrich", "fremde-zeichen", "zahl"])
+def test_missgestalteter_step_path_wird_verworfen(tmp_path: Path, pfad: object) -> None:
+    """Covers R8. Der Pfad landet im Baum und in Adressen; die Zugehoerigkeit
+    haengt an der Kennung, nicht an ihm, und bleibt."""
+    w = _w(tmp_path)
+    w.apply([(None, _enq("a", workflow_id=WF, step_path=pfad))])
+    assert w.row("a")["step_path"] is None, f"der Pfad {pfad!r:.20} wurde uebernommen"
+    assert w.row("a")["workflow_id"] == WF
+    assert w.workflow(WF) is not None
+
+
+@pytest.mark.parametrize("pfad", ["", "/0", "/h/g3", "/2/b/g10/0"])
+def test_gueltige_step_paths_werden_uebernommen(tmp_path: Path, pfad: str) -> None:
+    """Der Pfad ``""`` der einfachen Wurzel ist gueltig und nicht leer (KTD7)."""
+    w = _w(tmp_path)
+    w.apply([(None, _enq("a", workflow_id=WF, step_path=pfad))])
+    assert w.row("a")["step_path"] == pfad
+
+
+def test_muster_mit_fremdem_pfad_legt_nichts_an(tmp_path: Path) -> None:
+    """Covers R1. Vor der Raute eine UUID, dahinter kein Schrittpfad: das ist
+    eine eigene Kennung, die zufaellig so beginnt."""
+    w = _w(tmp_path)
+    w.apply([(None, _enq(f"{WF}#rechnung 7"))])
+    assert w.workflow(WF) is None
+    assert w.row(f"{WF}#rechnung 7")["workflow_id"] is None
+
+
+def test_ereignis_mit_workflow_id_bestaetigt_den_kandidaten(tmp_path: Path) -> None:
+    """Covers R1. Der Kopf meldet sich per Muster, der Body reiht ein Worker
+    ein -- sein ``workflow_step_enqueued`` traegt die Kennung."""
+    w = _w(tmp_path)
+    w.apply([(None, _sig(f"{WF}#/h/g0", "task_completed", 105.0, duration_ms=1.0))])
+    w.apply([(None, _sig(f"{WF}#/b", "workflow_step_enqueued", 106.0,
+                         workflow_id=WF, step_path="/b"))])
+    assert w.workflow(WF)["bestaetigt"] == 1
+
+
+def test_muster_senkt_die_bestaetigung_nicht(tmp_path: Path) -> None:
+    w = _w(tmp_path)
+    w.apply([(None, _enq(f"{WF}#/h/g0", workflow_id=WF, step_path="/h/g0")),
+             (None, _sig(f"{WF}#/h/g1", "task_completed", 105.0, duration_ms=1.0))])
+    assert w.workflow(WF)["bestaetigt"] == 1
+
+
+def test_letzte_aktivitaet_des_workflows_wird_nur_gehoben(tmp_path: Path) -> None:
+    """Covers R5. Sie ist der Schluessel der Aufbewahrung; sinkt sie durch ein
+    verspaetetes Ereignis, laeuft die Kopie vor ihren Schritten ab."""
+    w = _w(tmp_path)
+    w.apply([(None, _enq(f"{WF}#/0", ts=100.0, workflow_id=WF, step_path="/0")),
+             (None, _sig(f"{WF}#/1", "task_completed", 300.0, duration_ms=1.0)),
+             (None, _sig(f"{WF}#/0", "task_completed", 200.0, duration_ms=1.0))])
+    wf = w.workflow(WF)
+    assert wf["first_seen_at"] == 100.0
+    assert wf["last_seen_at"] == 300.0
+
+
+# --- Zyklus 8: Kopie aus einer Lesung ------------------------------------
+
+_TOPO = {"kind": "chord",
+         "header": {"kind": "group", "members": [
+             {"kind": "signature", "task": "download", "args": ["a.pdf"], "kwargs": {},
+              "immutable": False},
+             {"kind": "signature", "task": "download", "args": ["b.pdf"], "kwargs": {},
+              "immutable": False}]},
+         "body": {"kind": "signature", "task": "merge", "args": [], "kwargs": {},
+                  "immutable": False}}
+
+
+_FEHLER = {"type": "OSError", "message": "weg"}
+
+
+def _mit_kandidat(tmp_path: Path) -> DirectoryWriter:
+    w = _w(tmp_path)
+    w.apply([(None, _sig(f"{WF}#/h/g0", "task_started", 100.0))])
+    return w
+
+
+def test_lesung_schreibt_die_kopie(tmp_path: Path) -> None:
+    """Covers R5, AE5. Topologie, Status und Fehler stammen aus dem Zustand
+    und ueberdauern ihn in der Kopie."""
+    w = _mit_kandidat(tmp_path)
+    assert w.schreibe_lesung(
+        WF, status="failed", wurzel="chord", topologie=MappingProxyType(_TOPO),
+        step_tasks={"/h/g0": f"{WF}#/h/g0", "/h/g1": f"{WF}#/h/g1"},
+        fehler=MappingProxyType({"type": "ValueError", "message": "kaputt"}), gelesen_am=500.0,
+    ) is True
+    wf = w.workflow(WF)
+    assert wf["status"] == "failed"
+    assert wf["wurzel"] == "chord"
+    assert json.loads(wf["topologie"]) == _TOPO
+    assert json.loads(wf["step_tasks"]) == {"/h/g0": f"{WF}#/h/g0", "/h/g1": f"{WF}#/h/g1"}
+    assert json.loads(wf["fehler"]) == {"type": "ValueError", "message": "kaputt"}
+    assert wf["gelesen_am"] == 500.0
+    assert wf["sichtbarkeit"] == "gesehen"
+    assert wf["bestaetigt"] == 1, "eine Lesung, die den Zustand fand, bestaetigt den Kandidaten"
+
+
+def _lies(w: DirectoryWriter, **kw: Any) -> bool:
+    """Eine Lesung mit brauchbaren Vorgaben."""
+    werte: dict[str, Any] = {"status": "running", "wurzel": "chord", "topologie": _TOPO,
+                             "step_tasks": {}, "fehler": None, "gelesen_am": 500.0}
+    werte.update(kw)
+    return w.schreibe_lesung(WF, **werte)
+
+
+def test_lesung_ergaenzt_step_tasks_und_entfernt_keinen(tmp_path: Path) -> None:
+    """Covers R5, KTD4. Die Bibliothek vereinigt ``step_tasks`` nur; faellt
+    ein Pfad aus einer Lesung heraus, ist das kein Wissen, sondern ein Loch."""
+    w = _mit_kandidat(tmp_path)
+    _lies(w, step_tasks={"/h/g0": "t0", "/h/g1": "t1"})
+    _lies(w, step_tasks={"/h/g1": "t1", "/b": "tb"}, gelesen_am=600.0)
+    assert json.loads(w.workflow(WF)["step_tasks"]) == {"/h/g0": "t0", "/h/g1": "t1", "/b": "tb"}
+
+
+def test_lesung_ueberschreibt_status_und_fehler(tmp_path: Path) -> None:
+    """Covers R6. Die juengste Lesung ist die Wahrheit, nicht die erste."""
+    w = _mit_kandidat(tmp_path)
+    _lies(w, status="running")
+    _lies(w, status="failed", fehler=_FEHLER, gelesen_am=600.0)
+    wf = w.workflow(WF)
+    assert (wf["status"], json.loads(wf["fehler"]), wf["gelesen_am"]) == ("failed", _FEHLER, 600.0)
+
+
+def test_endstatus_wird_nie_durch_running_ueberschrieben(tmp_path: Path) -> None:
+    """Covers R6, AE4. Eine aeltere Lesung, die spaet zurueckkommt, oder ein
+    Zustand, den jemand zurueckschrieb: ein einmal gesehenes Ende bleibt."""
+    w = _mit_kandidat(tmp_path)
+    _lies(w, status="failed", fehler=_FEHLER, step_tasks={"/h/g0": "t0"})
+    assert _lies(w, status="running", fehler=None, step_tasks={"/h/g1": "t1"},
+                 gelesen_am=700.0) is True
+    wf = w.workflow(WF)
+    assert wf["status"] == "failed", "ein Endstatus wurde durch 'running' ersetzt"
+    assert json.loads(wf["fehler"]) == _FEHLER, "der Fehlertext des Endstatus ging verloren"
+    assert json.loads(wf["step_tasks"]) == {"/h/g0": "t0", "/h/g1": "t1"}
+    assert wf["gelesen_am"] == 700.0
+
+
+def test_lesung_fuer_unbekannten_workflow_legt_nichts_an(tmp_path: Path) -> None:
+    """Eine Lesung, die nach dem Ablauf zurueckkommt, holt die Kopie nicht
+    zurueck -- sie ueberlebte sonst ihre Schritte."""
+    w = _w(tmp_path)
+    assert _lies(w) is False
+    assert w.workflow(WF) is None
+
+
+# --- Zyklus 9: Verfallen, nie gesehen, Kandidaten, Storno ----------------
+
+
+def test_verfallen_nach_letzter_lesung_running(tmp_path: Path) -> None:
+    """Covers R17. Die Ansicht nennt "zuletzt: laeuft" mit dem Zeitpunkt der
+    letzten Lesung -- beides muss stehen bleiben."""
+    w = _mit_kandidat(tmp_path)
+    _lies(w, status="running", gelesen_am=500.0)
+    assert w.vermerke_verfallen(WF) is True
+    wf = w.workflow(WF)
+    assert wf["sichtbarkeit"] == "verfallen"
+    assert wf["status"] == "running"
+    assert wf["gelesen_am"] == 500.0
+
+
+@pytest.mark.parametrize("status", ["completed", "failed", "cancelled", None],
+                         ids=["fertig", "gescheitert", "storniert", "ohne-lesung"])
+def test_verfallen_nur_nach_running(tmp_path: Path, status: str | None) -> None:
+    """Covers R17, AE5. Ein Endstatus in der Kopie ist die Auskunft fuer die
+    vollen sieben Tage; "verfallen" darf ihn nicht verdecken. Ohne jede
+    Lesung gilt "nie gesehen", nicht "verfallen"."""
+    w = _mit_kandidat(tmp_path)
+    if status is not None:
+        _lies(w, status=status)
+    vorher = w.workflow(WF)["sichtbarkeit"]
+    assert w.vermerke_verfallen(WF) is False
+    assert w.workflow(WF)["sichtbarkeit"] == vorher
+
+
+def test_nie_gesehen_nur_ohne_jede_lesung(tmp_path: Path) -> None:
+    """Covers R7, AE6. Ein einmal gelesener Zustand war gesehen; faellt er
+    danach weg, ist das "verfallen", nicht "nie gesehen"."""
+    w = _mit_kandidat(tmp_path)
+    assert w.vermerke_nie_gesehen(WF) is True
+    assert w.workflow(WF)["sichtbarkeit"] == "nie_gesehen"
+
+    w.apply([(None, _sig(f"{WF2}#/h/g0", "task_started", 100.0))])
+    w.schreibe_lesung(WF2, status="completed", wurzel="chord", topologie=_TOPO,
+                      step_tasks={}, fehler=None, gelesen_am=500.0)
+    assert w.vermerke_nie_gesehen(WF2) is False
+    assert w.workflow(WF2)["sichtbarkeit"] == "gesehen"
+
+
+def test_kandidat_wird_bestaetigt(tmp_path: Path) -> None:
+    """Covers R1."""
+    w = _mit_kandidat(tmp_path)
+    assert w.bestaetige_kandidat(WF) is True
+    assert w.workflow(WF)["bestaetigt"] == 1
+
+
+def test_verwerfen_loescht_nur_einen_kandidaten(tmp_path: Path) -> None:
+    """Covers R1. Eine eigene Kennung mit Raute, zu der es nie einen Zustand
+    gab, soll nicht sieben Tage als Kandidat mitlaufen. Ein bestaetigter
+    Workflow dagegen bleibt -- ihn traegt ein Ereignis oder eine Lesung."""
+    w = _mit_kandidat(tmp_path)
+    w.apply([(None, _enq(f"{WF2}#/0", workflow_id=WF2, step_path="/0"))])
+    assert w.verwerfe_kandidat(WF) is True
+    assert w.workflow(WF) is None
+    assert w.verwerfe_kandidat(WF2) is False
+    assert w.workflow(WF2) is not None
+    assert w.row(f"{WF}#/h/g0") is not None, "die Task-Zeile gehoert nicht zur Kopie"
+
+
+def test_storno_vermerk_wird_einmal_gesetzt(tmp_path: Path) -> None:
+    """Covers R16, AE8. Die zweite Anforderung ist kein Fehler und verschiebt
+    den Zeitpunkt der ersten nicht."""
+    w = _mit_kandidat(tmp_path)
+    w.vermerke_workflow_storno(WF, jetzt=700.0)
+    w.vermerke_workflow_storno(WF, jetzt=800.0)
+    assert w.workflow(WF)["cancel_requested_at"] == 700.0
+
+
+def test_offen_sind_alle_ohne_endstatus(tmp_path: Path) -> None:
+    """Covers R5, R6. Der Abgleich liest jeden nicht beendeten Workflow im
+    Takt, auch Kandidaten -- erst eine Lesung bestaetigt sie (KTD3, KTD5)."""
+    w = _w(tmp_path)
+    kennungen = [f"0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a{i:02d}" for i in range(5)]
+    w.apply([(None, _sig(f"{k}#/0", "task_started", 100.0)) for k in kennungen])
+    for k, status in zip(kennungen[1:], ["running", "completed", "failed", "cancelled"],
+                         strict=True):
+        w.schreibe_lesung(k, status=status, wurzel="chain", topologie=None,
+                          step_tasks={}, fehler=None, gelesen_am=500.0)
+    offen = {o.workflow_id: o for o in w.offene_workflows()}
+    assert set(offen) == {kennungen[0], kennungen[1]}
+    assert offen[kennungen[0]].bestaetigt is False
+    assert offen[kennungen[0]].status is None
+    assert offen[kennungen[0]].sichtbarkeit is None
+    assert offen[kennungen[1]].bestaetigt is True
+    assert offen[kennungen[1]].status == "running"
+    assert offen[kennungen[1]].sichtbarkeit == "gesehen"
+    assert offen[kennungen[1]].gelesen_am == 500.0
+
+
+# --- Zyklus 10: Aufbewahrung der Kopie -----------------------------------
+
+
+def test_ablauf_entfernt_alte_workflows_und_laesst_junge(tmp_path: Path) -> None:
+    """Covers R5, KTD4. Derselbe Schluessel wie bei den Task-Zeilen; eine
+    Lesung verlaengert die Kopie nicht, sonst ueberlebte sie ihre Schritte.
+    Die Topologie traegt Klartext-Argumente (R7a)."""
+    w = _w(tmp_path)
+    w.apply([(None, _sig(f"{WF}#/0", "task_started", 1000.0)),
+             (None, _sig(f"{WF2}#/0", "task_started", 9000.0))])
+    w.schreibe_lesung(WF, status="completed", wurzel="chain", topologie=_TOPO,
+                      step_tasks={}, fehler=None, gelesen_am=8000.0)
+    w.expire(older_than=5000.0)
+    assert w.workflow(WF) is None, "die Kopie ueberlebte die Aufbewahrung"
+    assert w.workflow(WF2) is not None

@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 #: Tabellen und Sichten, die eine vollstaendige Datei traegt.
-TABLES = {"task", "signal", "task_fts", "progress", "worker", "gap"}
+TABLES = {"task", "signal", "task_fts", "progress", "worker", "gap", "workflow"}
 
 #: Wartefrist auf gesperrte Schreibvorgaenge. Gemessen: ohne sie scheitern
 #: unter Last 99 % der Vorgaenge, mit ihr keiner bis 16 gleichzeitige Schreiber.
@@ -71,6 +71,10 @@ create index if not exists task_first_seen on task(first_seen_at desc, task_id d
 create index if not exists task_status    on task(status);
 create index if not exists task_name_idx  on task(task_name);
 create index if not exists task_worker    on task(worker_id);
+-- Die Detailansicht eines Workflows holt alle seine Schritte (Workflow-
+-- Ansicht, U5). Die Spalte gab es schon in Stufe 1, darum genuegt das
+-- ``if not exists`` auch an einer bestehenden Datei.
+create index if not exists task_workflow  on task(workflow_id);
 
 -- Zeitspannen, aus denen Ereignisse fehlen (R4a, U12a).
 --
@@ -150,6 +154,50 @@ create table if not exists worker (
 ) without rowid;
 
 create index if not exists worker_group_idx on worker(worker_group);
+
+-- Die eigene Kopie des Workflow-Zustands (Workflow-Ansicht, KTD4).
+--
+-- Sie stammt aus **Lesungen** des Zustands in Valkey, nicht aus dem Strom:
+-- nur der Zustand kennt das Ende eines Workflows (R6). Der Strom legt die
+-- Zeile an und fuehrt ihre letzte Aktivitaet nach; alles andere schreibt der
+-- Abgleich. Ein Neuaufbau aus dem Strom verliert darum die Lesungen, und
+-- betroffene Workflows fallen ehrlich auf "Zustand nie gesehen" zurueck.
+create table if not exists workflow (
+    workflow_id   text primary key,
+    -- 1, wenn ein Ereignis ``workflow_id`` trug oder eine Lesung den Zustand
+    -- fand. 0 heisst Kandidat: nur die Kennung eines Schritts folgt dem
+    -- Muster ``<workflow_id>#<step_path>``, und eigene Task-Kennungen duerfen
+    -- ein ``#`` enthalten (KTD5). Wird nur gehoben, nie gesenkt.
+    bestaetigt    integer not null default 0,
+    -- 'gesehen', 'nie_gesehen' oder 'verfallen'; NULL, solange keine Lesung
+    -- etwas ergab.
+    sichtbarkeit  text,
+    -- Status der letzten Lesung in der Sprache der Bibliothek (running,
+    -- completed, failed, cancelled). Ein Endstatus wird nie durch "running"
+    -- ueberschrieben.
+    status        text,
+    -- Form der Wurzel, wie der Zustandsleser sie nennt (``FORMEN`` in
+    -- ``workflows.py``: signatur, kette, gruppe, chord).
+    wurzel        text,
+    -- Topologie als JSON. Traegt die Argumente der Schritte im Klartext
+    -- (KD11, KD16 aus Stufe 1).
+    topologie     text,
+    -- Pfad -> Task-Kennung als JSON. Waechst nur, wie die Bibliothek es
+    -- vereinigt.
+    step_tasks    text not null default '{}',
+    -- Fehlerobjekt des Zustands ``{"type", "message"}`` als JSON.
+    fehler        text,
+    -- Zeitpunkt der letzten Lesung, die den Zustand fand (R17).
+    gelesen_am    real,
+    -- Die eigene Stornierung (R16). Wissen des Dashboards, kein Zustand.
+    cancel_requested_at real,
+    first_seen_at real not null,
+    -- Letzte Aktivitaet laut Strom -- derselbe Schluessel, nach dem auch die
+    -- Task-Zeilen ablaufen, sonst ueberlebt eine der Quellen die andere.
+    last_seen_at  real not null
+) without rowid;
+
+create index if not exists workflow_last_seen on workflow(last_seen_at);
 
 -- Lesefortschritt im Strom und der Zustand des Neuaufbaus (R8).
 create table if not exists progress (

@@ -23,14 +23,19 @@ Zwei Regeln folgen daraus, und beide haben einen Test:
 from __future__ import annotations
 
 import json
+import logging
 import math
 import sqlite3
 import time
-from typing import Any
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Any, TypeGuard
 
 from swarmq_dashboard.directory.schema import GuardedConnection
 from swarmq_dashboard.directory.workers import quelle_fuer
 from swarmq_dashboard.events import Event, Origin
+
+logger = logging.getLogger("swarmq_dashboard.directory.writer")
 
 #: Ereignisart -> Status, den sie setzt. Nur Ausgaenge stehen hier; alles
 #: andere ergaenzt Felder, ohne den Status zu beruehren.
@@ -42,6 +47,14 @@ _OUTCOMES = {
     "task_expired": "abgelaufen",
     "task_rejected": "abgewiesen",
 }
+#: Sichtbarkeit des Workflow-Zustands in der Kopie (KTD4). NULL heisst: noch
+#: keine Lesung hat etwas ergeben.
+SICHT_GESEHEN = "gesehen"
+SICHT_NIE_GESEHEN = "nie_gesehen"
+SICHT_VERFALLEN = "verfallen"
+#: Status des Zustands in der Sprache der Bibliothek.
+STATUS_RUNNING = "running"
+ENDSTATUS = frozenset({"completed", "failed", "cancelled"})
 #: Ereignisart des Verlust-Ereignisses aus den Hooks (R4a).
 LOST_EVENT = "sqd_events_lost"
 #: Stellen, auf die die beiden Teile einer Stromkennung aufgefuellt werden.
@@ -67,6 +80,21 @@ def _sort_id(stream_id: str | None, ev: Event) -> str:
         if trenner and ms.isdigit() and folge.isdigit():
             return f"{int(ms):0{_ID_WIDTH}d}-{int(folge):0{_ID_WIDTH}d}"
     return f"{int(ev.ts * 1000):0{_ID_WIDTH}d}-{ev.type}"
+
+
+@dataclass(frozen=True, slots=True)
+class OffenerWorkflow:
+    """Ein Workflow ohne Endstatus, wie der Abgleich ihn braucht."""
+
+    workflow_id: str
+    #: ``False``: nur ein Kandidat aus dem Muster (KTD5).
+    bestaetigt: bool
+    #: Status der letzten Lesung, ``None`` ohne Lesung.
+    status: str | None
+    #: ``SICHT_GESEHEN``, ``SICHT_NIE_GESEHEN``, ``SICHT_VERFALLEN`` oder ``None``.
+    sichtbarkeit: str | None
+    #: Zeitpunkt der letzten Lesung, die den Zustand fand.
+    gelesen_am: float | None
 
 
 class DirectoryWriter:
@@ -99,6 +127,32 @@ class DirectoryWriter:
         cur = self._con.execute("select * from task where task_id=?", (task_id,))
         zeile: sqlite3.Row | None = cur.fetchone()
         return zeile
+
+    def workflow(self, workflow_id: str) -> sqlite3.Row | None:
+        """Die Kopie eines Workflows, oder ``None``."""
+        cur = self._con.execute("select * from workflow where workflow_id=?", (workflow_id,))
+        zeile: sqlite3.Row | None = cur.fetchone()
+        return zeile
+
+    def offene_workflows(self) -> list[OffenerWorkflow]:
+        """Alle Workflows ohne Endstatus in der Kopie, bestaetigt oder nicht.
+
+        Das ist die Arbeitsliste des Abgleichs (KTD3). Verfallene und nie
+        gesehene stehen mit darin -- ihr Status ist kein Ende; ob sie noch
+        gelesen werden, entscheidet der Abgleich anhand der Sichtbarkeit.
+        """
+        platzhalter = ",".join("?" * len(ENDSTATUS))
+        zeilen = self._con.execute(
+            "select workflow_id, bestaetigt, status, sichtbarkeit, gelesen_am from workflow "
+            f"where status is null or status not in ({platzhalter}) order by workflow_id",
+            tuple(sorted(ENDSTATUS)),
+        ).fetchall()
+        return [
+            OffenerWorkflow(workflow_id=z["workflow_id"], bestaetigt=bool(z["bestaetigt"]),
+                            status=z["status"], sichtbarkeit=z["sichtbarkeit"],
+                            gelesen_am=z["gelesen_am"])
+            for z in zeilen
+        ]
 
     def oldest_entry(self) -> float | None:
         """Zeitpunkt des aeltesten Eintrags -- die Reichweite aus R8.
@@ -187,7 +241,8 @@ class DirectoryWriter:
             assert vorhanden is not None
 
         felder: dict[str, Any] = {"last_seen_at": max(float(vorhanden["last_seen_at"]), ev.ts)}
-        felder.update(_stammdaten(vorhanden, ev))
+        zugehoerigkeit = _zugehoerigkeit(ev)
+        felder.update(_stammdaten(vorhanden, ev, zugehoerigkeit))
         felder.update(_herkunft(vorhanden, ev))
         felder.update(_HANDLERS.get(ev.type, _outcome)(vorhanden, ev))
 
@@ -197,6 +252,21 @@ class DirectoryWriter:
             "insert or ignore into signal(task_id, type, ts, stream_id, payload) values (?,?,?,?,?)",
             (task_id, ev.type, ev.ts, stream_id,
              json.dumps(ev.payload, ensure_ascii=False, default=repr)),
+        )
+        self._workflow_nachfuehren(ev, zugehoerigkeit)
+
+    def _workflow_nachfuehren(self, ev: Event, zugehoerigkeit: _Zugehoerigkeit) -> None:
+        """Den Workflow eines Schritts anlegen (KTD5)."""
+        wf_id, _pfad, bestaetigt = zugehoerigkeit
+        if wf_id is None:
+            return
+        self._con.execute(
+            "insert into workflow(workflow_id, bestaetigt, first_seen_at, last_seen_at) "
+            "values (?,?,?,?) on conflict(workflow_id) do update set "
+            # Nur heben: das Muster allein senkt eine Bestaetigung nie.
+            "bestaetigt = max(workflow.bestaetigt, excluded.bestaetigt), "
+            "last_seen_at = max(workflow.last_seen_at, excluded.last_seen_at)",
+            (wf_id, int(bestaetigt), ev.ts, ev.ts),
         )
 
     def _worker_nachfuehren(self, ev: Event) -> None:
@@ -256,6 +326,126 @@ class DirectoryWriter:
             "update task set cancel_requested_at=? where task_id=? "
             "and cancel_requested_at is null",
             (time.time(), task_id),
+        )
+        self._con.commit()
+
+    # -- Kopie der Workflows (Workflow-Ansicht, KTD4) ---------------------
+    #
+    # Geschrieben vom Abgleich, nicht vom Strom: nur eine Lesung des Zustands
+    # kennt Topologie, Fehler und Endstatus (R6).
+
+    def schreibe_lesung(
+        self, workflow_id: str, *, status: str, wurzel: str | None,
+        topologie: Mapping[str, Any] | None, step_tasks: Mapping[str, str],
+        fehler: Mapping[str, Any] | None, gelesen_am: float,
+    ) -> bool:
+        """Die Kopie aus einer Lesung schreiben, die den Zustand fand.
+
+        Die Werte sind die eines gelesenen ``Workflowbild`` (U1):
+        ``status`` in der Sprache der Bibliothek, ``wurzel`` die Form,
+        ``topologie`` das ``node.to_dict()`` und ``fehler`` das Objekt
+        ``{"type", "message"}`` -- beide als JSON-Text abgelegt.
+
+        Bestaetigt einen Kandidaten und setzt die Sichtbarkeit auf "gesehen".
+        ``step_tasks`` wird vereinigt, nie gekuerzt. Status und Fehler
+        uebernimmt die Lesung -- ausser sie brachte "running" und die Kopie
+        traegt schon einen Endstatus: der bleibt (R6).
+
+        ``False``, wenn der Workflow im Verzeichnis nicht (mehr) steht -- eine
+        Lesung legt keinen an, sonst holte sie einen eben abgelaufenen
+        zurueck.
+        """
+        # Lesen und Schreiben unter einem Riegel: ``step_tasks`` wird
+        # vereinigt, und ein zweiter Schreiber dazwischen ginge verloren.
+        with self._con.exklusiv():
+            vorhanden = self.workflow(workflow_id)
+            if vorhanden is None:
+                return False
+            # Nur ergaenzen, nie entfernen -- wie die Bibliothek vereinigt.
+            # Die Spalte schreibt nur diese Methode, mit ``'{}'`` als Vorgabe.
+            schritte = {**json.loads(vorhanden["step_tasks"]), **step_tasks}
+            fehler_text = _als_json(fehler)
+            if vorhanden["status"] in ENDSTATUS and status not in ENDSTATUS:
+                # Ein gesehenes Ende bleibt (R6): Status und Fehler behalten.
+                status, fehler_text = vorhanden["status"], vorhanden["fehler"]
+            self._con.execute(
+                "update workflow set bestaetigt=1, sichtbarkeit=?, status=?, wurzel=?, "
+                "topologie=?, step_tasks=?, fehler=?, gelesen_am=? where workflow_id=?",
+                (SICHT_GESEHEN, status, wurzel, _als_json(topologie),
+                 json.dumps(schritte, ensure_ascii=False, sort_keys=True),
+                 fehler_text, gelesen_am, workflow_id),
+            )
+            self._con.commit()
+        return True
+
+    def vermerke_verfallen(self, workflow_id: str) -> bool:
+        """Der Zustand ist aus Valkey verschwunden, zuletzt laufend gesehen (R17).
+
+        Nur wenn die letzte Lesung "running" war: ein Endstatus der Kopie ist
+        die Auskunft fuer die ganze Aufbewahrung, und ohne jede Lesung gilt
+        "nie gesehen". Status und Zeitpunkt der letzten Lesung bleiben stehen
+        -- die Ansicht nennt beide. ``True``, wenn der Vermerk neu gesetzt wurde.
+        """
+        cur = self._con.execute(
+            "update workflow set sichtbarkeit=? where workflow_id=? "
+            "and status=? and sichtbarkeit=?",
+            (SICHT_VERFALLEN, workflow_id, STATUS_RUNNING, SICHT_GESEHEN),
+        )
+        self._con.commit()
+        return bool(cur.rowcount)
+
+    def vermerke_nie_gesehen(self, workflow_id: str) -> bool:
+        """Der Zustand fehlt, und keine Lesung hat ihn je gefunden (R7).
+
+        Die Ansicht zeigt dann nur die Schritte aus dem Verzeichnis und
+        keinen Status. ``True``, wenn der Vermerk gesetzt wurde.
+        """
+        cur = self._con.execute(
+            "update workflow set sichtbarkeit=? where workflow_id=? and gelesen_am is null",
+            (SICHT_NIE_GESEHEN, workflow_id),
+        )
+        self._con.commit()
+        return bool(cur.rowcount)
+
+    def bestaetige_kandidat(self, workflow_id: str) -> bool:
+        """Einen Kandidaten aus dem Muster als Workflow bestaetigen (KTD5).
+
+        ``schreibe_lesung`` bestaetigt schon selbst; das hier ist fuer den
+        Abgleich, der den Zustand anders belegt hat. ``False``, wenn der
+        Workflow nicht im Verzeichnis steht.
+        """
+        cur = self._con.execute(
+            "update workflow set bestaetigt=1 where workflow_id=?", (workflow_id,)
+        )
+        self._con.commit()
+        return bool(cur.rowcount)
+
+    def verwerfe_kandidat(self, workflow_id: str) -> bool:
+        """Einen unbestaetigten Kandidaten loeschen (KTD5).
+
+        Ein bestaetigter Workflow bleibt unberuehrt. Die Task-Zeilen bleiben
+        ebenso -- sie gehoeren dem Strom, nicht der Kopie. Ein spaeteres
+        Ereignis mit derselben Musterkennung legt den Kandidaten neu an.
+        ``True``, wenn etwas geloescht wurde.
+        """
+        cur = self._con.execute(
+            "delete from workflow where workflow_id=? and bestaetigt=0", (workflow_id,)
+        )
+        self._con.commit()
+        return bool(cur.rowcount)
+
+    def vermerke_workflow_storno(self, workflow_id: str, *, jetzt: float) -> None:
+        """Festhalten, dass das Dashboard die Stornierung angefordert hat (R16).
+
+        Wie ``mark_cancel_requested`` fuer Tasks: Wissen des Dashboards, kein
+        Zustand -- die Bibliothek schreibt "cancelled" erst, wenn nach der
+        Anforderung ein Schritt endet. Nur beim ersten Mal; eine zweite
+        Anforderung verschiebt den Zeitpunkt nicht (AE8).
+        """
+        self._con.execute(
+            "update workflow set cancel_requested_at=? where workflow_id=? "
+            "and cancel_requested_at is null",
+            (jetzt, workflow_id),
         )
         self._con.commit()
 
@@ -441,6 +631,11 @@ class DirectoryWriter:
         # Luecke in einem Zeitraum, aus dem es ohnehin nichts mehr zeigt --
         # ein Hinweis, der nie verschwindet, wird ueberlesen (R9).
         self._con.execute("delete from gap where bis < ?", (older_than,))
+        # Die Kopie der Workflows nach demselben Schluessel wie die Task-Zeilen
+        # (KTD4): sonst ueberlebt eine der Quellen die andere. Ihre Topologie
+        # traegt Klartext-Argumente; die Loeschzusage traegt auch hier
+        # ``secure_delete``.
+        self._con.execute("delete from workflow where last_seen_at < ?", (older_than,))
         self._con.commit()
         if entfernt:
             # Nur wenn wirklich etwas abgelaufen ist. Gemessen kostete ein
@@ -466,16 +661,98 @@ class DirectoryWriter:
         return bool(zeile is not None and zeile[0])
 
 
+def _als_json(wert: Mapping[str, Any] | None) -> str | None:
+    """Ein Objekt aus dem Zustand als JSON-Text, ``None`` bleibt ``None``.
+
+    ``dict(...)``, weil die Bilder des Zustandslesers unveraenderliche
+    Abbildungen tragen, die ``json`` nicht kennt.
+    """
+    return None if wert is None else json.dumps(dict(wert), ensure_ascii=False)
+
+
 # --- Ergaenzungsregeln je Ereignisart -----------------------------------
 #
 # Je eine kleine Funktion statt eines Zweigbaums: jede Regel ist fuer sich
 # lesbar, und eine neue Ereignisart kommt als Eintrag dazu, nicht als Zweig.
 
 
-def _stammdaten(zeile: sqlite3.Row, ev: Event) -> dict[str, Any]:
+#: Stellen der Striche in der kanonischen UUID-Form.
+_UUID_STRICHE = frozenset({8, 13, 18, 23})
+_HEX = frozenset("0123456789abcdef")
+
+
+def gueltige_workflow_id(wert: object) -> TypeGuard[str]:
+    """Hat *wert* die Form einer Workflow-Kennung der Bibliothek?
+
+    Die Bibliothek vergibt ``str(uuid.uuid7())``: 36 Zeichen, Kleinbuchstaben,
+    Striche an den Stellen 8-4-4-4-12. Dieselbe Pruefung wie
+    ``valid_workflow_id`` in ``swarmq.worker.decode`` -- nachgebildet, weil
+    sie dort an einer Nachricht haengt und nicht oeffentlich ist.
+    """
+    if not isinstance(wert, str) or len(wert) != 36:
+        return False
+    return all(
+        (z == "-") if i in _UUID_STRICHE else (z in _HEX) for i, z in enumerate(wert)
+    )
+
+
+#: Obergrenze eines Schrittpfads. Die Bibliothek bildet ihn aus Segmenten
+#: wie ``/0``, ``/g12``, ``/h``, ``/b``; hundert Ebenen Verschachtelung
+#: bleiben weit darunter.
+MAX_STEP_PATH = 512
+_PFADZEICHEN = frozenset("abcdefghijklmnopqrstuvwxyz0123456789/")
+
+
+def _gueltiger_pfad(wert: object) -> TypeGuard[str]:
+    """Hat *wert* die Form eines Schrittpfads? ``""`` ist die einfache Wurzel.
+
+    Absichtlich nur Zeichenvorrat und Laenge, nicht die Segmentarten: eine
+    neue Knotenart der Bibliothek soll die Erkennung nicht stumm abschalten.
+    """
+    if not isinstance(wert, str) or len(wert) > MAX_STEP_PATH:
+        return False
+    return wert == "" or (wert.startswith("/") and set(wert) <= _PFADZEICHEN)
+
+
+#: ``(workflow_id, step_path, bestaetigt)``.
+_Zugehoerigkeit = tuple[str | None, str | None, bool]
+
+
+def _zugehoerigkeit(ev: Event) -> _Zugehoerigkeit:
+    """``(workflow_id, step_path, bestaetigt)`` eines Schritts (KTD5).
+
+    Traegt das Ereignis ``workflow_id``, ist die Zugehoerigkeit bestaetigt.
+    Sonst gilt das Muster ``<workflow_id>#<step_path>`` der Bibliothek -- nur
+    als Kandidat, weil eigene Task-Kennungen ein ``#`` enthalten duerfen.
+    """
+    wf_id = ev.payload.get("workflow_id")
+    pfad = ev.payload.get("step_path")
+    if gueltige_workflow_id(wf_id):
+        return wf_id, pfad if _gueltiger_pfad(pfad) else None, True
+    if wf_id is not None:
+        # Nur Art und Laenge ins Protokoll: die Nutzlast kommt von aussen,
+        # und eine uebergrosse Zeile fuellte sonst das Journal.
+        logger.warning(
+            "workflow_id verworfen: keine Workflow-Kennung (%s, Laenge %s) in %s",
+            type(wf_id).__name__, len(wf_id) if isinstance(wf_id, str) else "-", ev.type,
+        )
+    task_id = ev.payload.get("task_id")
+    if isinstance(task_id, str) and "#" in task_id:
+        vorn, _, hinten = task_id.partition("#")
+        if gueltige_workflow_id(vorn) and _gueltiger_pfad(hinten):
+            return vorn, hinten, False
+    return None, None, False
+
+
+def _stammdaten(zeile: sqlite3.Row, ev: Event,
+                zugehoerigkeit: _Zugehoerigkeit) -> dict[str, Any]:
     """Felder setzen, die noch leer sind. Ein bekannter Wert wird nie geleert."""
     felder: dict[str, Any] = {}
-    for spalte in ("task_name", "queue", "workflow_id", "step_path"):
+    wf_id, pfad, _bestaetigt = zugehoerigkeit
+    for spalte, wert in (("workflow_id", wf_id), ("step_path", pfad)):
+        if wert is not None and zeile[spalte] is None:
+            felder[spalte] = wert
+    for spalte in ("task_name", "queue"):
         wert = ev.payload.get(spalte)
         # Nur Zeichenketten. Die Nutzlasten der Bibliothek weichen an mehreren
         # Stellen von ihrer Dokumentation ab; ein Objekt oder eine Liste hier
