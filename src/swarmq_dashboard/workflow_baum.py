@@ -8,9 +8,22 @@ ablesen, ohne selbst zu rechnen.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import Any
+from functools import cached_property
+from types import MappingProxyType
+from typing import Any, Protocol
+
+#: Status des Workflow-Zustands in der Sprache der Bibliothek (Schema
+#: ``v=1``, ``workflow_state.py``). Hier und nicht im Leser
+#: (``workflows.py``) definiert, damit dieses Modul ohne dessen
+#: Backend-Abhaengigkeiten auskommt; der Leser reicht die Namen weiter.
+STATUS_RUNNING = "running"
+STATUS_COMPLETED = "completed"
+STATUS_FAILED = "failed"
+STATUS_CANCELLED = "cancelled"
+#: Die Endstatus der Bibliothek: alle ausser ``running`` (R6).
+ENDSTATUS = frozenset({STATUS_COMPLETED, STATUS_FAILED, STATUS_CANCELLED})
 
 #: Blattstatus: steht in ``step_tasks``, hat aber noch keine Task-Zeile. Die
 #: Bibliothek veroeffentlicht zuerst und vermerkt danach -- und der Hook
@@ -55,6 +68,28 @@ class Taskzeile:
     started_at: float | None = None
     ended_at: float | None = None
     error: str | None = None
+
+
+class _Spalten(Protocol):
+    """Eine Zeile mit Spaltenzugriff, etwa ``sqlite3.Row``."""
+
+    def __getitem__(self, spalte: str) -> Any: ...
+
+
+def taskzeile_aus(zeile: _Spalten) -> Taskzeile:
+    """Eine Task-Zeile des Verzeichnisses als :class:`Taskzeile` -- die eine
+    Stelle dafuer, damit Ansicht und Abgleich denselben Baum sehen.
+
+    Ohne Status kennt die Zeile nur die Meldung eines Folgeschritts
+    (``workflow_step_enqueued``): eingereiht, noch nicht aufgegriffen -- und
+    damit aktiv (KTD7, R16).
+    """
+    return Taskzeile(
+        task_id=zeile["task_id"], step_path=zeile["step_path"],
+        status=zeile["status"] or EINGEREIHT,
+        task_name=zeile["task_name"], first_seen_at=float(zeile["first_seen_at"]),
+        started_at=zeile["started_at"], ended_at=zeile["ended_at"], error=zeile["error"],
+    )
 
 
 @dataclass(frozen=True)
@@ -118,10 +153,22 @@ class Knoten:
     #: Nur an den direkten Gliedern eines Chord-Kopfs, sonst None.
     ergebnis: Ergebnisverweis | None = None
 
-    @property
+    # Zwischengespeichert (``cached_property`` schreibt am eingefrorenen
+    # ``__setattr__`` vorbei in ``__dict__``): ein Knoten aendert sich nach
+    # dem Bau nie -- ``replace`` baut einen neuen --, und Faltung, Zaehler
+    # und Fortschritt fragen dieselben Blaetter sonst je Ebene erneut ab.
+
+    @cached_property
+    def blaetter(self) -> tuple[Knoten, ...]:
+        """Die Blaetter unter diesem Knoten, in Topologie-Reihenfolge."""
+        if self.art == "schritt":
+            return (self,)
+        return tuple(b for kind in self.kinder for b in kind.blaetter)
+
+    @cached_property
     def ist_fertig(self) -> bool:
         """Alle Blaetter darunter sind fertig."""
-        return all(b.status == "fertig" for b in _blaetter(self))
+        return all(b.status == "fertig" for b in self.blaetter)
 
     @property
     def offene_kinder(self) -> tuple[Knoten, ...]:
@@ -142,7 +189,7 @@ class Knoten:
     def zaehler(self) -> dict[str, int]:
         """Blaetter unter diesem Knoten je Status (R10)."""
         zaehler: dict[str, int] = {}
-        for blatt in _blaetter(self):
+        for blatt in self.blaetter:
             schluessel = blatt.status or NICHT_EINGEREIHT
             zaehler[schluessel] = zaehler.get(schluessel, 0) + 1
         return zaehler
@@ -168,8 +215,11 @@ _STATUSTEXT = {
 }
 #: Was "verfallen, zuletzt: ..." nennen darf (KTD6).
 _VOR_DEM_VERFALL = frozenset({"laeuft", "angefordert", "angefordert_nichts_aktiv"})
-#: Endstatus der Bibliothek -> Anzeige-Code. Nur diese drei sind Endstatus (R6).
-_ENDSTATUS = {"completed": "fertig", "failed": "gescheitert", "cancelled": "storniert"}
+#: Endstatus der Bibliothek -> Anzeige-Code. Nur diese drei sind Endstatus
+#: (R6). Oeffentlich, weil die Abfragen daraus ihre Vorauswahl ableiten.
+ENDSTATUS_ANZEIGE: Mapping[str, str] = MappingProxyType({
+    STATUS_COMPLETED: "fertig", STATUS_FAILED: "gescheitert", STATUS_CANCELLED: "storniert",
+})
 
 
 @dataclass(frozen=True)
@@ -200,7 +250,7 @@ class Statusanzeige:
     @property
     def endstatus(self) -> bool:
         """Fertig, gescheitert oder storniert -- nur aus einer Lesung (R6)."""
-        return self.code in _ENDSTATUS.values()
+        return self.code in ENDSTATUS_ANZEIGE.values()
 
     @property
     def stornierbar(self) -> bool:
@@ -223,9 +273,9 @@ class Baum:
     #: Gescheiterte Schritte laut Verzeichnis, fruehester zuerst (R12).
     fehlschlaege: tuple[Knoten, ...] = ()
 
-    @property
+    @cached_property
     def blaetter(self) -> tuple[Knoten, ...]:
-        return _blaetter(self.wurzel)
+        return self.wurzel.blaetter
 
     @property
     def form(self) -> str | None:
@@ -245,10 +295,15 @@ class Baum:
         return Fortschritt(fertig=fertig, gesamt=len(blaetter))
 
 
-def _blaetter(knoten: Knoten) -> tuple[Knoten, ...]:
-    if knoten.art == "schritt":
-        return (knoten,)
-    return tuple(b for kind in knoten.kinder for b in _blaetter(kind))
+def knoten_wobei(knoten: Knoten, treffer: Callable[[Knoten], bool]) -> Knoten | None:
+    """Den ersten Knoten unter *knoten* (ihn selbst eingeschlossen, zuerst
+    der Knoten, dann seine Kinder der Reihe nach), fuer den *treffer* gilt."""
+    if treffer(knoten):
+        return knoten
+    for kind in knoten.kinder:
+        if (gefunden := knoten_wobei(kind, treffer)) is not None:
+            return gefunden
+    return None
 
 
 def baue_baum(kopie: Workflowkopie, zeilen: Sequence[Taskzeile]) -> Baum:
@@ -257,12 +312,12 @@ def baue_baum(kopie: Workflowkopie, zeilen: Sequence[Taskzeile]) -> Baum:
         wurzel = _flach(kopie.workflow_id, zeilen)
     else:
         wurzel = _Bauer(kopie, zeilen).knoten(kopie.topologie, "", None)
-    status = _anzeige(kopie, _blaetter(wurzel))
+    status = _anzeige(kopie, wurzel.blaetter)
     fehlschlaege: tuple[Knoten, ...] = ()
     if status.code == "gescheitert":
         fehlschlaege = tuple(
             sorted(
-                (b for b in _blaetter(wurzel) if b.status in _GESCHEITERT),
+                (b for b in wurzel.blaetter if b.status in _GESCHEITERT),
                 key=_zeitpunkt,
             )
         )
@@ -325,8 +380,8 @@ def _pfad_der_zeile(workflow_id: str, zeile: Taskzeile) -> str | None:
 
 def _anzeige(kopie: Workflowkopie, blaetter: tuple[Knoten, ...]) -> Statusanzeige:
     """Die Vorrangregel aus KTD6."""
-    if kopie.status in _ENDSTATUS:
-        return Statusanzeige(_ENDSTATUS[kopie.status])
+    if kopie.status is not None and kopie.status in ENDSTATUS_ANZEIGE:
+        return Statusanzeige(ENDSTATUS_ANZEIGE[kopie.status])
     if kopie.sichtbarkeit == VERFALLEN:
         return Statusanzeige(
             VERFALLEN, zuletzt=kopie.zuletzt_angezeigt, gelesen_at=kopie.gelesen_at
@@ -369,7 +424,7 @@ class _Bauer:
         if art == "chain":
             schritte: list[Knoten] = []
             for i, schritt in enumerate(element["steps"]):
-                vor = _blaetter(schritte[-1]) if schritte else tor
+                vor = schritte[-1].blaetter if schritte else tor
                 schritte.append(self.knoten(schritt, f"{pfad}/{i}", None, vor))
             return Knoten(pfad=pfad, art="kette", kinder=tuple(schritte), rolle=rolle)
         if art == "group":
@@ -384,8 +439,8 @@ class _Bauer:
                 kopf,
                 kinder=tuple(replace(g, ergebnis=_ergebnisverweis(g)) for g in kopf.kinder),
             )
-            body = self.knoten(element["body"], f"{pfad}/b", "body", _blaetter(kopf))
-            if _blaetter(body)[0].grund == GRUND_WARTET:
+            body = self.knoten(element["body"], f"{pfad}/b", "body", kopf.blaetter)
+            if body.blaetter[0].grund == GRUND_WARTET:
                 offen = sum(1 for glied in kopf.kinder if not glied.ist_fertig)
                 body = replace(body, wartet_auf=offen)
             return Knoten(pfad=pfad, art="chord", kinder=(kopf, body), rolle=rolle)
@@ -423,12 +478,12 @@ class _Bauer:
 
     def _grund(self, tor: tuple[Knoten, ...]) -> str:
         """Warum ein Blatt nicht eingereiht ist, in der Reihenfolge aus U4."""
-        if self._kopie.status == "failed":
+        if self._kopie.status == STATUS_FAILED:
             return GRUND_GESCHEITERT
-        if self._kopie.status == "cancelled":
+        if self._kopie.status == STATUS_CANCELLED:
             return GRUND_STORNIERT
         if any(v.status == "storniert" or v.grund == GRUND_STORNO_GLIED for v in tor):
             return GRUND_STORNO_GLIED
-        if tor and self._kopie.status == "running" and all(v.status == "fertig" for v in tor):
+        if tor and self._kopie.status == STATUS_RUNNING and all(v.status == "fertig" for v in tor):
             return GRUND_VORGAENGER_FERTIG
         return GRUND_WARTET

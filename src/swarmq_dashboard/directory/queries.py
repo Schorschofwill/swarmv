@@ -42,12 +42,14 @@ from datetime import UTC, datetime
 
 from swarmq_dashboard.directory.schema import GuardedConnection
 from swarmq_dashboard.workflow_baum import (
-    EINGEREIHT,
+    ENDSTATUS_ANZEIGE,
     Baum,
     Knoten,
     Taskzeile,
     Workflowkopie,
     baue_baum,
+    knoten_wobei,
+    taskzeile_aus,
 )
 
 #: Kuerzestes Fragment, das ein Trigramm-Index finden kann.
@@ -269,7 +271,7 @@ def _fehlertext(roh: str | None) -> str | None:
 
 
 #: Anzeige-Code eines Endstatus -> Status der Bibliothek (R6).
-_ENDSTATUS_CODE = {"fertig": "completed", "gescheitert": "failed", "storniert": "cancelled"}
+_ENDSTATUS_CODE = {code: status for status, code in ENDSTATUS_ANZEIGE.items()}
 #: Anzeige-Codes ohne Endstatus -> was die Kopie dafuer mindestens traegt.
 _OHNE_ENDSTATUS = {
     "verfallen": "sichtbarkeit = 'verfallen'",
@@ -303,16 +305,6 @@ def _glied_marke(cursor: str | None) -> int:
         return int(cursor) if cursor else -1
     except ValueError:
         return -1
-
-
-def _knoten_bei(knoten: Knoten, pfad: str) -> Knoten | None:
-    """Den Knoten mit *pfad* im Baum suchen."""
-    if knoten.pfad == pfad:
-        return knoten
-    for kind in knoten.kinder:
-        if (treffer := _knoten_bei(kind, pfad)) is not None:
-            return treffer
-    return None
 
 
 class DirectoryQueries:
@@ -510,7 +502,7 @@ class DirectoryQueries:
         detail = self.workflow_detail(workflow_id)
         if detail is None:
             return Gliederseite(note="Diesen Workflow kennt das Verzeichnis nicht.")
-        gruppe = _knoten_bei(detail.baum.wurzel, gruppenpfad)
+        gruppe = knoten_wobei(detail.baum.wurzel, lambda k: k.pfad == gruppenpfad)
         if gruppe is None or gruppe.art != "gruppe":
             return Gliederseite(
                 note=f"Unter dem Pfad {gruppenpfad!r} steht in diesem Workflow keine Gruppe.")
@@ -543,15 +535,7 @@ class DirectoryQueries:
             f"started_at, ended_at, error from task where workflow_id in ({platz})",
             workflow_ids,
         ):
-            nach_workflow.setdefault(z["workflow_id"], []).append(Taskzeile(
-                # Ohne Status kennt die Zeile nur die Meldung eines
-                # Folgeschritts (``workflow_step_enqueued``): eingereiht, noch
-                # nicht aufgegriffen -- und damit aktiv (KTD7, R16).
-                task_id=z["task_id"], step_path=z["step_path"],
-                status=z["status"] or EINGEREIHT,
-                task_name=z["task_name"], first_seen_at=float(z["first_seen_at"]),
-                started_at=z["started_at"], ended_at=z["ended_at"], error=z["error"],
-            ))
+            nach_workflow.setdefault(z["workflow_id"], []).append(taskzeile_aus(z))
         return nach_workflow
 
     # -- Einzelne Task ----------------------------------------------------

@@ -27,8 +27,14 @@ from swarmq_dashboard.directory.writer import (
     SICHT_VERFALLEN,
     DirectoryWriter,
 )
-from swarmq_dashboard.workflow_baum import Taskzeile, Workflowkopie, baue_baum
-from swarmq_dashboard.workflows import Workflowbild, Workflowleser
+from swarmq_dashboard.workflow_baum import Workflowkopie, baue_baum, taskzeile_aus
+from swarmq_dashboard.workflows import (
+    ZUSTAND_FEHLT,
+    ZUSTAND_NICHT_ERREICHBAR,
+    ZUSTAND_NICHT_LESBAR,
+    Workflowbild,
+    Workflowleser,
+)
 
 logger = logging.getLogger("swarmq_dashboard.directory.abgleich")
 
@@ -94,17 +100,8 @@ class Abgleich:
         ]
         if not kennungen:
             return
-        for workflow_id in await asyncio.to_thread(self._workflows_von, kennungen):
+        for workflow_id in await asyncio.to_thread(self._writer.workflows_der_tasks, kennungen):
             self.anstossen(workflow_id)
-
-    def _workflows_von(self, kennungen: list[str]) -> list[str]:
-        """Die Workflows dieser Tasks, je einmal, in Reihenfolge. Im Arbeitsfaden."""
-        gefunden: dict[str, None] = {}
-        for task_id in kennungen:
-            zeile = self._writer.row(task_id) if task_id else None
-            if zeile is not None and zeile["workflow_id"]:
-                gefunden[zeile["workflow_id"]] = None
-        return list(gefunden)
 
     def anstossen(self, workflow_id: str) -> None:
         """Einen Workflow jetzt und in ``NACHLESEN_S`` Sekunden lesen (KTD3).
@@ -204,13 +201,13 @@ class Abgleich:
         if self._halt:
             return
         bild = await self._leser.lesen(workflow_id)
-        if bild.zustand == "nicht_erreichbar":
+        if bild.zustand == ZUSTAND_NICHT_ERREICHBAR:
             # Keine Auskunft ueber den Workflow, sondern ueber die Leitung:
             # die Kopie bleibt, wie sie ist, und die Kopfzeile nennt es.
             self.grund = bild.grund or "das Backend ist nicht erreichbar"
             return
         self.grund = None
-        if bild.zustand == "nicht_lesbar":
+        if bild.zustand == ZUSTAND_NICHT_LESBAR:
             # Die Bytes sind da, aber diese Fassung versteht sie nicht. Die
             # Kopie behaelt, was sie aus einer verstandenen Lesung weiss.
             logger.warning("Workflow-Zustand %s nicht lesbar: %s", workflow_id, bild.grund)
@@ -223,14 +220,11 @@ class Abgleich:
         """Die Lesung schreiben. Im Arbeitsfaden. ``True``, wenn sich die
         Kopie geaendert hat."""
         vorher = _stand(self._writer.workflow(workflow_id))
-        if bild.zustand == "fehlt":
-            # Ein Kandidat ohne Zustand war nie ein Workflow (KTD5); einen
-            # bestaetigten laesst ``verwerfe_kandidat`` stehen.
-            self._writer.verwerfe_kandidat(workflow_id)
-            # Die Vermerke schliessen sich aus: "verfallen" nur nach einer
-            # Lesung "running", "nie gesehen" nur ohne jede Lesung.
-            self._writer.vermerke_verfallen(workflow_id)
-            self._writer.vermerke_nie_gesehen(workflow_id)
+        if bild.zustand == ZUSTAND_FEHLT:
+            # Ein Kandidat ohne Zustand war nie ein Workflow (KTD5), ein
+            # bestaetigter wird verfallen oder nie gesehen -- in einem Zug.
+            # Gemeldet wird unten ueber den Vergleich der Kopie.
+            self._writer.vermerke_fehlend(workflow_id)
         else:
             if self._writer.schreibe_lesung(
                 workflow_id, status=bild.status or "", wurzel=bild.form,
@@ -260,12 +254,7 @@ class Abgleich:
             storno_angefordert_at=zeile["cancel_requested_at"],
             gelesen_at=zeile["gelesen_am"],
         )
-        schritte = [
-            Taskzeile(task_id=z["task_id"], step_path=z["step_path"], status=z["status"] or "",
-                      task_name=z["task_name"], first_seen_at=z["first_seen_at"],
-                      started_at=z["started_at"], ended_at=z["ended_at"], error=z["error"])
-            for z in self._writer.workflow_schritte(workflow_id)
-        ]
+        schritte = [taskzeile_aus(z) for z in self._writer.workflow_schritte(workflow_id)]
         try:
             code = baue_baum(kopie, schritte).status.code
         except Exception as exc:

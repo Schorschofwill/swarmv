@@ -27,13 +27,20 @@ import logging
 import math
 import sqlite3
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, TypeGuard
 
 from swarmq_dashboard.directory.schema import GuardedConnection
 from swarmq_dashboard.directory.workers import quelle_fuer
 from swarmq_dashboard.events import Event, Origin
+from swarmq_dashboard.workflow_baum import (
+    ENDSTATUS,
+    GESEHEN,
+    NIE_GESEHEN,
+    STATUS_RUNNING,
+    VERFALLEN,
+)
 
 logger = logging.getLogger("swarmq_dashboard.directory.writer")
 
@@ -48,13 +55,11 @@ _OUTCOMES = {
     "task_rejected": "abgewiesen",
 }
 #: Sichtbarkeit des Workflow-Zustands in der Kopie (KTD4). NULL heisst: noch
-#: keine Lesung hat etwas ergeben.
-SICHT_GESEHEN = "gesehen"
-SICHT_NIE_GESEHEN = "nie_gesehen"
-SICHT_VERFALLEN = "verfallen"
-#: Status des Zustands in der Sprache der Bibliothek.
-STATUS_RUNNING = "running"
-ENDSTATUS = frozenset({"completed", "failed", "cancelled"})
+#: keine Lesung hat etwas ergeben. Die Werte gehoeren dem Baum-Modul, das
+#: sie deutet.
+SICHT_GESEHEN = GESEHEN
+SICHT_NIE_GESEHEN = NIE_GESEHEN
+SICHT_VERFALLEN = VERFALLEN
 #: Ereignisart des Verlust-Ereignisses aus den Hooks (R4a).
 LOST_EVENT = "sqd_events_lost"
 #: Stellen, auf die die beiden Teile einer Stromkennung aufgefuellt werden.
@@ -153,6 +158,27 @@ class DirectoryWriter:
                             gelesen_am=z["gelesen_am"])
             for z in zeilen
         ]
+
+    def workflows_der_tasks(self, task_ids: Sequence[str]) -> list[str]:
+        """Die Workflows dieser Tasks, je einmal, in der Reihenfolge der Tasks.
+
+        Eine Abfrage statt einer je Task -- ein Stapel des Stroms traegt die
+        Ergebnisse vieler Glieder, hoechstens ``DEFAULT_BATCH`` des Lesers.
+        Leere und unbekannte Kennungen und Tasks ohne Workflow fallen weg.
+        """
+        kennungen = list(dict.fromkeys(t for t in task_ids if t))
+        if not kennungen:
+            return []
+        platz = ",".join("?" * len(kennungen))
+        workflow_von = {
+            z["task_id"]: z["workflow_id"]
+            for z in self._con.execute(
+                f"select task_id, workflow_id from task where task_id in ({platz})",
+                kennungen,
+            ).fetchall()
+            if z["workflow_id"]
+        }
+        return list(dict.fromkeys(workflow_von[t] for t in kennungen if t in workflow_von))
 
     def workflow_schritte(self, workflow_id: str) -> list[sqlite3.Row]:
         """Die Task-Zeilen eines Workflows, mit den Spalten einer ``Taskzeile``.
@@ -400,12 +426,17 @@ class DirectoryWriter:
         "nie gesehen". Status und Zeitpunkt der letzten Lesung bleiben stehen
         -- die Ansicht nennt beide. ``True``, wenn der Vermerk neu gesetzt wurde.
         """
+        verfallen = self._verfallen(workflow_id)
+        self._con.commit()
+        return verfallen
+
+    def _verfallen(self, workflow_id: str) -> bool:
+        """``vermerke_verfallen`` ohne Abschluss der Transaktion."""
         cur = self._con.execute(
             "update workflow set sichtbarkeit=? where workflow_id=? "
             "and status=? and sichtbarkeit=?",
             (SICHT_VERFALLEN, workflow_id, STATUS_RUNNING, SICHT_GESEHEN),
         )
-        self._con.commit()
         return bool(cur.rowcount)
 
     def vermerke_nie_gesehen(self, workflow_id: str) -> bool:
@@ -414,12 +445,42 @@ class DirectoryWriter:
         Die Ansicht zeigt dann nur die Schritte aus dem Verzeichnis und
         keinen Status. ``True``, wenn der Vermerk gesetzt wurde.
         """
+        nie_gesehen = self._nie_gesehen(workflow_id)
+        self._con.commit()
+        return nie_gesehen
+
+    def _nie_gesehen(self, workflow_id: str) -> bool:
+        """``vermerke_nie_gesehen`` ohne Abschluss der Transaktion."""
         cur = self._con.execute(
             "update workflow set sichtbarkeit=? where workflow_id=? and gelesen_am is null",
             (SICHT_NIE_GESEHEN, workflow_id),
         )
-        self._con.commit()
         return bool(cur.rowcount)
+
+    def vermerke_fehlend(self, workflow_id: str) -> tuple[bool, bool, bool]:
+        """Eine Lesung fand keinen Zustand: alles in einer Transaktion.
+
+        Nacheinander ``verwerfe_kandidat``, ``vermerke_verfallen`` und
+        ``vermerke_nie_gesehen`` -- ein Kandidat ohne Zustand war nie ein
+        Workflow (KTD5), und die beiden Vermerke schliessen sich aus:
+        "verfallen" nur nach einer Lesung "running", "nie gesehen" nur ohne
+        jede Lesung. Die Ausgaenge sind die der drei, in dieser Reihenfolge.
+        """
+        # Wie in ``apply``: die Verbindung laeuft im Autocommit, eine
+        # Transaktion braucht ein eigenes ``begin`` -- unter einem Riegel.
+        with self._con.exklusiv():
+            self._con.execute("begin")
+            try:
+                ausgaenge = (
+                    self._verwerfen(workflow_id),
+                    self._verfallen(workflow_id),
+                    self._nie_gesehen(workflow_id),
+                )
+            except BaseException:
+                self._con.execute("rollback")
+                raise
+            self._con.execute("commit")
+        return ausgaenge
 
     def vermerke_anzeige(self, workflow_id: str, code: str) -> bool:
         """Den Anzeige-Code nach einer gelungenen Lesung festhalten (KTD6).
@@ -455,10 +516,15 @@ class DirectoryWriter:
         Ereignis mit derselben Musterkennung legt den Kandidaten neu an.
         ``True``, wenn etwas geloescht wurde.
         """
+        verworfen = self._verwerfen(workflow_id)
+        self._con.commit()
+        return verworfen
+
+    def _verwerfen(self, workflow_id: str) -> bool:
+        """``verwerfe_kandidat`` ohne Abschluss der Transaktion."""
         cur = self._con.execute(
             "delete from workflow where workflow_id=? and bestaetigt=0", (workflow_id,)
         )
-        self._con.commit()
         return bool(cur.rowcount)
 
     def vermerke_workflow_storno(self, workflow_id: str, *, jetzt: float) -> None:

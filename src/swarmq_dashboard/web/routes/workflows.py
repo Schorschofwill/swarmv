@@ -18,7 +18,7 @@ Meldung neu (KTD10).
 from __future__ import annotations
 
 import time
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from typing import Annotated, Any
 from urllib.parse import quote, urlencode
 
@@ -29,11 +29,19 @@ from litestar.params import Body, FromPath
 from litestar.response import Redirect, Template
 
 from swarmq_dashboard.directory.queries import Workflowfilter
-from swarmq_dashboard.directory.writer import ENDSTATUS
 from swarmq_dashboard.web.auth import SESSION_ACCOUNT_KEY
 from swarmq_dashboard.web.ergebnis import Ergebnisbild
 from swarmq_dashboard.web.routes.tasks import BEENDET, ZEITRAEUME, _abfragen, _zahl
-from swarmq_dashboard.workflow_baum import Knoten
+from swarmq_dashboard.workflow_baum import Knoten, knoten_wobei
+from swarmq_dashboard.workflows import (
+    AUSGANG_NEU_GESETZT,
+    AUSGANG_NICHT_GEFUNDEN,
+    AUSGANG_SCHON_GESETZT,
+    ENDSTATUS,
+    ZUSTAND_FEHLT,
+    ZUSTAND_GELESEN,
+    ZUSTAND_NICHT_ERREICHBAR,
+)
 
 #: Waehlbare Status der Leiste: die Anzeige-Codes aus U4 (``Statusanzeige``)
 #: mit ihrem Wort. "alle" zuerst -- wer nichts waehlt, soll nicht heimlich
@@ -156,14 +164,9 @@ def _sichtbare_kopfglieder(knoten: Knoten) -> Iterator[Knoten]:
         yield from _sichtbare_kopfglieder(kind)
 
 
-def _blatt(knoten: Knoten, task_id: str) -> Knoten | None:
-    """Das Blatt mit *task_id* unter *knoten*."""
-    if knoten.art == "schritt":
-        return knoten if knoten.task_id == task_id else None
-    for kind in knoten.kinder:
-        if (treffer := _blatt(kind, task_id)) is not None:
-            return treffer
-    return None
+def _blatt_mit(task_id: str) -> Callable[[Knoten], bool]:
+    """Die Suche nach dem Blatt mit *task_id*, fuer ``knoten_wobei``."""
+    return lambda k: k.art == "schritt" and k.task_id == task_id
 
 
 async def _ergebnisse(request: Request[Any, Any, Any],
@@ -181,7 +184,7 @@ async def _ergebnisse(request: Request[Any, Any, Any],
         verweis = glied.ergebnis
         if verweis is None or not verweis.anzeigbar or verweis.task_id is None:
             continue
-        blatt = _blatt(glied, verweis.task_id)
+        blatt = knoten_wobei(glied, _blatt_mit(verweis.task_id))
         if blatt is None or blatt.status not in BEENDET:
             continue
         bilder[glied.pfad] = await leser.lesen(verweis.task_id)
@@ -300,19 +303,19 @@ async def workflow_stornieren(
     # Frisch gelesen, unmittelbar vor dem Aufruf (KTD9): zwischen Klick und
     # Bestaetigung kann der Workflow geendet haben (AE10).
     bild = await services.workflowleser.lesen(workflow_id)
-    if bild.zustand == "fehlt" or (bild.zustand == "gelesen" and bild.status in ENDSTATUS):
+    if bild.zustand == ZUSTAND_FEHLT or (bild.zustand == ZUSTAND_GELESEN and bild.status in ENDSTATUS):
         return zurueck("nicht_stornierbar")
-    if bild.zustand == "nicht_erreichbar":
+    if bild.zustand == ZUSTAND_NICHT_ERREICHBAR:
         return await fehlgeschlagen(bild.grund)
 
     storno = await services.workflowleser.stornieren(workflow_id)
-    if storno.ausgang == "nicht_gefunden":
+    if storno.ausgang == AUSGANG_NICHT_GEFUNDEN:
         # Zwischen Lesung und Aufruf verfallen: wie ein Endstatus.
         return zurueck("nicht_stornierbar")
-    if storno.ausgang not in ("neu_gesetzt", "schon_gesetzt"):
+    if storno.ausgang not in (AUSGANG_NEU_GESETZT, AUSGANG_SCHON_GESETZT):
         return await fehlgeschlagen(storno.grund)
 
-    neu = storno.ausgang == "neu_gesetzt"
+    neu = storno.ausgang == AUSGANG_NEU_GESETZT
     # Der Vermerk vor dem Audit, wie ``mark_cancel_requested`` fuer Tasks.
     # Auch bei "schon gesetzt": die Anforderung kann von einer anderen
     # Instanz stammen; ein bestehender Zeitpunkt bleibt (AE8).

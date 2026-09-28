@@ -89,6 +89,14 @@ Test-Liste (AGENTS.md):
     nichts an.
 45. Die Schritte eines Workflows sind alle Task-Zeilen mit seiner
     Kennung, auch die nur ueber das Muster erkannten -- und keine fremden.
+46. Die Workflows mehrerer Tasks kommen in einer Abfrage: je einmal, in der
+    Reihenfolge der Tasks; unbekannte und leere Kennungen und Tasks ohne
+    Workflow fallen weg.
+47. Ein fehlender Zustand wird in einem Zug vermerkt: ein Kandidat
+    verworfen, ein zuletzt laufend gelesener verfallen, ein nie gelesener
+    nie gesehen -- jeweils mit denselben Ausgaengen wie die Einzelschritte.
+48. Scheitert dieser Zug mittendrin, bleibt keine offene Transaktion
+    zurueck: der naechste Schreibvorgang gelingt.
 """
 
 from __future__ import annotations
@@ -847,3 +855,51 @@ def test_schritte_eines_workflows(tmp_path: Path) -> None:
     assert set(schritte) == {f"{WF}#/h/g0", f"{WF}#/b"}
     assert schritte[f"{WF}#/h/g0"]["step_path"] == "/h/g0"
     assert schritte[f"{WF}#/h/g0"]["status"] == "fertig"
+
+
+def test_workflows_mehrerer_tasks(tmp_path: Path) -> None:
+    """Covers KTD3. Der Abgleich fragt nach jedem Stapel des Stroms, zu
+    welchen Workflows dessen Ergebnisse gehoeren -- eine Abfrage, nicht eine
+    je Task."""
+    w = _w(tmp_path)
+    w.apply([(None, _enq(f"{WF2}#/0", ts=101.0, workflow_id=WF2, step_path="/0")),
+             (None, _enq(f"{WF}#/0", ts=102.0, workflow_id=WF, step_path="/0")),
+             (None, _enq(f"{WF}#/1", ts=103.0, workflow_id=WF, step_path="/1")),
+             (None, _enq("fremd", ts=104.0))])
+    kennungen = [f"{WF}#/1", "fremd", "", "unbekannt", f"{WF2}#/0", f"{WF}#/0"]
+    assert w.workflows_der_tasks(kennungen) == [WF, WF2]
+    assert w.workflows_der_tasks([]) == []
+
+
+def test_fehlender_zustand_in_einem_zug(tmp_path: Path) -> None:
+    """Covers R7, R17, KTD5. Der Abgleich vermerkt "fehlt" in einer
+    Transaktion statt in dreien; die Ausgaenge sind die der Einzelschritte
+    (verworfen, verfallen, nie gesehen)."""
+    w = _mit_kandidat(tmp_path)
+    assert w.vermerke_fehlend(WF) == (True, False, False)
+    assert w.workflow(WF) is None
+
+    w = _mit_kandidat(tmp_path / "gelesen")
+    _lies(w, status="running")
+    assert w.vermerke_fehlend(WF) == (False, True, False)
+    assert w.workflow(WF)["sichtbarkeit"] == "verfallen"
+
+    w.apply([(None, _enq(f"{WF2}#/0", workflow_id=WF2, step_path="/0"))])
+    assert w.vermerke_fehlend(WF2) == (False, False, True)
+    assert w.workflow(WF2)["sichtbarkeit"] == "nie_gesehen"
+
+
+def test_gescheiterter_zug_laesst_keine_transaktion_offen(tmp_path: Path) -> None:
+    """Covers R33. Die Verbindung laeuft im Autocommit; ein ``begin`` ohne
+    ``rollback`` liesse jeden weiteren Schreibvorgang an "cannot start a
+    transaction within a transaction" scheitern."""
+    w = _w(tmp_path)
+    w.apply([(None, _enq(f"{WF}#/0", workflow_id=WF, step_path="/0"))])
+    fremd = connect(tmp_path / "v.sqlite3")
+    fremd.execute("create trigger kaputt before update on workflow "
+                  "begin select raise(abort, 'kaputt'); end")
+    with pytest.raises(Exception, match="kaputt"):
+        w.vermerke_fehlend(WF)
+    fremd.execute("drop trigger kaputt")
+    fremd.close()
+    assert w.vermerke_fehlend(WF) == (False, False, True)

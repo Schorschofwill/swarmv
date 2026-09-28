@@ -21,6 +21,8 @@ from types import MappingProxyType
 from typing import Any, Protocol
 
 from swarmq_dashboard.stream import StreamUnavailable
+from swarmq_dashboard.workflow_baum import ENDSTATUS as ENDSTATUS
+from swarmq_dashboard.workflow_baum import STATUS_RUNNING as STATUS_RUNNING
 
 #: Wie lange nach einem Fehlversuch nicht erneut gewaehlt wird -- derselbe
 #: Wert wie beim Ergebnisleser (``web/ergebnis.py``) und beim Kontrollkanal.
@@ -41,7 +43,22 @@ _LEER: Mapping[str, str] = MappingProxyType({})
 BEKANNTE_VERSIONEN = frozenset({1})
 
 #: Die Status des Schemas ``v=1`` (``workflow_state.py`` der Bibliothek).
-STATUS = frozenset({"running", "completed", "failed", "cancelled"})
+#: Das Vokabular steht im reinen Baum-Modul; hier wird es weitergereicht
+#: (``ENDSTATUS``, ``STATUS_RUNNING`` -- das ``as`` im Import macht es
+#: ausdruecklich).
+STATUS = ENDSTATUS | {STATUS_RUNNING}
+
+#: Was der Leser ueber einen Zustand weiss (:attr:`Workflowbild.zustand`).
+ZUSTAND_GELESEN = "gelesen"
+ZUSTAND_FEHLT = "fehlt"
+ZUSTAND_NICHT_LESBAR = "nicht_lesbar"
+ZUSTAND_NICHT_ERREICHBAR = "nicht_erreichbar"
+
+#: Wie eine Storno-Anforderung ausging (:attr:`Stornobild.ausgang`).
+AUSGANG_NEU_GESETZT = "neu_gesetzt"
+AUSGANG_SCHON_GESETZT = "schon_gesetzt"
+AUSGANG_NICHT_GEFUNDEN = "nicht_gefunden"
+AUSGANG_NICHT_ERREICHBAR = "nicht_erreichbar"
 
 #: Die Wurzelform in der Sprache der Ansicht (R2). ``kind`` ist der
 #: Knotentyp aus ``node.to_dict()`` der Bibliothek.
@@ -88,7 +105,7 @@ class Stornobild:
 
 
 def _nicht_lesbar(grund: str) -> Workflowbild:
-    return Workflowbild(zustand="nicht_lesbar", grund=grund)
+    return Workflowbild(zustand=ZUSTAND_NICHT_LESBAR, grund=grund)
 
 
 def _dekodieren(roh: bytes) -> Workflowbild:
@@ -126,7 +143,7 @@ def _dekodieren(roh: bytes) -> Workflowbild:
     if fehler is not None and not isinstance(fehler, dict):
         return _nicht_lesbar(f"error ist kein Objekt, sondern {type(fehler).__name__}")
     return Workflowbild(
-        zustand="gelesen",
+        zustand=ZUSTAND_GELESEN,
         status=status,
         form=FORMEN[kind],
         topologie=topologie,
@@ -252,15 +269,15 @@ class SwarmQWorkflowleser:
         try:
             app = await self.connect()
         except StreamUnavailable as exc:
-            return Workflowbild(zustand="nicht_erreichbar", grund=str(exc))
+            return Workflowbild(zustand=ZUSTAND_NICHT_ERREICHBAR, grund=str(exc))
         try:
             roh = await app.backend.get_workflow_state(workflow_id)
         except Exception as exc:
             # Alles hier ist die Leitung, keine Auskunft ueber den Workflow:
             # die Bytes kommen roh, gedeutet wird erst danach.
-            return Workflowbild(zustand="nicht_erreichbar", grund=await self._ausfall(exc))
+            return Workflowbild(zustand=ZUSTAND_NICHT_ERREICHBAR, grund=await self._ausfall(exc))
         if roh is None:
-            return Workflowbild(zustand="fehlt")
+            return Workflowbild(zustand=ZUSTAND_FEHLT)
         return _dekodieren(roh)
 
     async def stornieren(self, workflow_id: str) -> Stornobild:
@@ -270,7 +287,7 @@ class SwarmQWorkflowleser:
         try:
             app = await self.connect()
         except StreamUnavailable as exc:
-            return Stornobild(ausgang="nicht_erreichbar", grund=str(exc))
+            return Stornobild(ausgang=AUSGANG_NICHT_ERREICHBAR, grund=str(exc))
         try:
             # ``workflow()`` liest den Zustand und wirft, wenn er fehlt; erst
             # dann setzt ``cancel()`` den Merker. So entsteht fuer einen
@@ -278,7 +295,7 @@ class SwarmQWorkflowleser:
             handle = await app.workflow(workflow_id)
             neu = bool(await handle.cancel())
         except WorkflowNotFound:
-            return Stornobild(ausgang="nicht_gefunden")
+            return Stornobild(ausgang=AUSGANG_NICHT_GEFUNDEN)
         except Exception as exc:
-            return Stornobild(ausgang="nicht_erreichbar", grund=await self._ausfall(exc))
-        return Stornobild(ausgang="neu_gesetzt" if neu else "schon_gesetzt")
+            return Stornobild(ausgang=AUSGANG_NICHT_ERREICHBAR, grund=await self._ausfall(exc))
+        return Stornobild(ausgang=AUSGANG_NEU_GESETZT if neu else AUSGANG_SCHON_GESETZT)

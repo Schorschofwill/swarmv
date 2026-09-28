@@ -57,6 +57,9 @@ Test-Liste (AGENTS.md):
 17. Nach einer Lesung "running" mit eigener Stornierung und ohne aktiven
     Schritt steht "angefordert_nichts_aktiv" als zuletzt angezeigt; nach
     dem Verfall bleibt er stehen.
+17b. Ein eingereihter, noch nicht aufgegriffener Folgeschritt (Zeile ohne
+     Status) zaehlt beim Vermerk wie in der Ansicht als aktiv: "angefordert",
+     nicht "angefordert_nichts_aktiv" (KTD7).
 17a. Eine Topologie, aus der der Baum nichts ableiten kann, haelt die
      Lesung nicht auf: die Kopie steht, die Meldung geht hinaus.
 
@@ -481,6 +484,29 @@ async def test_zuletzt_angezeigt_ueberdauert_den_verfall(writer: DirectoryWriter
     await abgleich.lesen(WF)
     wf = writer.workflow(WF)
     assert (wf["sichtbarkeit"], wf["zuletzt_angezeigt"]) == ("verfallen", "angefordert_nichts_aktiv")
+
+
+async def test_eingereihter_folgeschritt_zaehlt_beim_vermerk_als_aktiv(
+    writer: DirectoryWriter,
+) -> None:
+    """Covers R16, KTD6, KTD7. Der Vermerk kommt aus demselben Baum wie die
+    Ansicht -- also auch aus denselben Taskzeilen: eine Zeile ohne Status ist
+    eingereiht und aktiv, sonst nennte "zuletzt: ..." nach dem Verfall
+    etwas anderes, als vorher dastand."""
+    _bestaetigt(writer)
+    writer.apply([
+        (None, _sig(f"{WF}#/0", "task_cancelled", ts=JETZT + 1,
+                    workflow_id=WF, step_path="/0")),
+        (None, _sig(f"{WF}#/1", "workflow_step_enqueued", ts=JETZT + 2,
+                    workflow_id=WF, step_path="/1")),
+    ])
+    assert writer.row(f"{WF}#/1")["status"] is None
+    writer.vermerke_workflow_storno(WF, jetzt=JETZT + 3)
+    leser = FakeLeser()
+    abgleich = _abgleich(writer, leser)
+    leser.bilder[WF] = _bild("running", step_tasks={"/0": f"{WF}#/0", "/1": f"{WF}#/1"})
+    await abgleich.lesen(WF)
+    assert writer.workflow(WF)["zuletzt_angezeigt"] == "angefordert"
 
 
 async def test_unverstandene_topologie_haelt_die_lesung_nicht_auf(
