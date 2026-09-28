@@ -77,6 +77,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import pytest
 from argon2 import PasswordHasher
 from litestar.testing import AsyncTestClient
 
@@ -708,6 +709,54 @@ async def test_eine_kennung_mit_raute_bleibt_anklickbar(tmp_path: Path) -> None:
             f"der Verweis fuehrt ins Leere: {antwort.status_code}"
         )
         assert "reports.build" in antwort.text
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+@pytest.mark.parametrize("pfad", ["/0", "/h/g0", "/h/g12/1"])
+async def test_ein_workflow_schritt_mit_pfad_bleibt_anklickbar(tmp_path: Path, pfad: str) -> None:
+    """Gefunden beim Bau der Workflow-Ansicht.
+
+    Jeder Schritt einer Kette, Gruppe oder eines Chords traegt eine Kennung
+    ``{workflow_id}#{step_path}`` mit ``/`` im Pfad. Die Route las die
+    Kennung als ein einzelnes Pfadsegment: der Verweis aus dem Baum endete
+    mit 404, auch als ``%2F``, weil der Rahmen den Pfad vor dem Routing
+    dekodiert.
+    """
+    config = _config(tmp_path)
+    kennung = f"01a0b4ca-75db-70ef-8e98-8faff0d1db27#{pfad}"
+    w = DirectoryWriter(connect(config.directory_file))
+    w.apply([("1000-0", Event(type="task_enqueue", ts=1_700_000_000.0, source="app",
+                              origin=Origin.ENQUEUE,
+                              payload={"task_id": kennung, "task_name": "downloads.hole",
+                                       "queue": "downloads", "args": [], "kwargs": {}}))])
+    w._con.execute("insert into progress(key, value) values ('rebuild_done','1') "
+                   "on conflict(key) do nothing")
+    w._con.commit()
+    w.close()
+
+    storno = FakeCancel()
+    c = await _angemeldet(config, canceller=storno)
+    try:
+        text = (await c.get("/tasks")).text
+        verweis = re.search(r'href="/tasks/([^"]+)"', text)
+        assert verweis, "kein Verweis auf die Detailseite"
+        antwort = await c.get(f"/tasks/{verweis.group(1)}")
+        assert antwort.status_code == 200, (
+            f"der Verweis fuehrt ins Leere: {antwort.status_code}"
+        )
+        assert "downloads.hole" in antwort.text
+
+        abgeschickt = await c.post(
+            f"/tasks/{verweis.group(1)}/cancel",
+            headers={"x-csrftoken": c.cookies.get("csrftoken")},
+            follow_redirects=False,
+        )
+        assert abgeschickt.status_code == 303
+        assert storno.aufrufe == [kennung]
+        ziel = abgeschickt.headers["location"]
+        assert "#" not in ziel, f"die Raute steht roh im Redirect: {ziel!r}"
+        assert (await c.get(ziel)).status_code == 200
     finally:
         await c.__aexit__(None, None, None)
 
