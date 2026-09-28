@@ -49,6 +49,10 @@ Test-Liste (AGENTS.md):
 16. Ein Ereignis ohne Ergebnis (``task_started``) und ein Task ohne
     Workflow loesen keinen aus.
 
+12b. Viele Anstoesse fuer verschiedene Workflows -- ein Stapel von tausend
+     Ereignissen nach einem Rueckstand -- lesen hoechstens
+     ``GLEICHZEITIGE_LESUNGEN`` zugleich; danach laufen alle Lesungen durch.
+
 12a. Ein Fehler in einer angestossenen Lesung -- etwa ein geschlossenes
      Verzeichnis -- verschwindet nicht in einer Hintergrundaufgabe, sondern
      steht als Grund da.
@@ -79,7 +83,7 @@ from typing import Any
 
 import pytest
 
-from swarmq_dashboard.directory.abgleich import Abgleich
+from swarmq_dashboard.directory.abgleich import GLEICHZEITIGE_LESUNGEN, Abgleich
 from swarmq_dashboard.directory.schema import connect
 from swarmq_dashboard.directory.writer import DirectoryWriter
 from swarmq_dashboard.events import Event, Origin
@@ -408,6 +412,49 @@ async def test_anstoss_waehrend_der_wartezeit_liest_danach_noch_einmal(
     await abgleich.abwarten()
     assert tor.gewartet == [2.0, 2.0], "nach dem spaeten Anstoss wurde nicht erneut gewartet"
     assert len(leser.gelesen) == 4
+
+
+class SperrLeser(FakeLeser):
+    """Jede Lesung haelt an, bis der Test oeffnet, und zaehlt, wie viele
+    zugleich laufen."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.offen = asyncio.Event()
+        self.laufend = 0
+        self.hoechstens = 0
+
+    async def lesen(self, workflow_id: str) -> Workflowbild:
+        self.laufend += 1
+        self.hoechstens = max(self.hoechstens, self.laufend)
+        try:
+            bild = await super().lesen(workflow_id)
+            await self.offen.wait()
+            return bild
+        finally:
+            self.laufend -= 1
+
+
+async def test_viele_workflows_lesen_hoechstens_begrenzt_zugleich(
+    writer: DirectoryWriter,
+) -> None:
+    """Covers KTD3. Holt der Strom-Leser Rueckstand auf, kommen Stapel bis
+    tausend Ereignisse; ohne Obergrenze liefe je Workflow eine Lesung
+    gleichzeitig gegen Valkey -- entgegen ``alle_lesen``, das ein totes
+    Backend nicht ueberrennen soll."""
+    leser, tor = SperrLeser(), Tor()
+    tor.offen.set()
+    abgleich = _abgleich(writer, leser, tor=tor)
+    workflows = [f"0190a1b2-c3d4-7e5f-8a9b-{i:012x}" for i in range(20)]
+
+    for wf in workflows:
+        abgleich.anstossen(wf)
+    await leser.warte_auf(GLEICHZEITIGE_LESUNGEN)
+    assert leser.laufend == GLEICHZEITIGE_LESUNGEN
+    leser.offen.set()
+    await abgleich.abwarten()
+    assert leser.hoechstens == GLEICHZEITIGE_LESUNGEN
+    assert sorted(leser.gelesen) == sorted(workflows * 2)
 
 
 async def _eingearbeitet(w: DirectoryWriter, abgleich: Abgleich, ev: Event) -> None:

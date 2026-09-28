@@ -41,6 +41,11 @@ logger = logging.getLogger("swarmq_dashboard.directory.abgleich")
 #: Abstand der zweiten Lesung nach einem Ereignis (KTD3).
 NACHLESEN_S = 2.0
 
+#: Obergrenze gleichzeitiger Lesungen aus Anstoessen. Ein Stapel nach einem
+#: Rueckstand stoesst hunderte Workflows auf einmal an; wie ``alle_lesen``
+#: soll das ein totes Backend nicht ueberrennen.
+GLEICHZEITIGE_LESUNGEN = 4
+
 #: Ereignisse, nach denen der Zustand neu gelesen wird (KTD3): die Ergebnisse
 #: eines Schritts und das Einreihen eines Folgeschritts durch einen Worker.
 ANSTOSS_ARTEN = frozenset({
@@ -84,6 +89,8 @@ class Abgleich:
         #: Je Workflow mit wartender verzoegerter Lesung: ob danach noch eine
         #: Runde noetig ist.
         self._verzoegert: dict[str, bool] = {}
+        #: Begrenzt die Lesungen aus Anstoessen (``GLEICHZEITIGE_LESUNGEN``).
+        self._plaetze = asyncio.Semaphore(GLEICHZEITIGE_LESUNGEN)
 
     async def eingearbeitet(self, ereignisse: Sequence[tuple[str | None, Any]]) -> None:
         """Die Naht zum Strom-Leser: nach dem Einarbeiten gerufen (KTD3).
@@ -145,10 +152,12 @@ class Abgleich:
             logger.warning("%s", self.grund)
 
     async def _jetzt(self, workflow_id: str) -> None:
-        # Ausstehend ist sie nur bis zum Beginn: ein Anstoss waehrend der
-        # Lesung kann Neues bedeuten, das sie nicht mehr sieht.
-        self._sofort.discard(workflow_id)
-        await self.lesen(workflow_id)
+        async with self._plaetze:
+            # Ausstehend ist sie nur bis zum Beginn: ein Anstoss waehrend der
+            # Lesung kann Neues bedeuten, das sie nicht mehr sieht. Wer auf
+            # einen Platz wartet, hat noch nicht begonnen.
+            self._sofort.discard(workflow_id)
+            await self.lesen(workflow_id)
 
     async def _spaeter(self, workflow_id: str) -> None:
         """Die verzoegerte Lesung, so oft wie noetig, aber nie zwei zugleich.
@@ -161,7 +170,8 @@ class Abgleich:
             while True:
                 self._verzoegert[workflow_id] = False
                 await self._schlafen(NACHLESEN_S)
-                await self.lesen(workflow_id)
+                async with self._plaetze:
+                    await self.lesen(workflow_id)
                 if not self._verzoegert.get(workflow_id):
                     return
         finally:
