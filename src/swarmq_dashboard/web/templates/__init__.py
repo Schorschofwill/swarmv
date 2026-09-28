@@ -32,6 +32,14 @@ from litestar.static_files import create_static_files_router
 from litestar.template.config import TemplateConfig
 from markupsafe import Markup, escape
 
+from swarmq_dashboard.workflow_baum import (
+    GRUND_GESCHEITERT,
+    GRUND_STORNIERT,
+    GRUND_STORNO_GLIED,
+    GRUND_VORGAENGER_FERTIG,
+    GRUND_WARTET,
+)
+
 if TYPE_CHECKING:
     from litestar.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -53,6 +61,9 @@ class Bereich:
 BEREICHE = (
     Bereich("worker", "Worker", "/"),
     Bereich("tasks", "Tasks", "/tasks"),
+    # Zweite Stufe (Workflow-Ansicht, R1, KD2): ein haengender Workflow soll
+    # auf einen Blick auffallen, nicht erst ueber die Task-Liste.
+    Bereich("workflows", "Workflows", "/workflows"),
     Bereich("dlq", "Dead Letter", "/dlq"),
     Bereich("probe", "Probe", "/probe"),
 )
@@ -88,6 +99,24 @@ def zeitpunkt(ts: float | None) -> str:
     if ts is None:
         return "noch nie"
     return datetime.fromtimestamp(ts, tz=UTC).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def dauer(sekunden: float | None) -> str:
+    """Eine Zeitspanne lesbar machen: ``245.0`` -> ``4 min 05 s``.
+
+    ``None`` und eine negative Spanne -- zwei Hosts mit getrennten Uhren --
+    ergeben "--": eine erfundene Zeit waere eine Falschaussage.
+    """
+    if sekunden is None or sekunden < 0:
+        return "--"
+    if sekunden < 1:
+        return f"{sekunden * 1000:.0f} ms"
+    if sekunden < 60:
+        return f"{sekunden:.1f} s".replace(".", ",")
+    ganz = int(sekunden)
+    if ganz < 3600:
+        return f"{ganz // 60} min {ganz % 60:02d} s"
+    return f"{ganz // 3600} h {ganz % 3600 // 60:02d} min"
 
 
 def zahl(wert: int | None) -> str:
@@ -158,6 +187,21 @@ _ZUSTANDSART = {
     "dead_letter": "is-fail",
     "abgelaufen": "is-fail",
     "abgewiesen": "is-fail",
+    # Workflow-Anzeige-Codes (``Statusanzeige.code``, U4). "fertig",
+    # "gescheitert" und "storniert" teilen sich Wort und Art mit den
+    # Task-Status oben; die uebrigen sind eigenes Vokabular.
+    "laeuft": "is-run",
+    "angefordert": "is-wait",
+    "angefordert_nichts_aktiv": "is-wait",
+    "verfallen": "is-idle",
+    "nie_gesehen": "is-idle",
+    # Gruende eines nicht eingereihten Schritts (R11): Warten ist Warten,
+    # "nie gestartet" ist endgueltig und neutral wie "storniert".
+    GRUND_WARTET: "is-wait",
+    GRUND_VORGAENGER_FERTIG: "is-wait",
+    GRUND_STORNO_GLIED: "is-wait",
+    GRUND_GESCHEITERT: "is-idle",
+    GRUND_STORNIERT: "is-idle",
 }
 
 
@@ -200,6 +244,7 @@ def _environment() -> Environment:
     env.globals["zeitpunkt"] = zeitpunkt
     env.globals["datenmenge"] = datenmenge
     env.globals["zahl"] = zahl
+    env.globals["dauer"] = dauer
     env.globals["weiterlink"] = weiterlink
     env.globals["zustandsart"] = zustandsart
     env.globals["bereiche"] = BEREICHE
@@ -239,6 +284,7 @@ def _engine_callback(engine: JinjaTemplateEngine) -> None:
     engine.engine.globals["zeitpunkt"] = zeitpunkt
     engine.engine.globals["datenmenge"] = datenmenge
     engine.engine.globals["zahl"] = zahl
+    engine.engine.globals["dauer"] = dauer
     engine.engine.globals["weiterlink"] = weiterlink
     engine.engine.globals["zustandsart"] = zustandsart
     engine.engine.globals["bereiche"] = BEREICHE

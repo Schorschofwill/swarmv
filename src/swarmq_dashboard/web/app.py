@@ -81,6 +81,11 @@ from swarmq_dashboard.web.routes.worker import (
     sollwert_setzen,
     uebersicht,
 )
+from swarmq_dashboard.web.routes.workflows import (
+    workflow_detail,
+    workflow_glieder,
+    workflow_liste,
+)
 from swarmq_dashboard.web.stream import LIVE_CHANNEL, LivePublisher, live
 from swarmq_dashboard.web.templates import render, statische_dateien, template_config
 from swarmq_dashboard.workflows import SwarmQWorkflowleser, Workflowleser
@@ -988,7 +993,8 @@ def create_app(
                         cancel, uebersicht, entfernen, sollwert_dialog,
                         sollwert_setzen, sollwert_aufheben,
                         probe_formular, probe_senden,
-                        dlq_uebersicht, sichten,
+                        dlq_uebersicht, sichten, workflow_liste, workflow_detail,
+                        workflow_glieder,
                         wiedereinreihen, alle_wiedereinreihen, leeren,
                         statische_dateien()],
         template_config=template_config(),

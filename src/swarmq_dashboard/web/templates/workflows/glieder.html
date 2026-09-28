@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% import "workflows/_baum.html" as b with context %}
+{% block titel %}Fertige Glieder {{ workflow_id }}{% endblock %}
+{% block inhalt %}
+
+{#- Die Unterseite der gefalteten Zeile (R9, KTD13): die fertigen Glieder
+    einer Gruppe, seitenweise zu 100. Was noch läuft oder scheiterte, steht
+    im Baum -- hier bewusst nicht, sonst stünde es an zwei Orten. -#}
+<section class="card">
+  <div class="card-head"><h2 class="card-name">Fertige Glieder</h2></div>
+  <dl class="fields">
+    <div><dt>Workflow</dt><dd class="mono"><a href="/workflows/{{ workflow_id|urlencode }}">{{ workflow_id }}</a></dd></div>
+    <div><dt>Gruppe</dt><dd class="mono">{{ gruppe or 'Wurzel' }}</dd></div>
+  </dl>
+</section>
+
+{%- if glieder %}
+<section class="card">
+  <div class="card-table">
+  <table>
+    <colgroup>
+      <col style="width: 30%"><col><col style="width: 34%"><col style="width: 150px">
+    </colgroup>
+    <thead><tr>
+      <th scope="col">Pfad</th><th scope="col">Schritt</th><th scope="col">Status</th>
+      <th scope="col">Dauer</th>
+    </tr></thead>
+    <tbody id="workflow-glieder">
+      {%- for glied in glieder %}{{ b.knoten_zeilen(glied) }}{% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {%- if weiter %}
+  <div class="card-foot">
+    <span>{{ glieder|length }} Glieder — es sind mehr.</span>
+    <div class="grow"></div>
+    <a class="btn" href="/workflows/{{ workflow_id|urlencode }}/glieder?{{ weiter }}">Weitere</a>
+  </div>
+  {%- endif %}
+</section>
+{%- else %}
+<section class="card">
+  {% with titel="Keine fertigen Glieder", ursache=leer_ursache %}{% include "leerzustand.html" %}{% endwith %}
+</section>
+{%- endif %}
+
+{% endblock %}
