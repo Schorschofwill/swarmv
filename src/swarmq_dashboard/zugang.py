@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import abc
 import asyncio
+import contextlib
+import inspect
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any, ClassVar
@@ -89,10 +91,8 @@ class Zugang(abc.ABC):
         try:
             kern = await self._kern_auf(client)
         except BaseException:
-            try:
+            with contextlib.suppress(Exception):
                 await client.aclose()
-            except Exception:
-                pass
             raise
         self._client = client
         return kern
@@ -123,10 +123,8 @@ class Zugang(abc.ABC):
         """
         await self._kern_schliessen()
         if self._client is not None:
-            try:
+            with contextlib.suppress(Exception):
                 await self._client.aclose()
-            except Exception:
-                pass
             self._client = None
 
     async def _kern_schliessen(self) -> None:
@@ -135,12 +133,10 @@ class Zugang(abc.ABC):
         schliessen = getattr(kern, "close", None)
         if schliessen is None:
             return
-        try:
+        with contextlib.suppress(Exception):
             ergebnis = schliessen()
-            if hasattr(ergebnis, "__await__"):
+            if inspect.isawaitable(ergebnis):
                 await ergebnis
-        except Exception:
-            pass
 
     async def _ausfall(self, exc: Exception) -> str:
         """Die Leitung ist mitten im Aufruf weggebrochen: schliessen, sperren.
