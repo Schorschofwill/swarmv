@@ -82,6 +82,13 @@ Test-Liste (AGENTS.md):
 === ZYKLUS 10: Aufbewahrung der Kopie (R5, KTD4) ===
 43. ``expire()`` entfernt einen Workflow, dessen letzte Aktivitaet aelter
     als die Aufbewahrung ist, und laesst einen juengeren stehen.
+
+=== ZYKLUS 11: Was der Abgleich zusaetzlich braucht (Workflow-Ansicht U3) ===
+44. Der zuletzt angezeigte Zustand wird vermerkt und ueberdauert
+    "verfallen" (KTD6); fuer einen unbekannten Workflow legt der Vermerk
+    nichts an.
+45. Die Schritte eines Workflows sind alle Task-Zeilen mit seiner
+    Kennung, auch die nur ueber das Muster erkannten -- und keine fremden.
 """
 
 from __future__ import annotations
@@ -810,3 +817,33 @@ def test_ablauf_entfernt_alte_workflows_und_laesst_junge(tmp_path: Path) -> None
     w.expire(older_than=5000.0)
     assert w.workflow(WF) is None, "die Kopie ueberlebte die Aufbewahrung"
     assert w.workflow(WF2) is not None
+
+
+# --- Zyklus 11: Was der Abgleich zusaetzlich braucht ------------------------
+
+
+def test_zuletzt_angezeigter_zustand_ueberdauert_den_verfall(tmp_path: Path) -> None:
+    """Covers R17, KTD6. "Zustand verfallen, zuletzt: Stornierung
+    angefordert" braucht den Stand von vor dem Verfall."""
+    w = _mit_kandidat(tmp_path)
+    _lies(w, status="running")
+    assert w.vermerke_anzeige(WF, "angefordert_nichts_aktiv") is True
+    w.vermerke_verfallen(WF)
+    wf = w.workflow(WF)
+    assert (wf["sichtbarkeit"], wf["zuletzt_angezeigt"]) == ("verfallen", "angefordert_nichts_aktiv")
+    assert w.vermerke_anzeige(WF2, "laeuft") is False
+    assert w.workflow(WF2) is None
+
+
+def test_schritte_eines_workflows(tmp_path: Path) -> None:
+    """Covers R16. Der Abgleich leitet daraus "nichts mehr aktiv" ab; ein
+    Kopf-Glied ohne Anwendungs-Hook kennt nur das Muster (KTD5)."""
+    w = _w(tmp_path)
+    w.apply([(None, _sig(f"{WF}#/h/g0", "task_completed", 105.0, duration_ms=1.0)),
+             (None, _enq(f"{WF}#/b", ts=106.0, workflow_id=WF, step_path="/b")),
+             (None, _enq(f"{WF2}#/0", ts=107.0, workflow_id=WF2, step_path="/0")),
+             (None, _enq("fremd", ts=108.0))])
+    schritte = {z["task_id"]: z for z in w.workflow_schritte(WF)}
+    assert set(schritte) == {f"{WF}#/h/g0", f"{WF}#/b"}
+    assert schritte[f"{WF}#/h/g0"]["step_path"] == "/h/g0"
+    assert schritte[f"{WF}#/h/g0"]["status"] == "fertig"

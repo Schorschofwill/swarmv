@@ -18,6 +18,9 @@ Test-Liste (AGENTS.md):
 === ZYKLUS 4: Vorgaben und Ueberschreibungen ===
 8. Aufbewahrungsdauer und Fristen haben die im Plan festgelegten Vorgaben.
 9. Jede davon laesst sich einzeln ueberschreiben, ohne die anderen zu veraendern.
+
+=== ZYKLUS 5: Takt des Workflow-Abgleichs (Workflow-Ansicht U3, KTD3) ===
+15. ``SQD_WORKFLOW_POLL_S`` hat die Vorgabe 60 und laesst sich ueberschreiben.
 """
 
 from __future__ import annotations
@@ -187,3 +190,19 @@ def test_valkey_unix_behaelt_den_socketpfad(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setenv("SWARMQ_BACKEND_URL", "valkey+unix:///run/valkey.sock?db=0")
     cfg = DashboardConfig.from_env()
     assert "/run/valkey.sock" in cfg.stream_url, f"Socketpfad verloren: {cfg.stream_url}"
+
+
+# --- Zyklus 5: Takt des Workflow-Abgleichs --------------------------------
+
+
+@pytest.mark.usefixtures("clean_env")
+def test_workflow_takt_hat_vorgabe_und_ist_ueberschreibbar(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """KTD3: weit unter der kleinsten ``result_ttl`` der Worker, weil jedes
+    Schreiben des Zustands dessen Frist neu setzt."""
+    monkeypatch.setenv("SWARMQ_BROKER_URL", "amqp://localhost:5699/")
+    monkeypatch.setenv("SWARMQ_BACKEND_URL", "valkey://localhost:6399/0")
+    assert DashboardConfig.from_env().workflow_poll_s == 60.0
+    monkeypatch.setenv("SQD_WORKFLOW_POLL_S", "15")
+    assert DashboardConfig.from_env().workflow_poll_s == 15.0

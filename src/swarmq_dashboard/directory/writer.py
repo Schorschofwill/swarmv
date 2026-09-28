@@ -154,6 +154,20 @@ class DirectoryWriter:
             for z in zeilen
         ]
 
+    def workflow_schritte(self, workflow_id: str) -> list[sqlite3.Row]:
+        """Die Task-Zeilen eines Workflows, mit den Spalten einer ``Taskzeile``.
+
+        Auch die nur ueber das Muster erkannten: der Eingang traegt Kennung
+        und Pfad aus dem Muster in die Zeile (KTD5). Der Index
+        ``task_workflow`` traegt die Abfrage.
+        """
+        zeilen: list[sqlite3.Row] = self._con.execute(
+            "select task_id, step_path, status, task_name, first_seen_at, started_at, "
+            "ended_at, error from task where workflow_id=? order by first_seen_at, task_id",
+            (workflow_id,),
+        ).fetchall()
+        return zeilen
+
     def oldest_entry(self) -> float | None:
         """Zeitpunkt des aeltesten Eintrags -- die Reichweite aus R8.
 
@@ -403,6 +417,19 @@ class DirectoryWriter:
         cur = self._con.execute(
             "update workflow set sichtbarkeit=? where workflow_id=? and gelesen_am is null",
             (SICHT_NIE_GESEHEN, workflow_id),
+        )
+        self._con.commit()
+        return bool(cur.rowcount)
+
+    def vermerke_anzeige(self, workflow_id: str, code: str) -> bool:
+        """Den Anzeige-Code nach einer gelungenen Lesung festhalten (KTD6).
+
+        Er bleibt stehen, wenn der Zustand danach verfaellt: die Ansicht
+        nennt ihn als "zuletzt: ...". ``False``, wenn der Workflow nicht im
+        Verzeichnis steht.
+        """
+        cur = self._con.execute(
+            "update workflow set zuletzt_angezeigt=? where workflow_id=?", (code, workflow_id)
         )
         self._con.commit()
         return bool(cur.rowcount)

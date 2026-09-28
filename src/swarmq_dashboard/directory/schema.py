@@ -191,6 +191,10 @@ create table if not exists workflow (
     gelesen_am    real,
     -- Die eigene Stornierung (R16). Wissen des Dashboards, kein Zustand.
     cancel_requested_at real,
+    -- Anzeige-Code (``Statusanzeige.code`` in ``workflow_baum.py``) nach der
+    -- letzten gelungenen Lesung. Traegt "Zustand verfallen, zuletzt: ..."
+    -- (KTD6), auch fuer die eigene Stornierung; der Abgleich schreibt ihn.
+    zuletzt_angezeigt text,
     first_seen_at real not null,
     -- Letzte Aktivitaet laut Strom -- derselbe Schluessel, nach dem auch die
     -- Task-Zeilen ablaufen, sonst ueberlebt eine der Quellen die andere.

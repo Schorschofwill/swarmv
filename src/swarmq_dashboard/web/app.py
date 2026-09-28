@@ -43,6 +43,7 @@ from swarmq_dashboard.control import (
     SwarmQSetpointStore,
     kontrollkanal_grund,
 )
+from swarmq_dashboard.directory.abgleich import Abgleich
 from swarmq_dashboard.directory.reader import DEFAULT_BATCH, StreamReader
 from swarmq_dashboard.directory.schema import connect
 from swarmq_dashboard.directory.writer import DirectoryWriter
@@ -82,6 +83,7 @@ from swarmq_dashboard.web.routes.worker import (
 )
 from swarmq_dashboard.web.stream import LIVE_CHANNEL, LivePublisher, live
 from swarmq_dashboard.web.templates import render, statische_dateien, template_config
+from swarmq_dashboard.workflows import SwarmQWorkflowleser, Workflowleser
 
 #: Name, unter dem der Sitzungsspeicher registriert wird.
 SESSION_STORE_NAME = "sessions"
@@ -217,6 +219,7 @@ class Services:
         setpoint_store: SetpointStore | None = None,
         probe_sender: Any | None = None,
         ergebnisleser: Ergebnisleser | None = None,
+        workflowleser: Workflowleser | None = None,
     ) -> None:
         self._config = config
         self._hasher = hasher
@@ -261,6 +264,15 @@ class Services:
         self.ergebnisse: Ergebnisleser = ergebnisleser or SwarmQErgebnisleser(
             config.broker_url, config.backend_url
         )
+        #: Das Lesen des Workflow-Zustands (Workflow-Ansicht, U1). Am
+        #: **Backend** der Bibliothek wie das Stornieren, mit eigener
+        #: Valkey-Verbindung -- darum in der Schliessliste von ``shutdown()``.
+        self.workflowleser: Workflowleser = workflowleser or SwarmQWorkflowleser(
+            config.broker_url, config.backend_url
+        )
+        #: Der Abgleich der Workflow-Kopie (U3). Entsteht mit dem
+        #: Verzeichnis, weil er hineinschreibt.
+        self.abgleich: Abgleich | None = None
         #: Der Audit-Strom (R27). Er haengt am Ereignisstrom, nicht an der
         #: Kontendatei -- und er darf fehlen, ohne eine Aktion aufzuhalten.
         self.audit = AuditLog(None)
@@ -319,6 +331,7 @@ class Services:
             "takt_refresh": None,
             "takt_purge": None,
             "takt_ingest": None,
+            "takt_workflows": None,
             # Die drei Teile der Pflege einzeln: faellt einer aus, sollen die
             # anderen weiterlaufen **und** der Ausfall benannt sein.
             "pflege_retention": None,
@@ -393,7 +406,11 @@ class Services:
             self.reader = StreamReader(
                 _NochNichtVerbunden(), self.services_directory_writer, stream_key=TASK_STREAM
             )
-            self.reader.melder = self._live_melden
+            self.reader.melder = self._eingearbeitet
+            self.abgleich = Abgleich(
+                self.services_directory_writer, self.workflowleser,
+                melden=self._workflow_melden, schlafen=self._schlafen,
+            )
             self._gruende["directory"] = None
         except Exception as exc:
             # Ohne Verzeichnis ist das Dashboard fast nutzlos -- aber "fast"
@@ -485,7 +502,15 @@ class Services:
         nicht mehr der Normalfall.
         """
         self._halt = True
+        # Der Abgleich zuerst: das Wecken unten weckt auch seine verzoegerten
+        # Lesungen, und die schrieben sonst in das Verzeichnis, das gleich
+        # geschlossen wird.
+        if self.abgleich is not None:
+            self.abgleich.anhalten()
         self._wecker.set()
+        if self.abgleich is not None:
+            with suppress(TimeoutError):
+                await asyncio.wait_for(self.abgleich.abwarten(), timeout=STOP_TIMEOUT_S)
         if aufgaben:
             await asyncio.wait(aufgaben, timeout=STOP_TIMEOUT_S)
         for aufgabe in aufgaben:
@@ -502,7 +527,7 @@ class Services:
         # und ohne ihn leckte je Lebenszyklus eine.
         for teil in (self._stream, self._backend, self._broker, self._dlq_admin,
                      self.canceller, self._setpoint_store, self.probe_sender,
-                     self.ergebnisse):
+                     self.ergebnisse, self.workflowleser):
             await _leise_schliessen(teil)
         self._stream = self._stream_vorgabe
         self._backend = None
@@ -514,6 +539,9 @@ class Services:
                 pass
             self.services_directory_writer = None
             self.reader = None
+            # Der Abgleich haelt den Schreiber; bliebe er stehen, ueberlebte
+            # die geschlossene Verbindung den Lebenszyklus.
+            self.abgleich = None
         # Auch die drei Verbindungen auf die Kontendatei. Gemessen blieben
         # ohne das sechs Dateizeiger offen, und ueber fuenf Lebenszyklen
         # wuchsen sie linear auf dreissig -- und das Herunterfahren ist
@@ -562,15 +590,26 @@ class Services:
         return [
             self._takt(self.refresh, "refresh", every_s),
             self._takt(self._aufraeumen, "purge", every_s),
+            # Ein eigener Takt mit eigenem Abstand (KTD3), und einmal gleich
+            # beim Start: sonst stuende eine Kopie nach einem Neustart bis
+            # zum ersten Takt auf dem alten Stand.
+            self._takt(self._abgleichen, "workflows", self._config.workflow_poll_s,
+                       sofort=True),
         ]
 
     def _takt(self, schritt: Callable[[], Awaitable[None]], name: str,
-              every_s: float) -> asyncio.Task[None]:
-        """Eine wiederkehrende Aufgabe, die nie an einem Fehler endet."""
+              every_s: float, *, sofort: bool = False) -> asyncio.Task[None]:
+        """Eine wiederkehrende Aufgabe, die nie an einem Fehler endet.
+
+        ``sofort`` laesst den ersten Schritt vor dem ersten Warten laufen.
+        """
 
         async def lauf() -> None:
+            erster = sofort
             while not self._halt:
-                await self._schlafen(every_s)
+                if not erster:
+                    await self._schlafen(every_s)
+                erster = False
                 if self._halt:
                     return
                 try:
@@ -625,6 +664,13 @@ class Services:
             return 0
         return await self.reader.poll_once()
 
+    async def _eingearbeitet(self, ereignisse: list[tuple[str | None, Any]]) -> None:
+        """Was der Strom-Leser eingearbeitet hat: an die Ansichten und an den
+        Abgleich, der nach Ergebnissen von Workflow-Schritten liest (KTD3)."""
+        await self._live_melden(ereignisse)
+        if self.abgleich is not None:
+            await self.abgleich.eingearbeitet(ereignisse)
+
     async def _live_melden(self, ereignisse: list[tuple[str | None, Any]]) -> None:
         """Was eingearbeitet wurde, an die offenen Ansichten weitergeben (R13).
 
@@ -640,6 +686,20 @@ class Services:
                           "worker_id": str(ev.payload.get("worker_id") or ""),
                           "ts": ev.ts}
             )
+
+    async def _abgleichen(self) -> None:
+        if self.abgleich is not None:
+            await self.abgleich.alle_lesen()
+
+    async def _workflow_melden(self, workflow_id: str) -> None:
+        """Eine geaenderte Workflow-Kopie an die offenen Ansichten (KTD10).
+
+        Diese Aenderungen haben kein Strom-Ereignis; ohne die Meldung zeigte
+        eine offene Seite den Endstatus erst beim naechsten Schritt.
+        """
+        await self.publisher.publish(
+            "workflow_abgeglichen", {"workflow_id": workflow_id, "ts": time.time()}
+        )
 
     async def _aufraeumen(self) -> None:
         """Die Frist anwenden, abgelaufene Sitzungen und Bremszaehler entfernen.
@@ -717,6 +777,9 @@ class Services:
             # fehlt -- die Aktion laeuft dann trotzdem (KTD8), aber still
             # bleiben darf das nicht (R27).
             "audit": {"lost": self.audit.lost},
+            # Der Abgleich der Workflow-Kopie: ohne Backend bleibt sie
+            # stehen, wie sie ist, und das muss dastehen (R5, R33).
+            "workflows": self._abgleich_bericht(),
             # Alle Takte, nicht nur zwei. Ein Takt, der still nicht mehr
             # arbeitet, ist genau die Art Ausfall, die dieses Dashboard nicht
             # machen darf -- und die drei neuen Gruende standen in einem
@@ -725,11 +788,18 @@ class Services:
                 "refresh": self._gruende["takt_refresh"],
                 "purge": self._gruende["takt_purge"],
                 "ingest": self._gruende["takt_ingest"],
+                "workflows": self._gruende["takt_workflows"],
                 "retention": self._gruende["pflege_retention"],
                 "throttle": self._gruende["pflege_throttle"],
                 "sessions": self._gruende["pflege_sessions"],
             },
         }
+
+    def _abgleich_bericht(self) -> dict[str, Any]:
+        # Ohne Verzeichnis gibt es keinen Abgleich; das nennt der Bericht
+        # des Verzeichnisses, nicht dieser.
+        grund = self.abgleich.grund if self.abgleich is not None else None
+        return _teil(grund is None, grund)
 
     def _verzeichnis_bericht(self) -> dict[str, Any]:
         if self.reader is None:
@@ -790,6 +860,7 @@ def create_app(
     setpoint_store: SetpointStore | None = None,
     probe_sender: Any | None = None,
     ergebnisleser: Ergebnisleser | None = None,
+    workflowleser: Workflowleser | None = None,
     secure_cookies: bool = True,
 ) -> Litestar:
     """Die Anwendung bauen. Der Lebenszyklus haelt die Aussenverbindungen.
@@ -801,7 +872,8 @@ def create_app(
     services = Services(config, hasher=hasher, throttle_scale=throttle_scale,
                         canceller=canceller, broker=broker, dlq_admin=dlq_admin,
                         stream=stream, setpoint_store=setpoint_store,
-                        probe_sender=probe_sender, ergebnisleser=ergebnisleser)
+                        probe_sender=probe_sender, ergebnisleser=ergebnisleser,
+                        workflowleser=workflowleser)
     # Die Registratur zeigt auf den Speicher des Dienstes, statt einen
     # eigenen zu halten: sonst bliebe eine vierte Verbindung auf die
     # Kontendatei offen, die niemand schliesst und deren abgelaufene Zeilen
