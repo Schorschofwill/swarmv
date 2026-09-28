@@ -531,7 +531,7 @@ def test_filter_verfallen_findet_den_verfallenen(tmp_path: Path) -> None:
     w.apply([(None, _schritt(_wf(1), "", 100.0)), (None, _schritt(_wf(2), "", 200.0))])
     _lesung(w, _wf(1), topologie=_sig_top("a"))
     _lesung(w, _wf(2), topologie=_sig_top("a"))
-    assert w.vermerke_verfallen(_wf(1))
+    assert w.vermerke_fehlend(_wf(1))[1]
     assert _ids(q.workflows(Workflowfilter(status="verfallen"))) == [_wf(1)]
     assert _ids(q.workflows(Workflowfilter(status="laeuft"))) == [_wf(2)]
 
@@ -557,7 +557,7 @@ def test_nie_gesehen_filtert_und_zaehlt_nur_bekannte_schritte(tmp_path: Path) ->
     w.apply([(None, _schritt(wf, "/0", 100.0)), (None, _schritt(wf, "/1", 101.0)),
              (None, _sig(f"{wf}#/0", "task_completed", 102.0, duration_ms=1.0)),
              (None, _schritt(_wf(2), "", 200.0))])
-    assert w.vermerke_nie_gesehen(wf)
+    assert w.vermerke_fehlend(wf)[2]
     (zeile,) = q.workflows(Workflowfilter(status="nie_gesehen")).zeilen
     assert zeile.kopie.workflow_id == wf
     assert (zeile.baum.fortschritt.fertig, zeile.baum.fortschritt.gesamt) == (1, 2)
@@ -787,7 +787,7 @@ def test_verfallen_nennt_den_zuletzt_angezeigten_zustand(tmp_path: Path) -> None
     w.apply([(None, _schritt(wf, "", 100.0))])
     _lesung(w, wf, topologie=_sig_top("a"), gelesen_am=510.0)
     assert w.vermerke_anzeige(wf, "angefordert")
-    assert w.vermerke_verfallen(wf)
+    assert w.vermerke_fehlend(wf)[1]
     (zeile,) = q.workflows(Workflowfilter(status="verfallen")).zeilen
     assert zeile.kopie.zuletzt_angezeigt == "angefordert"
     assert zeile.baum.status.text == "Zustand verfallen, zuletzt: Stornierung angefordert"

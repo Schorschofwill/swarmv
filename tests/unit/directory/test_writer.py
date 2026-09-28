@@ -71,11 +71,15 @@ Test-Liste (AGENTS.md):
 36. Eine Lesung fuer einen unbekannten Workflow legt nichts an.
 
 === ZYKLUS 9: Verfallen, nie gesehen, Kandidaten, Storno (R7, R16, R17) ===
+Seit dem Aufraeumen (U2, KTD5) laufen 37-40 ueber die Wege, die der Code
+wirklich nimmt: ``vermerke_fehlend`` und ``schreibe_lesung``.
 37. "Verfallen" wird nur vermerkt, wenn die letzte Lesung "running" war;
-    Zeitpunkt der letzten Lesung und Status bleiben stehen.
-38. "Nie gesehen" wird nur ohne jede Lesung vermerkt.
-39. Ein Kandidat wird bestaetigt.
-40. Verwerfen loescht nur einen unbestaetigten Kandidaten.
+    Zeitpunkt der letzten Lesung und Status bleiben stehen. Ein Endstatus
+    wird nicht verfallen.
+38. "Nie gesehen" wird nur ohne jede Lesung vermerkt, und dann nicht
+    "verfallen".
+39. Eine Lesung bestaetigt einen Kandidaten.
+40. Ein fehlender Zustand loescht nur einen unbestaetigten Kandidaten.
 41. Der eigene Storno-Vermerk wird einmal gesetzt und nie verschoben.
 42. Offen sind alle Workflows ohne Endstatus, bestaetigt oder nicht.
 
@@ -94,7 +98,7 @@ Test-Liste (AGENTS.md):
     Workflow fallen weg.
 47. Ein fehlender Zustand wird in einem Zug vermerkt: ein Kandidat
     verworfen, ein zuletzt laufend gelesener verfallen, ein nie gelesener
-    nie gesehen -- jeweils mit denselben Ausgaengen wie die Einzelschritte.
+    nie gesehen -- das Tupel nennt die drei Ausgaenge in dieser Reihenfolge.
 48. Scheitert dieser Zug mittendrin, bleibt keine offene Transaktion
     zurueck: der naechste Schreibvorgang gelingt.
 """
@@ -725,45 +729,48 @@ def test_verfallen_nach_letzter_lesung_running(tmp_path: Path) -> None:
     letzten Lesung -- beides muss stehen bleiben."""
     w = _mit_kandidat(tmp_path)
     _lies(w, status="running", gelesen_am=500.0)
-    assert w.vermerke_verfallen(WF) is True
+    assert w.vermerke_fehlend(WF)[1] is True
     wf = w.workflow(WF)
     assert wf["sichtbarkeit"] == "verfallen"
     assert wf["status"] == "running"
     assert wf["gelesen_am"] == 500.0
 
 
-@pytest.mark.parametrize("status", ["completed", "failed", "cancelled", None],
-                         ids=["fertig", "gescheitert", "storniert", "ohne-lesung"])
-def test_verfallen_nur_nach_running(tmp_path: Path, status: str | None) -> None:
+@pytest.mark.parametrize("status", ["completed", "failed", "cancelled"],
+                         ids=["fertig", "gescheitert", "storniert"])
+def test_verfallen_nur_nach_running(tmp_path: Path, status: str) -> None:
     """Covers R17, AE5. Ein Endstatus in der Kopie ist die Auskunft fuer die
-    vollen sieben Tage; "verfallen" darf ihn nicht verdecken. Ohne jede
-    Lesung gilt "nie gesehen", nicht "verfallen"."""
+    vollen sieben Tage; "verfallen" darf ihn nicht verdecken. Den Fall ohne
+    jede Lesung ("nie gesehen", nicht "verfallen") prueft der Test danach."""
     w = _mit_kandidat(tmp_path)
-    if status is not None:
-        _lies(w, status=status)
+    _lies(w, status=status)
     vorher = w.workflow(WF)["sichtbarkeit"]
-    assert w.vermerke_verfallen(WF) is False
+    assert w.vermerke_fehlend(WF)[1] is False
     assert w.workflow(WF)["sichtbarkeit"] == vorher
 
 
 def test_nie_gesehen_nur_ohne_jede_lesung(tmp_path: Path) -> None:
     """Covers R7, AE6. Ein einmal gelesener Zustand war gesehen; faellt er
-    danach weg, ist das "verfallen", nicht "nie gesehen"."""
-    w = _mit_kandidat(tmp_path)
-    assert w.vermerke_nie_gesehen(WF) is True
+    danach weg, ist das "verfallen", nicht "nie gesehen". Bestaetigt, weil
+    ein fehlender Zustand einen Kandidaten verwuerfe (KTD5)."""
+    w = _w(tmp_path)
+    w.apply([(None, _enq(f"{WF}#/0", workflow_id=WF, step_path="/0"))])
+    verfallen, nie_gesehen = w.vermerke_fehlend(WF)[1:]
+    assert (verfallen, nie_gesehen) == (False, True), "ohne Lesung nie gesehen, nicht verfallen"
     assert w.workflow(WF)["sichtbarkeit"] == "nie_gesehen"
 
     w.apply([(None, _sig(f"{WF2}#/h/g0", "task_started", 100.0))])
     w.schreibe_lesung(WF2, status="completed", wurzel="chord", topologie=_TOPO,
                       step_tasks={}, fehler=None, gelesen_am=500.0)
-    assert w.vermerke_nie_gesehen(WF2) is False
+    assert w.vermerke_fehlend(WF2)[2] is False
     assert w.workflow(WF2)["sichtbarkeit"] == "gesehen"
 
 
 def test_kandidat_wird_bestaetigt(tmp_path: Path) -> None:
-    """Covers R1."""
+    """Covers R1. Eine Lesung, die den Zustand fand, bestaetigt ihn."""
     w = _mit_kandidat(tmp_path)
-    assert w.bestaetige_kandidat(WF) is True
+    assert w.workflow(WF)["bestaetigt"] == 0
+    assert _lies(w) is True
     assert w.workflow(WF)["bestaetigt"] == 1
 
 
@@ -773,9 +780,9 @@ def test_verwerfen_loescht_nur_einen_kandidaten(tmp_path: Path) -> None:
     Workflow dagegen bleibt -- ihn traegt ein Ereignis oder eine Lesung."""
     w = _mit_kandidat(tmp_path)
     w.apply([(None, _enq(f"{WF2}#/0", workflow_id=WF2, step_path="/0"))])
-    assert w.verwerfe_kandidat(WF) is True
+    assert w.vermerke_fehlend(WF)[0] is True
     assert w.workflow(WF) is None
-    assert w.verwerfe_kandidat(WF2) is False
+    assert w.vermerke_fehlend(WF2)[0] is False
     assert w.workflow(WF2) is not None
     assert w.row(f"{WF}#/h/g0") is not None, "die Task-Zeile gehoert nicht zur Kopie"
 
@@ -836,7 +843,7 @@ def test_zuletzt_angezeigter_zustand_ueberdauert_den_verfall(tmp_path: Path) -> 
     w = _mit_kandidat(tmp_path)
     _lies(w, status="running")
     assert w.vermerke_anzeige(WF, "angefordert_nichts_aktiv") is True
-    w.vermerke_verfallen(WF)
+    w.vermerke_fehlend(WF)
     wf = w.workflow(WF)
     assert (wf["sichtbarkeit"], wf["zuletzt_angezeigt"]) == ("verfallen", "angefordert_nichts_aktiv")
     assert w.vermerke_anzeige(WF2, "laeuft") is False
@@ -873,8 +880,8 @@ def test_workflows_mehrerer_tasks(tmp_path: Path) -> None:
 
 def test_fehlender_zustand_in_einem_zug(tmp_path: Path) -> None:
     """Covers R7, R17, KTD5. Der Abgleich vermerkt "fehlt" in einer
-    Transaktion statt in dreien; die Ausgaenge sind die der Einzelschritte
-    (verworfen, verfallen, nie gesehen)."""
+    Transaktion statt in dreien; die Ausgaenge stehen in der Reihenfolge
+    verworfen, verfallen, nie gesehen."""
     w = _mit_kandidat(tmp_path)
     assert w.vermerke_fehlend(WF) == (True, False, False)
     assert w.workflow(WF) is None

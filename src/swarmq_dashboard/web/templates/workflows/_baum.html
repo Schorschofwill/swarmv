@@ -32,7 +32,7 @@
   {%- if not k.ergebnis.anzeigbar %} nicht einzeln anzeigbar
   {%- else %}
     {%- set bild = ergebnisse.get(k.pfad) %}
-    {%- if bild is none or bild.zustand == 'offen' %} noch keins
+    {%- if bild is none %} noch keins
     {%- elif bild.zustand == 'fehlt' %} Ergebnis abgelaufen
     {%- elif bild.zustand in ('nicht_erreichbar', 'nicht_lesbar') %} {{ bild.grund }}
     {%- elif bild.art == 'gescheitert' %} gescheitert: <span class="mono">{{ bild.text }}</span>

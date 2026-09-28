@@ -87,6 +87,15 @@ Test-Liste (AGENTS.md):
     zeigt sie und die anderen, das Detail antwortet 200 mit den bekannten
     Schritten und dem Hinweis "Topologie nicht lesbar", die Gliederseite
     nennt ihren Grund -- keine Seite antwortet 500.
+
+=== ZYKLUS 8: Die Dauer-Spalte (Aufraeumen, U1, R6) ===
+Charakterisierung: die Tests halten bestehendes Verhalten fest und waren
+beim ersten Lauf gruen; eine Gegenprobe (Zweig "--" der Vorlage vorueber-
+gehend geaendert) machte sie rot.
+34. Ein Glied, das vor dem Start storniert wurde (``task_cancelled`` ohne
+    ``task_started``), zeigt in der Dauer-Spalte "--".
+35. Ein Glied mit Start und Ende zeigt seine Dauer, eins nur mit Start
+    "läuft seit".
 """
 
 from __future__ import annotations
@@ -331,8 +340,7 @@ async def test_nie_gesehen_steht_in_der_liste(tmp_path: Path) -> None:
     wf = _wf(1)
     v.schritt(wf, "/0", 1_700_000_000.0, "task_started", "task_completed", name="a")
     v.schritt(wf, "/1", 1_700_000_010.0, "task_started", name="b")
-    assert v.w.vermerke_nie_gesehen(wf)
-    v.w.bestaetige_kandidat(wf)
+    assert v.w.vermerke_fehlend(wf)[2]
     v.close()
     c = await _angemeldet(config)
     try:
@@ -354,7 +362,7 @@ async def test_verfallen_nennt_den_zeitpunkt_der_letzten_lesung(tmp_path: Path) 
     v.schritt(wf, "", 1_700_000_000.0, "task_started")
     v.lesung(wf, _sig_top("download"), gelesen_am=1_700_003_600.0)
     assert v.w.vermerke_anzeige(wf, "laeuft")
-    assert v.w.vermerke_verfallen(wf)
+    assert v.w.vermerke_fehlend(wf)[1]
     v.close()
     c = await _angemeldet(config)
     try:
@@ -501,7 +509,7 @@ async def test_fertig_aus_der_kopie_nach_dem_verfall(tmp_path: Path) -> None:
     v.schritt(wf, "/0", 1_700_000_000.0, "task_started", "task_completed", name="a")
     v.schritt(wf, "/1", 1_700_000_010.0, "task_started", "task_completed", name="b")
     v.lesung(wf, _kette(_sig_top("a"), _sig_top("b")), status="completed")
-    v.w.vermerke_verfallen(wf)      # greift bei einem Endstatus nicht -- gut so
+    v.w.vermerke_fehlend(wf)        # greift bei einem Endstatus nicht -- gut so
     v.close()
     c = await _angemeldet(config)
     try:
@@ -523,7 +531,7 @@ async def test_nie_gesehen_zeigt_die_bekannten_schritte(tmp_path: Path) -> None:
     wf = _wf(1)
     v.schritt(wf, "/0", 1_700_000_000.0, "task_started", "task_completed", name="a")
     v.schritt(wf, "/1", 1_700_000_010.0, "task_started", name="b")
-    assert v.w.vermerke_nie_gesehen(wf)
+    assert v.w.vermerke_fehlend(wf)[2]
     v.close()
     c = await _angemeldet(config)
     try:
@@ -1145,6 +1153,52 @@ async def test_nach_dem_abbruch_aller_wartenden_ist_nichts_mehr_aktiv(tmp_path: 
         assert _text(status.group(1)) == "Stornierung angefordert, nichts mehr aktiv"
         assert f"/workflows/{wf}/cancel" not in seite.text
         assert [e.outcome for e in await _workflow_audit(app)] == ["ok"]
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+def _dauerzelle(html: str, kennung: str) -> str:
+    """Der Text der letzten Zelle (Dauer) der Zeile ``kennung``."""
+    zellen = re.findall(r"<td[^>]*>(.*?)</td>", _zeile(html, kennung), re.S)
+    return _text(zellen[-1])
+
+
+# --- Zyklus 8 -----------------------------------------------------------
+
+
+async def test_ein_vor_dem_start_storniertes_glied_hat_keine_dauer(tmp_path: Path) -> None:
+    """R6. Ein Glied endete, ohne je zu starten: es gibt keine Dauer, und
+    die Spalte behauptet auch keine Wartezeit."""
+    config = _config(tmp_path)
+    wf = _wf(1)
+    v = _Verzeichnis(config)
+    step_tasks = {"/g0": f"{wf}#/g0", "/g1": f"{wf}#/g1"}
+    v.schritt(wf, "/g0", 1_700_000_000.0, "task_cancelled")
+    v.schritt(wf, "/g1", 1_700_000_010.0, "task_started")
+    v.lesung(wf, _DOWNLOADS, step_tasks=step_tasks)
+    v.close()
+    c = await _angemeldet(config)
+    try:
+        html = (await c.get(f"/workflows/{wf}")).text
+        assert _dauerzelle(html, "knoten-g0") == "--"
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+async def test_die_dauer_steht_nach_ende_und_waehrend_des_laufs(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    v = _Verzeichnis(config)
+    wf = _wf(1)
+    v.schritt(wf, "/0", 1_700_000_000.0, "task_started", "task_completed", name="a")
+    v.schritt(wf, "/1", 1_700_000_010.0, "task_started", name="b")
+    v.lesung(wf, _kette(_sig_top("a"), _sig_top("b")),
+             step_tasks={"/0": f"{wf}#/0", "/1": f"{wf}#/1"})
+    v.close()
+    c = await _angemeldet(config)
+    try:
+        html = (await c.get(f"/workflows/{wf}")).text
+        assert _dauerzelle(html, "knoten-0") == "1,0 s"
+        assert _dauerzelle(html, "knoten-1").startswith("läuft seit ")
     finally:
         await c.__aexit__(None, None, None)
 
