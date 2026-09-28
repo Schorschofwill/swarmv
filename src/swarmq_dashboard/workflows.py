@@ -13,9 +13,7 @@ kein Absturz.
 
 from __future__ import annotations
 
-import asyncio
 import json
-import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
@@ -24,6 +22,7 @@ from typing import Any, Protocol
 from swarmq_dashboard.stream import StreamUnavailable
 from swarmq_dashboard.workflow_baum import ENDSTATUS as ENDSTATUS
 from swarmq_dashboard.workflow_baum import STATUS_RUNNING as STATUS_RUNNING
+from swarmq_dashboard.zugang import Zugang
 
 #: Wie lange nach einem Fehlversuch nicht erneut gewaehlt wird -- derselbe
 #: Wert wie beim Ergebnisleser (``web/ergebnis.py``) und beim Kontrollkanal.
@@ -161,8 +160,16 @@ class Workflowleser(Protocol):
     async def stornieren(self, workflow_id: str) -> Stornobild: ...
 
 
-class SwarmQWorkflowleser:
-    """Der Leser ueber die oeffentliche API der Bibliothek (KTD1)."""
+class SwarmQWorkflowleser(Zugang):
+    """Der Leser ueber die oeffentliche API der Bibliothek (KTD1).
+
+    Verbindungsaufbau, Riegel, Sperrfrist und Schliessen kommen aus
+    :class:`~swarmq_dashboard.zugang.Zugang`; verbunden wird erst beim ersten
+    Lesen oder Stornieren.
+    """
+
+    SPERRE_S = SPERRE_S
+    CONNECT_TIMEOUT_S = CONNECT_TIMEOUT_S
 
     def __init__(
         self,
@@ -173,116 +180,22 @@ class SwarmQWorkflowleser:
         verbinden: Callable[[], Awaitable[Any]] | None = None,
         uhr: Callable[[], float] | None = None,
     ) -> None:
+        super().__init__(backend_url, kern=app, verbinden=verbinden, uhr=uhr)
         self._broker_url = broker_url
-        self._backend_url = backend_url
-        self._app = app
-        self._verbinden = verbinden or self._kern_verbinden
-        self._uhr = uhr or time.monotonic
-        #: Bis wann nicht erneut gewaehlt wird, und warum.
-        self._gesperrt_bis = 0.0
-        self._grund = ""
-        #: Der eigene Klient. Die Bibliothek schliesst einen eingesetzten
-        #: Klienten nicht -- das ist ihr Vertrag, und hier unsere Pflicht.
-        self._client: Any | None = None
-        #: Der Abgleich liest nebenlaeufig: ohne Riegel baute jede erste
-        #: Lesung einen eigenen Klienten, und ``close()`` schloesse nur den
-        #: letzten.
-        self._verbindungsriegel = asyncio.Lock()
 
-    async def _kern_verbinden(self) -> Any:
-        """Die Bibliothek auf einem **eigenen** Valkey-Klienten.
-
-        Aus demselben Grund wie beim Ergebnisleser: Der Klient, den die
-        Bibliothek sich sonst baut, ist fuer den Worker-Pfad eingestellt --
-        fuenf Versuche mit Backoff. Der ``ping()`` ist Pflicht, weil mit
-        eingesetztem Klienten weder ``from_url`` noch ``connect()`` eine
-        Verbindung aufbaut; der Fehlschlag kaeme sonst erst beim Lesen.
-        """
-        import valkey.asyncio
+    async def _kern_auf(self, client: Any) -> Any:
+        """Die Bibliothek auf dem eigenen Klienten, nach bestandenem ``ping()``."""
         from swarmq import SwarmQ
         from swarmq.backend.valkey import ValkeyBackend
         from swarmq.broker.rabbitmq import RabbitMQBroker
 
-        # Erst lokal: behalten wird der Klient nur, wenn der ``ping()``
-        # durchkommt. Sonst schloesse ihn niemand.
-        client = valkey.asyncio.Valkey.from_url(
-            self._backend_url,
-            socket_connect_timeout=CONNECT_TIMEOUT_S,
-            socket_timeout=CONNECT_TIMEOUT_S,
-        )
-        try:
-            await client.ping()
-        except BaseException:
-            try:
-                await client.aclose()
-            except Exception:
-                pass
-            raise
-        self._client = client
+        await client.ping()
         backend = ValkeyBackend(client=client)
         # Der Broker wird weder zum Lesen noch zum Stornieren gebraucht --
         # Zustand und Merker liegen im Backend. Das Objekt muss es trotzdem
         # geben, weil die Bibliothek beides zusammen haelt; verbunden wird es
         # nie.
         return SwarmQ(broker=RabbitMQBroker(self._broker_url), backend=backend)
-
-    async def connect(self) -> Any:
-        """Verbindung aufbauen und die App liefern. Idempotent. Wirft benannt.
-
-        Traege wie der Ergebnisleser: verbunden wird erst beim ersten Lesen
-        oder Stornieren.
-        """
-        if self._app is not None:
-            return self._app
-        async with self._verbindungsriegel:
-            # Nach dem Warten erneut pruefen: wer vorher dran war, hat
-            # vielleicht schon verbunden -- oder gesperrt.
-            if self._app is not None:
-                return self._app
-            if self._uhr() < self._gesperrt_bis:
-                raise StreamUnavailable(self._grund)
-            try:
-                self._app = await self._verbinden()
-            except Exception as exc:
-                self._sperren(f"das Backend ist nicht erreichbar: {exc}")
-                raise StreamUnavailable(self._grund) from exc
-            return self._app
-
-    async def close(self) -> None:
-        """Die Verbindung verwerfen. Wirft nie.
-
-        Gehoert in die Schliessliste von ``Services.shutdown()``, wie der
-        Ergebnisleser: ohne das leckt je Lebenszyklus eine Verbindung.
-        """
-        app, self._app = self._app, None
-        schliessen = getattr(app, "close", None)
-        if schliessen is not None:
-            try:
-                await schliessen()
-            except Exception:
-                pass
-        if self._client is not None:
-            try:
-                await self._client.aclose()
-            except Exception:
-                pass
-            self._client = None
-
-    def _sperren(self, grund: str) -> None:
-        """Fuer ``SPERRE_S`` nicht mehr waehlen, mit diesem Grund."""
-        self._grund = grund
-        self._gesperrt_bis = self._uhr() + SPERRE_S
-
-    async def _ausfall(self, exc: Exception) -> str:
-        """Die Leitung ist mitten im Aufruf weggebrochen: schliessen, sperren.
-
-        Hier -- und nicht nur beim Verbindungsaufbau -- muss die Sperre
-        greifen. Stirbt das Backend nach dem Verbinden, kehrte ``connect()``
-        sonst weiter sofort zurueck, und jeder Aufruf liefe in die volle Frist.
-        """
-        await self.close()
-        self._sperren(f"das Backend ist nicht erreichbar: {exc}")
-        return self._grund
 
     async def lesen(self, workflow_id: str) -> Workflowbild:
         """Den Zustand holen und als Bild zurueckgeben."""

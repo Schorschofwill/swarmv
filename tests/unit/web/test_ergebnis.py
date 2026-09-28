@@ -27,10 +27,19 @@ Sperrfrist (KTD1):
  12. [x] nach gescheitertem Verbinden wird innerhalb der Frist nicht gewaehlt
  13. [x] nach gescheitertem **Lesen** wird gar nicht mehr zugegriffen
  14. [x] nach Ablauf der Frist wird wieder versucht
+
+Gemeinsame Basis (Aufraeumen U3; R1, R2):
+ 15. [x] zwei gleichzeitige erste Lesungen bauen genau eine Verbindung
+ 16. [x] scheitert der ``ping()`` des eigenen Klienten, wird er genau einmal
+         geschlossen und nicht behalten
+ 17. [x] nach gescheitertem Aufbau steht der bisherige Sperrtext da
+ 18. [x] ``close()`` vertraegt eine App mit synchronem und mit asynchronem
+         ``close``
 """
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -365,3 +374,133 @@ async def test_nach_ablauf_der_frist_wird_wieder_versucht() -> None:
 
     assert len(versuche) == 2, "nach Ablauf der Frist wurde nicht erneut gewaehlt"
     assert bild.zustand == "da"
+
+
+class _WartendesVerbinden:
+    """Ein Verbindungsaufbau, der haengt, bis der Test ihn freigibt."""
+
+    def __init__(self, app: Any) -> None:
+        self._app = app
+        self.versuche = 0
+        self.begonnen = asyncio.Event()
+        self.frei = asyncio.Event()
+
+    async def __call__(self) -> Any:
+        self.versuche += 1
+        self.begonnen.set()
+        await self.frei.wait()
+        return self._app
+
+
+@pytest.mark.timeout(5)
+async def test_zwei_gleichzeitige_erste_lesungen_bauen_eine_verbindung() -> None:
+    """R1: Workflow-Detail und Glieder-Seite lesen nebenlaeufig. Ohne Riegel
+    baute jede erste Lesung einen eigenen Klienten, und ``close()``
+    schloesse nur den letzten -- die anderen leckten."""
+    verbinden = _WartendesVerbinden(_App({"pid": 1}))
+    leser = SwarmQErgebnisleser("amqp://x", "valkey://x", verbinden=verbinden, uhr=_Uhr())
+
+    erste = asyncio.create_task(leser.lesen("t1"))
+    zweite = asyncio.create_task(leser.lesen("t2"))
+    await verbinden.begonnen.wait()
+    verbinden.frei.set()
+    bilder = await asyncio.gather(erste, zweite)
+
+    assert verbinden.versuche == 1
+    assert [b.zustand for b in bilder] == ["da", "da"]
+
+
+class _KlientOhnePing:
+    """Ein Valkey-Klient, dessen ``ping()`` scheitert."""
+
+    def __init__(self) -> None:
+        self.geschlossen = 0
+
+    async def ping(self) -> None:
+        raise ConnectionError("Port 6399 zu")
+
+    async def aclose(self) -> None:
+        self.geschlossen += 1
+
+
+@pytest.mark.timeout(5)
+async def test_ein_gescheiterter_ping_schliesst_den_eigenen_klienten(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """R1: Der Klient wird erst nach dem ``ping()`` behalten. Scheitert er,
+    wird er sofort geschlossen -- und ``close()`` schliesst ihn nicht ein
+    zweites Mal. Vorher blieb er offen liegen, bis zufaellig jemand
+    ``close()`` rief."""
+    import valkey.asyncio
+
+    klient = _KlientOhnePing()
+    monkeypatch.setattr(valkey.asyncio.Valkey, "from_url", lambda *a, **k: klient)
+    leser = SwarmQErgebnisleser("amqp://x", "valkey://x", uhr=_Uhr())
+
+    bild = await leser.lesen("t1")
+    assert bild.zustand == "nicht_erreichbar"
+    assert klient.geschlossen == 1
+
+    await leser.close()
+    assert klient.geschlossen == 1
+
+
+@pytest.mark.timeout(5)
+async def test_nach_gescheitertem_aufbau_steht_der_bisherige_sperrtext_da() -> None:
+    """R2: Der Wortlaut des Sperrgrunds bleibt -- die Karte spricht vom
+    Backend, beim ersten Versuch wie waehrend der Sperre."""
+    async def verbinden() -> Any:
+        raise OSError("connection refused")
+
+    leser = SwarmQErgebnisleser("amqp://x", "valkey://x", verbinden=verbinden, uhr=_Uhr())
+
+    erstes = await leser.lesen("t1")
+    zweites = await leser.lesen("t2")
+
+    assert erstes.grund == "das Backend ist nicht erreichbar: connection refused"
+    assert zweites.grund == erstes.grund
+
+
+class _SyncSchliessbareApp(_App):
+    """Eine App mit synchronem ``close``."""
+
+    def __init__(self, *, wirft: bool = False) -> None:
+        super().__init__({"pid": 1})
+        self._close_wirft = wirft
+        self.geschlossen = 0
+
+    def close(self) -> None:
+        self.geschlossen += 1
+        if self._close_wirft:
+            raise RuntimeError("schon zu")
+
+
+class _AsyncSchliessbareApp(_SyncSchliessbareApp):
+    """Eine App mit asynchronem ``close``."""
+
+    async def close(self) -> None:  # type: ignore[override]
+        super().close()
+
+
+@pytest.mark.timeout(5)
+@pytest.mark.parametrize("art", [_SyncSchliessbareApp, _AsyncSchliessbareApp],
+                         ids=["synchron", "asynchron"])
+@pytest.mark.parametrize("wirft", [False, True], ids=["sauber", "close_wirft"])
+async def test_close_vertraegt_synchrones_und_asynchrones_close(
+    art: type[_SyncSchliessbareApp], wirft: bool,
+) -> None:
+    """R2: ``close()`` gehoert in die Schliessliste von ``Services.shutdown()``
+    und wirft nie -- gleich, ob die App synchron oder asynchron schliesst.
+    Ein zweites ``close()`` schliesst nicht noch einmal."""
+    app = art(wirft=wirft)
+    leser = SwarmQErgebnisleser("amqp://x", "valkey://x", verbinden=lambda: _sofort(app), uhr=_Uhr())
+    await leser.lesen("t1")
+
+    await leser.close()
+    await leser.close()
+
+    assert app.geschlossen == 1
+
+
+async def _sofort(app: Any) -> Any:
+    return app
