@@ -13,6 +13,7 @@ kein Absturz.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from collections.abc import Awaitable, Callable, Mapping
@@ -183,6 +184,10 @@ class SwarmQWorkflowleser:
         #: Der eigene Klient. Die Bibliothek schliesst einen eingesetzten
         #: Klienten nicht -- das ist ihr Vertrag, und hier unsere Pflicht.
         self._client: Any | None = None
+        #: Der Abgleich liest nebenlaeufig: ohne Riegel baute jede erste
+        #: Lesung einen eigenen Klienten, und ``close()`` schloesse nur den
+        #: letzten.
+        self._verbindungsriegel = asyncio.Lock()
 
     async def _kern_verbinden(self) -> Any:
         """Die Bibliothek auf einem **eigenen** Valkey-Klienten.
@@ -198,13 +203,23 @@ class SwarmQWorkflowleser:
         from swarmq.backend.valkey import ValkeyBackend
         from swarmq.broker.rabbitmq import RabbitMQBroker
 
-        self._client = valkey.asyncio.Valkey.from_url(
+        # Erst lokal: behalten wird der Klient nur, wenn der ``ping()``
+        # durchkommt. Sonst schloesse ihn niemand.
+        client = valkey.asyncio.Valkey.from_url(
             self._backend_url,
             socket_connect_timeout=CONNECT_TIMEOUT_S,
             socket_timeout=CONNECT_TIMEOUT_S,
         )
-        await self._client.ping()
-        backend = ValkeyBackend(client=self._client)
+        try:
+            await client.ping()
+        except BaseException:
+            try:
+                await client.aclose()
+            except Exception:
+                pass
+            raise
+        self._client = client
+        backend = ValkeyBackend(client=client)
         # Der Broker wird weder zum Lesen noch zum Stornieren gebraucht --
         # Zustand und Merker liegen im Backend. Das Objekt muss es trotzdem
         # geben, weil die Bibliothek beides zusammen haelt; verbunden wird es
@@ -219,14 +234,19 @@ class SwarmQWorkflowleser:
         """
         if self._app is not None:
             return self._app
-        if self._uhr() < self._gesperrt_bis:
-            raise StreamUnavailable(self._grund)
-        try:
-            self._app = await self._verbinden()
-        except Exception as exc:
-            self._sperren(f"das Backend ist nicht erreichbar: {exc}")
-            raise StreamUnavailable(self._grund) from exc
-        return self._app
+        async with self._verbindungsriegel:
+            # Nach dem Warten erneut pruefen: wer vorher dran war, hat
+            # vielleicht schon verbunden -- oder gesperrt.
+            if self._app is not None:
+                return self._app
+            if self._uhr() < self._gesperrt_bis:
+                raise StreamUnavailable(self._grund)
+            try:
+                self._app = await self._verbinden()
+            except Exception as exc:
+                self._sperren(f"das Backend ist nicht erreichbar: {exc}")
+                raise StreamUnavailable(self._grund) from exc
+            return self._app
 
     async def close(self) -> None:
         """Die Verbindung verwerfen. Wirft nie.

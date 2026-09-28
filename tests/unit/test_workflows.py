@@ -38,10 +38,17 @@ Stornieren (U1 Punkt 3; R15, R16):
 
 Aufraeumen:
  15. [x] ``close()`` schliesst App und eigenen Klienten und wirft nie
+
+Nebenlaeufigkeit (Review-Befund #10):
+ 16. [x] zwei gleichzeitige erste Lesungen bauen genau eine Verbindung
+ 17. [x] eine gleichzeitige Lesung und ein Storno teilen die eine Verbindung
+ 18. [x] scheitert der ``ping()`` des eigenen Klienten, wird er geschlossen
+         und nicht behalten
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -449,3 +456,91 @@ async def test_close_schliesst_die_app_und_wirft_nie(wirft: bool) -> None:
     await leser.close()
 
     assert app.geschlossen == 1
+
+
+class _WartendesVerbinden:
+    """Ein Verbindungsaufbau, der haengt, bis der Test ihn freigibt."""
+
+    def __init__(self, app: Any) -> None:
+        self._app = app
+        self.versuche = 0
+        self.begonnen = asyncio.Event()
+        self.frei = asyncio.Event()
+
+    async def __call__(self) -> Any:
+        self.versuche += 1
+        self.begonnen.set()
+        await self.frei.wait()
+        return self._app
+
+
+@pytest.mark.timeout(5)
+async def test_zwei_gleichzeitige_erste_lesungen_bauen_eine_verbindung() -> None:
+    """Befund #10: Der Abgleich liest nebenlaeufig. Ohne Riegel baute jede
+    erste Lesung einen eigenen Klienten, und ``close()`` schloesse nur den
+    letzten -- die anderen leckten."""
+    verbinden = _WartendesVerbinden(_App(_Backend(_zustand())))
+    leser = SwarmQWorkflowleser("amqp://x", "valkey://x", verbinden=verbinden, uhr=_Uhr())
+
+    erste = asyncio.create_task(leser.lesen(WF))
+    zweite = asyncio.create_task(leser.lesen(WF))
+    await verbinden.begonnen.wait()
+    verbinden.frei.set()
+    bilder = await asyncio.gather(erste, zweite)
+
+    assert verbinden.versuche == 1
+    assert [b.zustand for b in bilder] == ["gelesen", "gelesen"]
+
+
+@pytest.mark.timeout(5)
+async def test_eine_gleichzeitige_lesung_und_ein_storno_teilen_eine_verbindung() -> None:
+    """Befund #10: ``stornieren()`` geht denselben Verbindungsweg und ist
+    vom selben Riegel geschuetzt."""
+    app = _App(_Backend(_zustand()))
+    verbinden = _WartendesVerbinden(app)
+    leser = SwarmQWorkflowleser("amqp://x", "valkey://x", verbinden=verbinden, uhr=_Uhr())
+
+    lesung = asyncio.create_task(leser.lesen(WF))
+    storno = asyncio.create_task(leser.stornieren(WF))
+    await verbinden.begonnen.wait()
+    verbinden.frei.set()
+    bild, storno_bild = await asyncio.gather(lesung, storno)
+
+    assert verbinden.versuche == 1
+    assert bild.zustand == "gelesen"
+    assert storno_bild.ausgang == "neu_gesetzt"
+    assert app.merker == {WF}
+
+
+class _KlientOhnePing:
+    """Ein Valkey-Klient, dessen ``ping()`` scheitert."""
+
+    def __init__(self) -> None:
+        self.geschlossen = 0
+
+    async def ping(self) -> None:
+        raise ConnectionError("Port 6399 zu")
+
+    async def aclose(self) -> None:
+        self.geschlossen += 1
+
+
+@pytest.mark.timeout(5)
+async def test_ein_gescheiterter_ping_schliesst_den_eigenen_klienten(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Befund #10: Der Klient wird erst nach dem ``ping()`` behalten. Scheitert
+    er, wird er sofort geschlossen -- und ``close()`` schliesst ihn nicht ein
+    zweites Mal."""
+    import valkey.asyncio
+
+    klient = _KlientOhnePing()
+    monkeypatch.setattr(valkey.asyncio.Valkey, "from_url", lambda *a, **k: klient)
+    leser = SwarmQWorkflowleser("amqp://x", "valkey://x", uhr=_Uhr())
+
+    bild = await leser.lesen(WF)
+    assert bild.zustand == "nicht_erreichbar"
+    assert klient.geschlossen == 1
+
+    await leser.close()
+    assert klient.geschlossen == 1
