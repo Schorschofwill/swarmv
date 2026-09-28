@@ -30,7 +30,7 @@ FIELD = "e"
 #: verwirft statt abzulehnen --, und mit ihm der ganze Takt.
 #: Frist fuer den Aufbau **und** fuer jede spaetere Erreichbarkeitspruefung.
 #: Sie muss kuerzer sein als die umschliessende Frist des Dienstes
-#: (``web/app.py``, ``PROBE_TIMEOUT_S``) -- sonst bricht die aeussere die
+#: (``web/services.py``, ``PROBE_TIMEOUT_S``) -- sonst bricht die aeussere die
 #: innere ab, bevor diese aufraeumen kann, und jeder Takt laesst einen
 #: Socket zurueck. Gemessen: 25 Takte, 25 offene Dateizeiger.
 DEFAULT_CONNECT_TIMEOUT_S = 3.0

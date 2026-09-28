@@ -44,7 +44,7 @@ DEAD_LETTER_SUFFIX = "XQ"
 #: einen Server, der TCP annimmt und dann schweigt -- eine Firewall, die
 #: verwirft statt abzulehnen -- unbegrenzt, und mit ihm der ganze Takt.
 #: Frist fuer Aufbau und Pruefung. Kuerzer als die umschliessende Frist des
-#: Dienstes (``web/app.py``, ``PROBE_TIMEOUT_S``): sonst bricht die aeussere
+#: Dienstes (``web/services.py``, ``PROBE_TIMEOUT_S``): sonst bricht die aeussere
 #: die innere ab, bevor sie ihren Kanal schliessen kann -- gemessen 10 Takte,
 #: 10 offene Kanaele, und RabbitMQ laesst je Verbindung nur 2047 zu.
 CONNECT_TIMEOUT_S = 3.0
