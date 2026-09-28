@@ -36,6 +36,10 @@ Test-Liste (AGENTS.md):
 === ZYKLUS 4: Lesen ===
 10. Die Eintraege kommen in Zeitreihenfolge zurueck.
 11. Sie lassen sich nach Konto und nach Aktionsart filtern.
+
+=== ZYKLUS 5: Workflow stornieren (Workflow-Ansicht, U7, KTD12) ===
+12. ``workflow_cancel`` ist eine Aktionsart und laesst sich festhalten und
+    filtern (R15).
 """
 
 from __future__ import annotations
@@ -211,3 +215,18 @@ async def test_eine_unbekannte_aktionsart_wird_abgewiesen() -> None:
     a = AuditLog(FakeStream())
     with pytest.raises(ValueError):
         await a.record("gibtesnicht", account="ops", now=100.0)
+
+
+# --- Zyklus 5 -----------------------------------------------------------
+
+
+async def test_workflow_cancel_ist_eine_aktionsart() -> None:
+    """R15: das Stornieren eines Workflows ist ein Audit-Ereignis. Die Liste
+    waechst erst nach diesem roten Test (KTD12)."""
+    s = FakeStream()
+    a = AuditLog(s)
+    assert await a.record("workflow_cancel", account="ops", target="wf-1",
+                          outcome="lief bereits", now=100.0) is True
+    (eintrag,) = await a.read(action="workflow_cancel")
+    assert eintrag.target == "wf-1"
+    assert eintrag.outcome == "lief bereits"

@@ -85,6 +85,7 @@ from swarmq_dashboard.web.routes.workflows import (
     workflow_detail,
     workflow_glieder,
     workflow_liste,
+    workflow_stornieren,
 )
 from swarmq_dashboard.web.stream import LIVE_CHANNEL, LivePublisher, live
 from swarmq_dashboard.web.templates import render, statische_dateien, template_config
@@ -994,7 +995,7 @@ def create_app(
                         sollwert_setzen, sollwert_aufheben,
                         probe_formular, probe_senden,
                         dlq_uebersicht, sichten, workflow_liste, workflow_detail,
-                        workflow_glieder,
+                        workflow_glieder, workflow_stornieren,
                         wiedereinreihen, alle_wiedereinreihen, leeren,
                         statische_dateien()],
         template_config=template_config(),

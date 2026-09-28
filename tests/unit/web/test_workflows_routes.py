@@ -58,10 +58,34 @@ Test-Liste (AGENTS.md):
 
 === ZYKLUS 5: Zugang ===
 20. Ohne Sitzung liefern Liste, Detail und Glieder keine Daten.
+
+=== ZYKLUS 6: Workflow stornieren (U7, R15, R16, KTD9) ===
+21. Ein laufender Workflow bietet "Workflow stornieren" mit
+    Bestaetigungsformular und dem Hinweis zur Wirkung (R16).
+22. Covers AE9. Ein fertiger Workflow bietet den Knopf nicht an.
+23. Covers F3. Bestaetigt: frische Lesung vor dem Aufruf, Vermerk gesetzt,
+    Audit "ok", die Ansicht zeigt "Stornierung angefordert" und die Wirkung.
+24. Covers AE8. Ein zweites Stornieren meldet die bestehende Anforderung,
+    Audit "lief bereits", kein Fehler.
+25. Covers AE10. Die frische Lesung ergibt "completed": "nicht mehr
+    stornierbar", kein Aufruf von cancel, kein Audit-Eintrag.
+26. Der Zustand ist verschwunden (Lesung "fehlt" oder cancel "nicht
+    gefunden"): "nicht mehr stornierbar", kein Audit-Eintrag.
+27. Backend nicht erreichbar (bei der Lesung oder beim cancel): Hinweis,
+    Audit "fehlgeschlagen", kein Vermerk.
+28. Ohne Bestaetigungsfeld wird nichts storniert.
+29. Ohne CSRF-Merkmal wird die Anfrage abgewiesen.
+30. Ein unbekannter Workflow ergibt eine 404 ohne Aufruf von cancel.
+31. Nach dem Vermerk stoesst die Route eine Lesung des Workflows an, damit
+    die Ansicht schnell nachzieht.
+32. Covers F3. Nach dem Stornieren und dem Abbruch aller wartenden Glieder
+    zeigt die Ansicht "Stornierung angefordert, nichts mehr aktiv" und
+    keinen Knopf.
 """
 
 from __future__ import annotations
 
+import asyncio
 import re
 from collections.abc import Mapping
 from pathlib import Path
@@ -198,16 +222,16 @@ class _Zaehlleser:
 
 
 async def _angemeldet(config: DashboardConfig, *, ergebnisleser: object | None = None,
-                      ) -> Any:
+                      workflowleser: object | None = None, mit_app: bool = False) -> Any:
     app = create_app(config, hasher=_BILLIG, ergebnisleser=ergebnisleser,  # type: ignore[arg-type]
-                     workflowleser=_StillerLeser())
+                     workflowleser=workflowleser or _StillerLeser())  # type: ignore[arg-type]
     c = AsyncTestClient(app=app, base_url=BASIS)
     await c.__aenter__()
     seite = await c.get("/login")
     merkmal = re.search(r'name="?_csrf_token"?\s+value="([^"]*)"', seite.text).group(1)  # type: ignore[union-attr]
     await c.post("/login", data={"account": "ops", "password": _PASSWORT,
                                  "_csrf_token": merkmal}, follow_redirects=False)
-    return c
+    return (c, app) if mit_app else c
 
 
 def _zeile(html: str, kennung: str) -> str:
@@ -697,3 +721,423 @@ async def test_ohne_sitzung_keine_daten(tmp_path: Path) -> None:
             antwort = await c.get(pfad, follow_redirects=False)
             assert antwort.status_code in (401, 303), (pfad, antwort.status_code)
             assert wf not in antwort.text and "geheim_task" not in antwort.text
+
+
+# --- Zyklus 6 -----------------------------------------------------------
+
+
+class _StornoLeser:
+    """Workflowleser, der sich beim Stornieren wie die Bibliothek verhaelt.
+
+    ``lesen`` liefert ``bild`` -- die Tests setzen es passend zur Kopie, damit
+    der Abgleich beim Start nichts umschreibt. ``stornieren`` setzt den
+    Merker beim ersten Mal (``neu_gesetzt``) und findet ihn danach gesetzt
+    (``schon_gesetzt``); ohne Zustand gibt es ihn nicht (``nicht_gefunden``).
+    """
+
+    def __init__(self, bild: Workflowbild, *, storno_erreichbar: bool = True) -> None:
+        self.bild = bild
+        self.storno_erreichbar = storno_erreichbar
+        #: Verfaellt der Zustand zwischen Lesung und cancel, findet die
+        #: Bibliothek ihn nicht mehr.
+        self.verfaellt_vor_storno = False
+        self.merker = False
+        self.aufrufe: list[tuple[str, str]] = []
+        #: Gesetzt, sobald nach einem cancel noch einmal gelesen wird.
+        self.nachgelesen = asyncio.Event()
+
+    async def lesen(self, workflow_id: str) -> Workflowbild:
+        if ("stornieren", workflow_id) in self.aufrufe:
+            self.nachgelesen.set()
+        self.aufrufe.append(("lesen", workflow_id))
+        return self.bild
+
+    async def stornieren(self, workflow_id: str) -> Stornobild:
+        self.aufrufe.append(("stornieren", workflow_id))
+        if not self.storno_erreichbar:
+            return Stornobild(ausgang="nicht_erreichbar", grund="Valkey ist weg")
+        if self.bild.zustand == "fehlt" or self.verfaellt_vor_storno:
+            return Stornobild(ausgang="nicht_gefunden")
+        if self.merker:
+            return Stornobild(ausgang="schon_gesetzt")
+        self.merker = True
+        return Stornobild(ausgang="neu_gesetzt")
+
+    @property
+    def stornos(self) -> list[str]:
+        return [wf for art, wf in self.aufrufe if art == "stornieren"]
+
+    async def close(self) -> None:
+        return None
+
+
+class _Auditspeicher:
+    """Ein Audit-Strom im Arbeitsspeicher, fuer Zusicherungen ohne Valkey."""
+
+    def __init__(self) -> None:
+        self.eintraege: list[tuple[str, bytes]] = []
+
+    async def xadd_batch(self, key: str, events: list[bytes], maxlen: int) -> None:
+        self.eintraege.extend((f"{i}-0", w) for i, w in enumerate(events, len(self.eintraege) + 1))
+
+    async def read_after(self, key: str, last_id: str, count: int) -> list[tuple[str, bytes]]:
+        return self.eintraege[:count]
+
+    async def trim_by_min_id(self, key: str, min_ms: int) -> int:
+        return 0
+
+
+_DOWNLOADS = _gruppe(_sig_top("download"), _sig_top("download"))
+
+
+def _laufender_workflow(config: DashboardConfig, wf: str) -> Workflowbild:
+    """Eine Gruppe mit zwei Downloads, einer laeuft, einer wartet in der
+    Queue. Gibt das Bild zurueck, das eine Lesung jetzt lieferte."""
+    v = _Verzeichnis(config)
+    step_tasks = {"/g0": f"{wf}#/g0", "/g1": f"{wf}#/g1"}
+    v.schritt(wf, "/g0", 1_700_000_000.0, "task_started")
+    v.schritt(wf, "/g1", 1_700_000_010.0)
+    v.lesung(wf, _DOWNLOADS, step_tasks=step_tasks)
+    v.close()
+    return Workflowbild(zustand="gelesen", status="running", form="gruppe",
+                        topologie=_DOWNLOADS, step_tasks=step_tasks)
+
+
+async def _mit_audit(config: DashboardConfig, leser: _StornoLeser) -> tuple[Any, Any]:
+    from swarmq_dashboard.audit import AuditLog
+
+    c, app = await _angemeldet(config, workflowleser=leser, mit_app=True)
+    # Die Einstellung zeigt auf tote Ports; ohne Strom waere das Audit leer,
+    # und jede Zusicherung darauf hielte trivial.
+    app.state.services.audit = AuditLog(_Auditspeicher())
+    return c, app
+
+
+async def _stornieren(c: Any, wf: str, *, bestaetigt: bool = True) -> Any:
+    daten = {"bestaetigt": "stornieren"} if bestaetigt else {}
+    return await c.post(f"/workflows/{wf}/cancel", data=daten,
+                        headers={"x-csrftoken": str(c.cookies.get("csrftoken"))},
+                        follow_redirects=False)
+
+
+async def _workflow_audit(app: Any) -> list[Any]:
+    return [e for e in await app.state.services.audit.read() if e.action == "workflow_cancel"]
+
+
+def _vermerk(app: Any, wf: str) -> float | None:
+    zeile = app.state.services.services_directory_writer.workflow(wf)
+    return None if zeile is None else zeile["cancel_requested_at"]
+
+
+WIRKUNG = "noch nicht aufgegriffene Schritte werden beim Aufgreifen abgebrochen"
+
+
+async def test_ein_laufender_workflow_bietet_stornieren_mit_bestaetigung(tmp_path: Path) -> None:
+    """R15, R16: der Knopf, eine Bestaetigung und vorher der Satz zur Wirkung."""
+    config = _config(tmp_path)
+    wf = _wf(1)
+    leser = _StornoLeser(_laufender_workflow(config, wf))
+    c = await _angemeldet(config, workflowleser=leser)
+    try:
+        seite = (await c.get(f"/workflows/{wf}")).text
+        formular = re.search(rf'<form method="post" action="/workflows/{wf}/cancel">.*?</form>',
+                             seite, re.S)
+        assert formular, "kein Storno-Formular"
+        assert 'name="bestaetigt" value="stornieren"' in formular.group(0)
+        assert 'name="_csrf_token"' in formular.group(0)
+        assert "Workflow stornieren" in seite
+        text = _text(seite)
+        assert WIRKUNG in text
+        assert "laufende Schritte laufen zu Ende" in text
+        assert "danach wird nichts mehr eingereiht" in text
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+async def test_ein_fertiger_workflow_bietet_keinen_knopf(tmp_path: Path) -> None:
+    """Covers AE9. Ein Endstatus aus der Lesung: nichts mehr zu stornieren."""
+    config = _config(tmp_path)
+    wf = _wf(1)
+    v = _Verzeichnis(config)
+    step_tasks = {"/g0": f"{wf}#/g0", "/g1": f"{wf}#/g1"}
+    v.schritt(wf, "/g0", 1_700_000_000.0, "task_started", "task_completed")
+    v.schritt(wf, "/g1", 1_700_000_010.0, "task_started", "task_completed")
+    v.lesung(wf, _DOWNLOADS, status="completed", step_tasks=step_tasks)
+    v.close()
+    leser = _StornoLeser(Workflowbild(zustand="gelesen", status="completed", form="gruppe",
+                                      topologie=_DOWNLOADS, step_tasks=step_tasks))
+    c = await _angemeldet(config, workflowleser=leser)
+    try:
+        seite = (await c.get(f"/workflows/{wf}")).text
+        assert "fertig" in _text(seite)
+        assert "Workflow stornieren" not in seite
+        assert f"/workflows/{wf}/cancel" not in seite
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+async def test_stornieren_setzt_vermerk_und_audit_ok(tmp_path: Path) -> None:
+    """Covers F3. Frische Lesung, dann cancel, dann der Vermerk vor dem Audit
+    (KTD9); die Ansicht zeigt "Stornierung angefordert" und die Wirkung."""
+    config = _config(tmp_path)
+    wf = _wf(1)
+    leser = _StornoLeser(_laufender_workflow(config, wf))
+    c, app = await _mit_audit(config, leser)
+    try:
+        leser.aufrufe.clear()
+        antwort = await _stornieren(c, wf)
+        assert antwort.status_code == 303
+        assert antwort.headers["location"] == f"/workflows/{wf}?hinweis=angefordert"
+        assert leser.aufrufe[:2] == [("lesen", wf), ("stornieren", wf)], \
+            "vor dem cancel wird nicht frisch gelesen"
+        assert _vermerk(app, wf) is not None
+        (eintrag,) = await _workflow_audit(app)
+        assert (eintrag.account, eintrag.target, eintrag.outcome) == ("ops", wf, "ok")
+
+        seite = await c.get(antwort.headers["location"])
+        text = _text(seite.text)
+        assert "Stornierung angefordert" in text
+        assert WIRKUNG in text
+        assert "notice is-fail" not in seite.text
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+async def test_ein_zweites_stornieren_meldet_die_bestehende_anforderung(tmp_path: Path) -> None:
+    """Covers AE8. Jemand war schneller: eine Auskunft, kein Fehler. Der
+    Zeitpunkt der ersten Anforderung bleibt."""
+    config = _config(tmp_path)
+    wf = _wf(1)
+    leser = _StornoLeser(_laufender_workflow(config, wf))
+    c, app = await _mit_audit(config, leser)
+    try:
+        await _stornieren(c, wf)
+        erster = _vermerk(app, wf)
+        zweite = await _stornieren(c, wf)
+        assert zweite.status_code == 303
+        assert zweite.headers["location"] == f"/workflows/{wf}?hinweis=bestehend"
+        assert leser.stornos == [wf, wf]
+        assert _vermerk(app, wf) == erster
+        assert [e.outcome for e in await _workflow_audit(app)] == ["ok", "lief bereits"]
+
+        seite = await c.get(zweite.headers["location"])
+        text = _text(seite.text)
+        assert "bereits angefordert" in text
+        assert "Stornierung angefordert" in text
+        assert "notice is-fail" not in seite.text
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+async def test_ein_inzwischen_fertiger_workflow_ist_nicht_mehr_stornierbar(
+        tmp_path: Path) -> None:
+    """Covers AE10. Der Knopf stand noch da; die frische Lesung vor dem
+    Aufruf ergibt "completed". Kein cancel, kein Audit-Eintrag (R15)."""
+    config = _config(tmp_path)
+    wf = _wf(1)
+    laeuft = _laufender_workflow(config, wf)
+    leser = _StornoLeser(laeuft)
+    c, app = await _mit_audit(config, leser)
+    try:
+        assert "Workflow stornieren" in (await c.get(f"/workflows/{wf}")).text
+        leser.bild = Workflowbild(zustand="gelesen", status="completed", form="gruppe",
+                                  topologie=laeuft.topologie, step_tasks=laeuft.step_tasks)
+        antwort = await _stornieren(c, wf)
+        assert antwort.status_code == 303
+        assert antwort.headers["location"] == f"/workflows/{wf}?hinweis=nicht_stornierbar"
+        assert leser.stornos == []
+        assert await _workflow_audit(app) == []
+        assert _vermerk(app, wf) is None
+
+        seite = await c.get(antwort.headers["location"])
+        assert "nicht mehr stornierbar" in _text(seite.text)
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+async def test_ein_verschwundener_zustand_ist_nicht_mehr_stornierbar(tmp_path: Path) -> None:
+    """Der Zustand ist bei der frischen Lesung fort: nichts zu stornieren,
+    kein Audit-Eintrag (R15)."""
+    config = _config(tmp_path)
+    wf = _wf(1)
+    leser = _StornoLeser(_laufender_workflow(config, wf))
+    c, app = await _mit_audit(config, leser)
+    try:
+        leser.bild = Workflowbild(zustand="fehlt")
+        antwort = await _stornieren(c, wf)
+        assert antwort.headers["location"] == f"/workflows/{wf}?hinweis=nicht_stornierbar"
+        assert leser.stornos == []
+        assert await _workflow_audit(app) == []
+        assert _vermerk(app, wf) is None
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+async def test_verfaellt_der_zustand_vor_dem_cancel_ist_nichts_zu_stornieren(
+        tmp_path: Path) -> None:
+    """Die Lesung sah ihn noch, der Aufruf findet ihn nicht mehr: wie ein
+    Endstatus -- kein Vermerk, kein Audit-Eintrag (R15)."""
+    config = _config(tmp_path)
+    wf = _wf(1)
+    leser = _StornoLeser(_laufender_workflow(config, wf))
+    leser.verfaellt_vor_storno = True
+    c, app = await _mit_audit(config, leser)
+    try:
+        antwort = await _stornieren(c, wf)
+        assert antwort.headers["location"] == f"/workflows/{wf}?hinweis=nicht_stornierbar"
+        assert leser.stornos == [wf]
+        assert await _workflow_audit(app) == []
+        assert _vermerk(app, wf) is None
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+async def test_ein_nicht_erreichbares_backend_bei_der_lesung_wird_benannt(
+        tmp_path: Path) -> None:
+    """Ohne Lesung weiss niemand, ob der Workflow noch laeuft: kein cancel,
+    kein Vermerk, aber ein Audit-Eintrag "fehlgeschlagen" -- der Versuch
+    fand statt."""
+    config = _config(tmp_path)
+    wf = _wf(1)
+    leser = _StornoLeser(_laufender_workflow(config, wf))
+    c, app = await _mit_audit(config, leser)
+    try:
+        leser.bild = Workflowbild(zustand="nicht_erreichbar", grund="Valkey ist weg")
+        antwort = await _stornieren(c, wf)
+        assert antwort.headers["location"] == f"/workflows/{wf}?hinweis=backend"
+        assert leser.stornos == []
+        assert _vermerk(app, wf) is None
+        (eintrag,) = await _workflow_audit(app)
+        assert eintrag.outcome == "fehlgeschlagen"
+        assert eintrag.detail == "Valkey ist weg"
+
+        seite = await c.get(antwort.headers["location"])
+        assert "notice is-fail" in seite.text
+        assert "nicht angefordert" in _text(seite.text)
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+async def test_ein_ausfall_beim_cancel_setzt_keinen_vermerk(tmp_path: Path) -> None:
+    """Die Lesung gelang, der Aufruf nicht: "fehlgeschlagen", kein Vermerk --
+    sonst zeigte die Ansicht eine Anforderung, die nie ankam."""
+    config = _config(tmp_path)
+    wf = _wf(1)
+    leser = _StornoLeser(_laufender_workflow(config, wf), storno_erreichbar=False)
+    c, app = await _mit_audit(config, leser)
+    try:
+        antwort = await _stornieren(c, wf)
+        assert antwort.headers["location"] == f"/workflows/{wf}?hinweis=backend"
+        assert leser.stornos == [wf]
+        assert _vermerk(app, wf) is None
+        (eintrag,) = await _workflow_audit(app)
+        assert (eintrag.outcome, eintrag.detail) == ("fehlgeschlagen", "Valkey ist weg")
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+async def test_ohne_bestaetigung_wird_nichts_storniert(tmp_path: Path) -> None:
+    """Ein Knopf allein ist ein Fehlklick: ohne Bestaetigungsfeld weder
+    Lesung noch cancel, kein Vermerk, kein Audit-Eintrag."""
+    config = _config(tmp_path)
+    wf = _wf(1)
+    leser = _StornoLeser(_laufender_workflow(config, wf))
+    c, app = await _mit_audit(config, leser)
+    try:
+        antwort = await _stornieren(c, wf, bestaetigt=False)
+        assert antwort.status_code == 303
+        assert antwort.headers["location"] == f"/workflows/{wf}?hinweis=unbestaetigt"
+        assert leser.stornos == []
+        assert _vermerk(app, wf) is None
+        assert await _workflow_audit(app) == []
+        seite = await c.get(antwort.headers["location"])
+        assert "Bestätigung fehlte" in _text(seite.text)
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+async def test_ohne_csrf_merkmal_wird_abgewiesen(tmp_path: Path) -> None:
+    """Der globale CSRF-Schutz gilt auch hier: ohne Merkmal kein cancel."""
+    config = _config(tmp_path)
+    wf = _wf(1)
+    leser = _StornoLeser(_laufender_workflow(config, wf))
+    c, app = await _mit_audit(config, leser)
+    try:
+        antwort = await c.post(f"/workflows/{wf}/cancel", data={"bestaetigt": "stornieren"},
+                               follow_redirects=False)
+        assert antwort.status_code == 403
+        assert leser.stornos == []
+        assert _vermerk(app, wf) is None
+        assert await _workflow_audit(app) == []
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+async def test_ein_unbekannter_workflow_wird_nicht_storniert(tmp_path: Path) -> None:
+    """Nur was die Ansicht zeigt, laesst sich stornieren: ein unbekannter
+    oder unbestaetigter Workflow ergibt eine 404, ohne Aufruf."""
+    config = _config(tmp_path)
+    wf = _wf(1)
+    leser = _StornoLeser(_laufender_workflow(config, wf))
+    c, app = await _mit_audit(config, leser)
+    try:
+        antwort = await _stornieren(c, _wf(7))
+        assert antwort.status_code == 404
+        assert leser.stornos == []
+        assert await _workflow_audit(app) == []
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+async def test_nach_dem_vermerk_wird_der_workflow_nachgelesen(tmp_path: Path) -> None:
+    """Die Ansicht soll nicht bis zum naechsten Takt auf dem alten Stand
+    stehen: nach dem cancel stoesst die Route eine Lesung an (KTD3)."""
+    config = _config(tmp_path)
+    wf = _wf(1)
+    leser = _StornoLeser(_laufender_workflow(config, wf))
+    c, _app = await _mit_audit(config, leser)
+    try:
+        await _stornieren(c, wf)
+        await asyncio.wait_for(leser.nachgelesen.wait(), timeout=2.0)
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+async def test_nach_dem_abbruch_aller_wartenden_ist_nichts_mehr_aktiv(tmp_path: Path) -> None:
+    """Covers F3. Alle Downloads warteten noch in der Queue; nach dem
+    Stornieren brechen die Worker sie beim Aufgreifen ab. Die Bibliothek
+    schreibt dann nie "cancelled" -- die Ansicht zeigt "Stornierung
+    angefordert, nichts mehr aktiv", keinen Endstatus und keinen Knopf (R16)."""
+    config = _config(tmp_path)
+    wf = _wf(1)
+    v = _Verzeichnis(config)
+    step_tasks = {"/g0": f"{wf}#/g0", "/g1": f"{wf}#/g1"}
+    v.schritt(wf, "/g0", 1_700_000_000.0)
+    v.schritt(wf, "/g1", 1_700_000_010.0)
+    v.lesung(wf, _DOWNLOADS, step_tasks=step_tasks)
+    v.close()
+    leser = _StornoLeser(Workflowbild(zustand="gelesen", status="running", form="gruppe",
+                                      topologie=_DOWNLOADS, step_tasks=step_tasks))
+    c, app = await _mit_audit(config, leser)
+    try:
+        await _stornieren(c, wf)
+        worker = _Verzeichnis(config)
+        worker._n = 100
+        for pfad in ("/g0", "/g1"):
+            worker._apply(Event(type="task_cancelled", ts=1_700_000_100.0, source="phx-w1:0",
+                                origin=Origin.PICKUP,
+                                payload={"task_id": f"{wf}#{pfad}", "task_name": "download",
+                                         "queue": "wf"}))
+        worker.close()
+
+        seite = await c.get(f"/workflows/{wf}")
+        text = _text(seite.text)
+        assert "Stornierung angefordert, nichts mehr aktiv" in text
+        # Die Glieder tragen "storniert" zu Recht; der Workflow nicht (R6).
+        status = re.search(r"<dt>Status</dt><dd>(.*?)</dd>", seite.text, re.S)
+        assert status
+        assert _text(status.group(1)) == "Stornierung angefordert, nichts mehr aktiv"
+        assert f"/workflows/{wf}/cancel" not in seite.text
+        assert [e.outcome for e in await _workflow_audit(app)] == ["ok"]
+    finally:
+        await c.__aexit__(None, None, None)

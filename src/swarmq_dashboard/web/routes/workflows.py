@@ -1,4 +1,4 @@
-"""Workflow-Liste, Baum und fertige Glieder (Workflow-Ansicht, U6).
+"""Workflow-Liste, Baum, fertige Glieder und Stornieren (Workflow-Ansicht, U6, U7).
 
 Der Hauptfluss (F1, F2): ein Teammitglied oeffnet Workflows, sieht Status
 und Fortschritt, oeffnet den Workflow und findet im Baum das schuldige
@@ -19,15 +19,17 @@ from __future__ import annotations
 
 import time
 from collections.abc import Iterable, Iterator
-from typing import Any
-from urllib.parse import urlencode
+from typing import Annotated, Any
+from urllib.parse import quote, urlencode
 
-from litestar import Request, get
+from litestar import Request, get, post
+from litestar.enums import RequestEncodingType
 from litestar.exceptions import NotFoundException
-from litestar.params import FromPath
-from litestar.response import Template
+from litestar.params import Body, FromPath
+from litestar.response import Redirect, Template
 
 from swarmq_dashboard.directory.queries import Workflowfilter
+from swarmq_dashboard.directory.writer import ENDSTATUS
 from swarmq_dashboard.web.auth import SESSION_ACCOUNT_KEY
 from swarmq_dashboard.web.ergebnis import Ergebnisbild
 from swarmq_dashboard.web.routes.tasks import BEENDET, ZEITRAEUME, _abfragen, _zahl
@@ -210,6 +212,7 @@ async def workflow_detail(request: Request[Any, Any, Any],
             first_seen_at=detail.first_seen_at,
             last_seen_at=detail.last_seen_at,
             gelesen_at=detail.kopie.gelesen_at,
+            hinweis=request.query_params.get("hinweis"),
             ergebnisse=await _ergebnisse(request, _sichtbare_kopfglieder(baum.wurzel)),
             jetzt=time.time(),
         ),
@@ -244,3 +247,80 @@ async def workflow_glieder(request: Request[Any, Any, Any],
             jetzt=time.time(),
         ),
     )
+
+
+@post("/workflows/{workflow_id:str}/cancel")
+async def workflow_stornieren(
+    request: Request[Any, Any, Any],
+    workflow_id: FromPath[str],
+    data: Annotated[dict[str, Any], Body(media_type=RequestEncodingType.URL_ENCODED)],
+) -> Redirect:
+    """Den ganzen Workflow stornieren (R15, R16, KTD9).
+
+    Jeder Ausgang hat einen benannten Hinweis, und keiner ist ein Absturz:
+
+    * Endstatus oder verschwundener Zustand: "nicht mehr stornierbar", ohne
+      Aufruf und **ohne** Audit-Eintrag (R15, AE10) -- es wurde nichts
+      getan, also gibt es nichts festzuhalten.
+    * Backend nicht erreichbar: benannt, Audit "fehlgeschlagen", kein
+      Vermerk. Die Ansicht darf dann nicht behaupten, die Stornierung sei
+      angefordert.
+    * Merker neu gesetzt: Vermerk, dann Audit "ok".
+    * Merker schon gesetzt: eine Auskunft, kein Fehler (AE8) -- Audit "lief
+      bereits".
+    """
+    ziel = f"/workflows/{quote(workflow_id, safe='')}"
+    services = request.app.state.services
+    konto = str(request.session.get(SESSION_ACCOUNT_KEY, "unbekannt"))
+
+    def zurueck(hinweis: str) -> Redirect:
+        # Post/Redirect/Get wie bei den DLQ-Aktionen: F5 schickte sonst das
+        # Formular erneut, und ``live.js`` frischte auf eine reine POST-Route auf.
+        return Redirect(f"{ziel}?hinweis={hinweis}", status_code=303)
+
+    async def fehlgeschlagen(grund: str | None) -> Redirect:
+        await services.audit.record("workflow_cancel", account=konto, target=workflow_id,
+                                    outcome="fehlgeschlagen", detail=grund)
+        return zurueck("backend")
+
+    schreiber = services.services_directory_writer
+    if schreiber is None:
+        raise NotFoundException(detail="das Verzeichnis ist nicht geöffnet")
+    zeile = schreiber.workflow(workflow_id)
+    if zeile is None or not zeile["bestaetigt"]:
+        # Nur was die Ansicht zeigt, laesst sich stornieren: ein Kandidat aus
+        # dem Muster ist noch kein Workflow (KTD5).
+        raise NotFoundException(detail=f"Kein Workflow mit der Kennung {workflow_id!r}.")
+
+    # Die Bestaetigung wie bei den DLQ-Aktionen: die Wirkung ist zu gross fuer
+    # einen Fehlklick, und ein Knopf allein ist ein Fehlklick.
+    if str(data.get("bestaetigt", "")) != "stornieren":
+        return zurueck("unbestaetigt")
+
+    # Frisch gelesen, unmittelbar vor dem Aufruf (KTD9): zwischen Klick und
+    # Bestaetigung kann der Workflow geendet haben (AE10).
+    bild = await services.workflowleser.lesen(workflow_id)
+    if bild.zustand == "fehlt" or (bild.zustand == "gelesen" and bild.status in ENDSTATUS):
+        return zurueck("nicht_stornierbar")
+    if bild.zustand == "nicht_erreichbar":
+        return await fehlgeschlagen(bild.grund)
+
+    storno = await services.workflowleser.stornieren(workflow_id)
+    if storno.ausgang == "nicht_gefunden":
+        # Zwischen Lesung und Aufruf verfallen: wie ein Endstatus.
+        return zurueck("nicht_stornierbar")
+    if storno.ausgang not in ("neu_gesetzt", "schon_gesetzt"):
+        return await fehlgeschlagen(storno.grund)
+
+    neu = storno.ausgang == "neu_gesetzt"
+    # Der Vermerk vor dem Audit, wie ``mark_cancel_requested`` fuer Tasks.
+    # Auch bei "schon gesetzt": die Anforderung kann von einer anderen
+    # Instanz stammen; ein bestehender Zeitpunkt bleibt (AE8).
+    schreiber.vermerke_workflow_storno(workflow_id, jetzt=time.time())
+    await services.audit.record("workflow_cancel", account=konto, target=workflow_id,
+                                outcome="ok" if neu else "lief bereits")
+    # Sofort und kurz darauf lesen, wie nach einem Ergebnis-Ereignis (KTD3):
+    # sonst stuende die Ansicht bis zum naechsten Takt auf dem alten Stand.
+    if services.abgleich is not None:
+        services.abgleich.anstossen(workflow_id)
+    return zurueck("angefordert" if neu else "bestehend")

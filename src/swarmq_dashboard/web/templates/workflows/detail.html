@@ -8,6 +8,33 @@
 {%- set formname = {'schritt': 'Schritt', 'kette': 'Kette', 'gruppe': 'Gruppe',
                     'chord': 'Chord'} %}
 
+{%- if hinweis == "angefordert" %}
+{#- "angefordert", nicht "storniert": storniert ist der Workflow erst, wenn
+    der Zustand es traegt (R16). -#}
+<p class="notice is-wait" role="status"><span class="tag-dot"></span>
+  Stornierung angefordert. Noch nicht aufgegriffene Schritte werden beim
+  Aufgreifen abgebrochen, laufende Schritte laufen zu Ende, danach wird nichts
+  mehr eingereiht.</p>
+{%- elif hinweis == "bestehend" %}
+{#- AE8: jemand war schneller -- eine Auskunft, kein Fehler. -#}
+<p class="notice is-wait" role="status"><span class="tag-dot"></span>
+  Die Stornierung war bereits angefordert -- es gilt die bestehende
+  Anforderung. Noch nicht aufgegriffene Schritte werden beim Aufgreifen
+  abgebrochen, laufende Schritte laufen zu Ende, danach wird nichts mehr
+  eingereiht.</p>
+{%- elif hinweis == "nicht_stornierbar" %}
+{#- AE10: zwischen Klick und Bestaetigung zu Ende gegangen. -#}
+<p class="notice is-idle" role="status"><span class="tag-dot"></span>
+  Der Workflow ist nicht mehr stornierbar: er hat einen Endstatus erreicht,
+  oder sein Zustand liegt nicht mehr vor. Es wurde nichts angefordert.</p>
+{%- elif hinweis == "unbestaetigt" %}
+<p class="notice is-idle" role="status"><span class="tag-dot"></span>
+  Nicht storniert: die Bestätigung fehlte.</p>
+{%- elif hinweis == "backend" %}
+<p class="notice is-fail" role="alert"><span class="tag-dot"></span>
+  Das Backend ist nicht erreichbar -- die Stornierung wurde <strong>nicht</strong> angefordert.</p>
+{%- endif %}
+
 <section class="card">
   <div class="card-head"><h2 class="card-name">{{ workflow_id }}</h2></div>
   <dl class="fields">
@@ -67,6 +94,29 @@
   </table>
   </div>
   {%- endif %}
+</section>
+{%- endif %}
+
+{%- if anzeige.stornierbar %}
+{#- AE9, AE11: nicht bei einem Endstatus und nicht bei "nichts mehr aktiv";
+    ohne lesbaren Zustand auch nicht (``Statusanzeige.stornierbar``). -#}
+<section class="card">
+  <h3 class="card-section">Stornieren</h3>
+  <div class="card-body">
+  {#- R16: die Wirkung steht **vor** dem Knopf. Ein Klick allein storniert
+      nicht; erst die Bestaetigung schickt das Formular (KTD9). -#}
+  <p class="card-meta">Stornieren wirkt auf den ganzen Workflow: noch nicht
+    aufgegriffene Schritte werden beim Aufgreifen abgebrochen, laufende
+    Schritte laufen zu Ende, danach wird nichts mehr eingereiht.</p>
+  <details>
+    <summary class="btn">Workflow stornieren</summary>
+    <form method="post" action="/workflows/{{ workflow_id|urlencode }}/cancel">
+      <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="bestaetigt" value="stornieren">
+      <button class="btn">Stornierung bestätigen</button>
+    </form>
+  </details>
+  </div>
 </section>
 {%- endif %}
 
