@@ -12,6 +12,7 @@ Der Leser wandelt darum jede Ausnahme in einen Zustand.
 from __future__ import annotations
 
 import json
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -30,6 +31,18 @@ GRENZE_B = 8 * 1024
 #: Kontrollkanal. Kuerzer waere wirkungslos, viel laenger liesse die
 #: Rueckkehr des Backends zu lange unbemerkt.
 SPERRE_S = 30.0
+
+#: Wie viele beendete Ergebnisse der Leser behaelt (KTD3). Ein fertiges oder
+#: storniertes Ergebnis aendert sich nicht mehr; die Grenze haelt nur den
+#: Speicher eines langlebigen Dienstes klein. 4096 deckt die Kopf-Glieder
+#: einiger grosser Workflows, die gleichzeitig offen sind.
+SPEICHER_N = 4096
+
+#: Die Arten, die sich nicht mehr aendern und darum gespeichert werden.
+#: "gescheitert" gehoert nicht dazu: ein Requeue aus der Dead-Letter-Queue
+#: reiht dieselbe Kennung neu ein, und ein erfolgreicher Lauf ueberschreibt
+#: das Fehlerergebnis.
+ENDGUELTIG = frozenset({"fertig", "storniert"})
 
 #: Frist fuer den Aufbau und fuer jede einzelne Abfrage (KTD4). Kurz: Die
 #: Detailseite ist kein Ort zum Warten.
@@ -107,9 +120,13 @@ class SwarmQErgebnisleser(Zugang):
         app: Any | None = None,
         verbinden: Callable[[], Awaitable[Any]] | None = None,
         uhr: Callable[[], float] | None = None,
+        speicher_n: int = SPEICHER_N,
     ) -> None:
         super().__init__(backend_url, kern=app, verbinden=verbinden, uhr=uhr)
         self._broker_url = broker_url
+        #: Beendete Ergebnisse je Task-Kennung, der zuletzt genutzte hinten.
+        self._gespeichert: OrderedDict[str, Ergebnisbild] = OrderedDict()
+        self._speicher_n = speicher_n
 
     async def _kern_auf(self, client: Any) -> Any:
         """Die Bibliothek auf dem **eigenen** Valkey-Klienten.
@@ -138,7 +155,27 @@ class SwarmQErgebnisleser(Zugang):
         await super().connect()
 
     async def lesen(self, task_id: str) -> Ergebnisbild:
-        """Das Ergebnis holen und als Zustand zurueckgeben."""
+        """Das Ergebnis holen und als Zustand zurueckgeben.
+
+        Ein fertiges oder storniertes Ergebnis kommt nach der ersten Lesung
+        aus dem Speicher -- **vor** dem Verbindungsaufbau: ein Treffer liest
+        nicht und verbindet nicht, auch nicht waehrend der Sperre. Verfaellt
+        es danach in Valkey, bleibt es trotzdem sichtbar, bis der Dienst neu
+        startet (KTD3). Alles andere wird bei jeder Anfrage neu gelesen.
+        """
+        gespeichert = self._gespeichert.get(task_id)
+        if gespeichert is not None:
+            self._gespeichert.move_to_end(task_id)
+            return gespeichert
+        bild = await self._frisch_lesen(task_id)
+        if bild.zustand == "da" and bild.art in ENDGUELTIG:
+            self._gespeichert[task_id] = bild
+            if len(self._gespeichert) > self._speicher_n:
+                self._gespeichert.popitem(last=False)
+        return bild
+
+    async def _frisch_lesen(self, task_id: str) -> Ergebnisbild:
+        """Das Ergebnis aus dem Backend holen, ohne Zwischenspeicher."""
         try:
             # ``connect()`` liefert hier nichts (R2); die App kommt aus der Basis.
             app = await super().connect()
