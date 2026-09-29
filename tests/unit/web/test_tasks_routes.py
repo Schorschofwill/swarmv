@@ -67,6 +67,10 @@ Test-Liste (AGENTS.md):
     nennt die Laenge der Darstellung.
 26. Ein storniertes Ergebnis traegt dieselbe Marke wie sein Status.
 27. Covers R6a, KD1. Das Ergebnis landet weder im Verzeichnis noch im Audit.
+
+=== ZYKLUS 7: Zurueck zum Workflow ===
+28. Ein Workflow-Schritt fuehrt mit einem Knopf zurueck in seinen
+    Workflow; ein Task ohne Workflow hat keinen.
 """
 
 from __future__ import annotations
@@ -1079,3 +1083,33 @@ async def test_das_ergebnis_landet_weder_im_audit_noch_im_verzeichnis(tmp_path: 
     assert geheim in _ergebniskarte(seite), "die Karte zeigt es gar nicht"
     assert treffer == 0, "das Ergebnis steht im Verzeichnis"
     assert protokolliert == [], "ein Seitenaufruf hat einen Audit-Eintrag erzeugt"
+
+
+async def test_ein_workflow_schritt_fuehrt_zurueck_in_seinen_workflow(tmp_path: Path) -> None:
+    """Aus dem Diagramm kommt man per Klick in die Task-Ansicht -- und
+    brauchte bisher den Zurueck-Knopf des Browsers, um wieder hinzufinden.
+    Ein Task ohne Workflow bekommt keinen Knopf, der ins Leere fuehrte."""
+    config = _config(tmp_path)
+    wf = "01a0b4ca-75db-70ef-8e98-8faff0d1db27"
+    w = DirectoryWriter(connect(config.directory_file))
+    for nr, kennung in enumerate((f"{wf}#/h/g0", "einzeln-7")):
+        w.apply([(f"100{nr}-0", Event(type="task_enqueue", ts=1_700_000_000.0 + nr,
+                                      source="app", origin=Origin.ENQUEUE,
+                                      payload={"task_id": kennung, "task_name": "downloads.hole",
+                                               "queue": "downloads", "args": [], "kwargs": {}}))])
+    w._con.execute("insert into progress(key, value) values ('rebuild_done','1') "
+                   "on conflict(key) do nothing")
+    w._con.commit()
+    w.close()
+
+    c = await _angemeldet(config)
+    try:
+        schritt = (await c.get(f"/tasks/{wf}%23/h/g0")).text
+        einzeln = (await c.get("/tasks/einzeln-7")).text
+    finally:
+        await c.__aexit__(None, None, None)
+
+    knopf = re.search(r'<a class="btn"[^>]*href="(/workflows/[^"]+)"[^>]*>\s*Zum Workflow', schritt)
+    assert knopf, "kein Knopf zurueck in den Workflow"
+    assert knopf.group(1) == f"/workflows/{wf}"
+    assert "Zum Workflow" not in einzeln, "ein Task ohne Workflow hat einen Knopf"

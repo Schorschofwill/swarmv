@@ -14,7 +14,13 @@
 {%- endif %}
 
 <section class="card">
-  <div class="card-head"><h2 class="card-name">{{ task['task_id'] }}</h2></div>
+  <div class="card-head"><h2 class="card-name">{{ task['task_id'] }}</h2>
+  {#- Aus dem Diagramm fuehrt ein Klick hierher; ohne den Knopf blieb nur der
+      Zurueck-Knopf des Browsers. ``workflow_id`` steht in der Zeile, auch
+      wenn nur das Muster ``<workflow_id>#<pfad>`` sie verraten hat. -#}
+  {%- if task['workflow_id'] %}
+  <a class="btn" href="/workflows/{{ task['workflow_id']|urlencode }}">Zum Workflow</a>
+  {%- endif %}</div>
   {%- if task['cancel_requested_at'] and task['status'] not in beendet %}
   {#- "angefordert", nicht "storniert": ein rechnender Task bemerkt die
       Anforderung moeglicherweise nie (R12a). -#}
