@@ -281,6 +281,7 @@
      Touch-Oberfläche. Siehe oberflaeche.md, Abschnitt Abweichungen. */
   .btn {
     font-size: 13px; font-weight: 500; height: 32px; padding: 0 13px;
+    display: inline-flex; align-items: center; justify-content: center; text-decoration: none;
     border-radius: var(--radius-control); cursor: pointer;
     border: 1px solid var(--control-border); background: var(--control-bg); color: var(--ink);
   }

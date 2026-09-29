@@ -206,6 +206,17 @@ def test_das_stylesheet_ist_die_freigegebene_vorlage() -> None:
     )
 
 
+def test_ein_verweis_im_knopfstil_setzt_die_schrift_in_die_mitte() -> None:
+    """``.btn`` kam fuer ``<button>``, und ein Button zentriert seinen Inhalt
+    von selbst. Ein ``<a class="btn">`` ("Zum Workflow", "Weitere") tut das
+    nicht: bei fester Hoehe klebte die Schrift am oberen Rand."""
+    css = (_STATIK / "app.css").read_text(encoding="utf-8")
+    regel = re.search(r"\n  \.btn \{([^}]*)\}", css)
+    assert regel, "keine .btn-Regel"
+    assert re.search(r"display:\s*inline-flex", regel.group(1)), regel.group(1)
+    assert re.search(r"align-items:\s*center", regel.group(1)), regel.group(1)
+
+
 def test_jede_vom_stylesheet_verlangte_schrift_liegt_da() -> None:
     """Fehlt eine Datei, aendert sich nur die Schrift -- aber ein Verweis ins
     Leere ist ein Aufruf, der bei jedem Seitenaufbau fehlschlaegt.
