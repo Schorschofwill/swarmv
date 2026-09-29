@@ -1,0 +1,146 @@
+{% extends "base.html" %}
+{% import "workflows/_baum.html" as b with context %}
+{% block titel %}Workflow {{ workflow_id }}{% endblock %}
+{% block inhalt %}
+
+{%- set anzeige = baum.status %}
+{%- set fortschritt = baum.fortschritt %}
+
+{%- if hinweis == "angefordert" %}
+{#- "angefordert", nicht "storniert": storniert ist der Workflow erst, wenn
+    der Zustand es traegt (R16). -#}
+<p class="notice is-wait" role="status"><span class="tag-dot"></span>
+  Stornierung angefordert. Noch nicht aufgegriffene Schritte werden beim
+  Aufgreifen abgebrochen, laufende Schritte laufen zu Ende, danach wird nichts
+  mehr eingereiht.</p>
+{%- elif hinweis == "bestehend" %}
+{#- AE8: jemand war schneller -- eine Auskunft, kein Fehler. -#}
+<p class="notice is-wait" role="status"><span class="tag-dot"></span>
+  Die Stornierung war bereits angefordert -- es gilt die bestehende
+  Anforderung. Noch nicht aufgegriffene Schritte werden beim Aufgreifen
+  abgebrochen, laufende Schritte laufen zu Ende, danach wird nichts mehr
+  eingereiht.</p>
+{%- elif hinweis == "nicht_stornierbar" %}
+{#- AE10: zwischen Klick und Bestaetigung zu Ende gegangen. -#}
+<p class="notice is-idle" role="status"><span class="tag-dot"></span>
+  Der Workflow ist nicht mehr stornierbar: er hat einen Endstatus erreicht,
+  oder sein Zustand liegt nicht mehr vor. Es wurde nichts angefordert.</p>
+{%- elif hinweis == "unbestaetigt" %}
+<p class="notice is-idle" role="status"><span class="tag-dot"></span>
+  Nicht storniert: die Bestätigung fehlte.</p>
+{%- elif hinweis == "backend" %}
+<p class="notice is-fail" role="alert"><span class="tag-dot"></span>
+  Das Backend ist nicht erreichbar -- die Stornierung wurde <strong>nicht</strong> angefordert.</p>
+{%- endif %}
+
+<section class="card">
+  <div class="card-head"><h2 class="card-name">{{ workflow_id }}</h2></div>
+  <dl class="fields">
+    <div><dt>Status</dt><dd>
+      <span class="tag {{ zustandsart(anzeige.code) }}">
+        <span class="tag-dot"></span> {{ anzeige.text }}
+      </span></dd></div>
+    <div><dt>Form</dt><dd>{{ artname(baum.form) }}</dd></div>
+    <div><dt>Erster Schritt</dt><dd class="mono">{{ baum.erster_schritt or '--' }}</dd></div>
+    <div><dt>Fortschritt</dt><dd class="mono">{{ fortschritt.fertig }}/{{ fortschritt.gesamt }}</dd></div>
+    <div><dt>Start</dt><dd class="mono">{{ zeitpunkt(first_seen_at) }}</dd></div>
+    <div><dt>Letzte Aktivität</dt><dd class="mono">{{ zeitpunkt(last_seen_at) }}</dd></div>
+    <div><dt>Zustand gelesen</dt><dd class="mono">{{ zeitpunkt(gelesen_at) }}</dd></div>
+  </dl>
+  {%- if anzeige.code == 'verfallen' %}
+  {#- R17, KD8: kein Endstatus. Ohne den Zeitpunkt behauptete die Kopie
+      sieben Tage lang einen Lauf, den es vielleicht nicht mehr gibt. -#}
+  <p class="card-meta"><span class="notice is-idle"><span class="tag-dot"></span>
+    Der Zustand ist in Valkey verfallen, zuletzt gelesen {{ zeitpunkt(anzeige.gelesen_at) }}.
+    Das ist kein Endstatus -- wie der Workflow ausging, weiß das Dashboard nicht.</span></p>
+  {%- elif anzeige.code == 'nie_gesehen' %}
+  {#- R7, AE6: kein Status geraten. -#}
+  <p class="card-meta"><span class="notice is-idle"><span class="tag-dot"></span>
+    Den Zustand dieses Workflows hat der Dienst nie lesen können, bevor er verfiel.
+    Hier stehen nur die Schritte, die das Verzeichnis kennt -- ohne Topologie und ohne Status.</span></p>
+  {%- endif %}
+  {%- if not topologie_lesbar %}
+  {#- Die Kopie traegt eine Topologie, die erst unter der Wurzel kaputt ist.
+      Der Status oben kommt weiter aus der Kopie; geraten wird nichts (R6). -#}
+  <p class="card-meta"><span class="notice is-idle"><span class="tag-dot"></span>
+    Topologie nicht lesbar: der gelesene Zustand beschreibt keinen gültigen Baum.
+    Hier stehen nur die Schritte, die das Verzeichnis kennt, und der Fortschritt zählt nur sie.</span></p>
+  {%- endif %}
+</section>
+
+{%- if anzeige.code == 'gescheitert' %}
+{#- R12: oben der Fehlertext aus dem Zustand, darunter die gescheiterten
+    Schritte laut Verzeichnis, frühester zuerst. Der Zustand selbst nennt
+    keinen Schritt. -#}
+<section class="card">
+  <h3 class="card-section">Fehler</h3>
+  {%- if baum.fehlertext %}
+  <pre class="mono args fehlertext">{{ baum.fehlertext }}</pre>
+  {%- else %}
+  <p class="card-meta">Der Zustand nennt keinen Fehlertext.</p>
+  {%- endif %}
+  {%- if baum.fehlschlaege %}
+  <div class="card-table">
+  <table>
+    <thead><tr><th scope="col">Pfad</th><th scope="col">Schritt</th>
+      <th scope="col">Fehler laut Verzeichnis</th><th scope="col">Ende</th></tr></thead>
+    <tbody>
+      {%- for f in baum.fehlschlaege %}
+      <tr>
+        <td class="mono"><a href="#{{ b.knoten_id(f) }}">{{ f.pfad if f.pfad is not none else '?' }}</a></td>
+        <td class="mono">
+          {%- if f.task_id %}<a href="/tasks/{{ f.task_id|urlencode }}">{{ f.task_name or f.task_id }}</a>
+          {%- else %}{{ f.task_name or '--' }}{% endif %}</td>
+        <td class="mono fehlertext">{{ f.zeile.error if f.zeile is not none and f.zeile.error else '--' }}</td>
+        <td class="mono">{{ zeitpunkt(f.zeile.ended_at if f.zeile is not none else none) }}</td>
+      </tr>
+      {%- endfor %}
+    </tbody>
+  </table>
+  </div>
+  {%- endif %}
+</section>
+{%- endif %}
+
+{%- if anzeige.stornierbar %}
+{#- AE9, AE11: nicht bei einem Endstatus und nicht bei "nichts mehr aktiv";
+    ohne lesbaren Zustand auch nicht (``Statusanzeige.stornierbar``). -#}
+<section class="card">
+  <h3 class="card-section">Stornieren</h3>
+  <div class="card-body">
+  {#- R16: die Wirkung steht **vor** dem Knopf. Ein Klick allein storniert
+      nicht; erst die Bestaetigung schickt das Formular (KTD9). -#}
+  <p class="card-meta">Stornieren wirkt auf den ganzen Workflow: noch nicht
+    aufgegriffene Schritte werden beim Aufgreifen abgebrochen, laufende
+    Schritte laufen zu Ende, danach wird nichts mehr eingereiht.</p>
+  <details>
+    <summary class="btn">Workflow stornieren</summary>
+    <form method="post" action="/workflows/{{ workflow_id|urlencode }}/cancel">
+      <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="bestaetigt" value="stornieren">
+      <button class="btn">Stornierung bestätigen</button>
+    </form>
+  </details>
+  </div>
+</section>
+{%- endif %}
+
+<section class="card">
+  <h3 class="card-section">Schritte</h3>
+  <div class="card-table">
+  <table>
+    <colgroup>
+      <col style="width: 30%"><col><col style="width: 34%"><col style="width: 150px">
+    </colgroup>
+    <thead><tr>
+      <th scope="col">Pfad</th><th scope="col">Schritt</th><th scope="col">Status</th>
+      <th scope="col">Dauer</th>
+    </tr></thead>
+    <tbody id="workflow-baum">
+      {{ b.knoten_zeilen(baum.wurzel) }}
+    </tbody>
+  </table>
+  </div>
+</section>
+
+{% endblock %}

@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block titel %}Workflows{% endblock %}
+{% block inhalt %}
+
+<section class="card">
+  <div class="card-body">
+  <form class="filters" method="get" action="/workflows">
+    <span class="field">
+      <label class="field-label" for="f-q">Kennung</label>
+      <input class="mono search" id="f-q" name="q" value="{{ filter.suche }}"
+             placeholder="Workflow oder Schritt">
+    </span>
+    <span class="field">
+      <label class="field-label" for="f-status">Status</label>
+      <select id="f-status" name="status">
+        {%- for code, wort in statuswahl %}
+        <option value="{{ code }}"{% if filter.status == code %} selected{% endif %}>{{ wort }}</option>
+        {%- endfor %}
+      </select>
+    </span>
+    <span class="field">
+      <label class="field-label" for="f-seit">Zeitraum</label>
+      <select id="f-seit" name="seit">
+        {%- for tage, wort in zeitraeume %}
+        <option value="{{ tage or '' }}"{% if seit == (tage|string) %} selected{% endif %}>
+          {{ wort }}</option>
+        {%- endfor %}
+      </select>
+    </span>
+    <button class="btn">Suchen</button>
+  </form>
+  </div>
+</section>
+
+{#- Der stehende Hinweis (R4). Er steht auch dann da, wenn gerade kein
+    betroffener Workflow zu sehen ist: das ist selbst keine Aussage. -#}
+<p class="notice">{{ hinweis }}</p>
+
+{%- if zeilen %}
+<section class="card">
+  <div class="card-table">
+  <table>
+    <colgroup>
+      <col style="width: 200px"><col style="width: 300px"><col style="width: 90px">
+      <col><col style="width: 104px"><col style="width: 156px"><col style="width: 156px">
+    </colgroup>
+    <thead><tr>
+      <th scope="col">Status</th><th scope="col">Kennung</th><th scope="col">Form</th>
+      <th scope="col">Erster Schritt</th><th scope="col">Fortschritt</th>
+      <th scope="col">Start</th><th scope="col">Letzte Aktivität</th>
+    </tr></thead>
+    <tbody id="workflow-zeilen">
+      {%- for z in zeilen %}
+      {%- set anzeige = z.baum.status %}
+      {%- set fortschritt = z.baum.fortschritt %}
+      <tr id="workflow-{{ z.kopie.workflow_id }}">
+        <td>
+          <span class="tag {{ zustandsart(anzeige.code) }}">
+            <span class="tag-dot"></span> {{ anzeige.text }}
+          </span>
+          {%- if anzeige.code == 'verfallen' %}
+          {#- R17: ohne den Zeitpunkt liest sich "verfallen" wie "gerade eben". -#}
+          <div class="dim">zuletzt gelesen {{ zeitpunkt(anzeige.gelesen_at) }}</div>
+          {%- endif %}
+          {%- if not z.topologie_lesbar %}
+          <div class="dim">Topologie nicht lesbar, nur bekannte Schritte</div>
+          {%- endif %}
+        </td>
+        <td class="mono"><a class="trunc" href="/workflows/{{ z.kopie.workflow_id|urlencode }}">{{ z.kopie.workflow_id }}</a></td>
+        <td>{#- Form der Wurzel als Wort (R2). -#}{{ artname(z.baum.form) }}</td>
+        <td class="mono"><span class="trunc">{{ z.baum.erster_schritt or '--' }}</span></td>
+        <td class="mono num"
+            {%- if anzeige.code == 'nie_gesehen' %} title="nur die bekannten Schritte -- die Topologie war nie lesbar"{% endif %}>
+          {{ fortschritt.fertig }}/{{ fortschritt.gesamt }}</td>
+        <td class="mono">{{ zeitpunkt(z.first_seen_at) }}</td>
+        <td class="mono">{{ zeitpunkt(z.last_seen_at) }}</td>
+      </tr>
+      {%- endfor %}
+    </tbody>
+  </table>
+  </div>
+  {%- if weiter %}
+  <div class="card-foot">
+    <span>{{ zeilen|length }} Zeilen — es sind mehr.</span>
+    <div class="grow"></div>
+    <a class="btn" href="/workflows?{{ weiter }}">Weitere</a>
+  </div>
+  {%- endif %}
+</section>
+{%- else %}
+<section class="card">
+  {% with titel=leer_titel, ursache=leer_ursache %}{% include "leerzustand.html" %}{% endwith %}
+</section>
+{%- endif %}
+
+{% endblock %}

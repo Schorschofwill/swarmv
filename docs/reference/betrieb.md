@@ -109,6 +109,126 @@ Offenheit oben als bewusste Entscheidung festgehalten; für Rückgabewerte
 liegt der einzige Hebel in der Anwendung. Solche Werte nicht zurückgeben,
 oder die Frist kurz halten.
 
+## Die Workflow-Ansicht
+
+Der Bereich **Workflows** zeigt Ketten, Gruppen und Chords mit Status,
+Fortschritt und Baum. Anders als die Task-Liste lebt er nicht allein vom
+Ereignisstrom: Topologie, Status und Fehler eines Workflows kennt nur sein
+Zustand im Backend der Bibliothek (`sq:wf:<workflow_id>`, Index 0). Der Dienst
+liest ihn selbst und hält eine **Kopie** in der Verzeichnisdatei — so bleibt
+ein Workflow die vollen sieben Tage mit Baum und Endstatus sichtbar, auch
+wenn der Zustand in Valkey längst verfallen ist. Ergebnisse gehören nicht zur
+Kopie; sie werden wie auf der Task-Seite nachgeschlagen.
+
+### Takt: `SQD_WORKFLOW_POLL_S`
+
+| Einstellung | Vorgabe | Bedeutung |
+|---|---|---|
+| `SQD_WORKFLOW_POLL_S` | `60` Sekunden | Abstand, in dem jeder nicht beendete Workflow einmal gelesen wird |
+
+Gelesen wird zu drei Anlässen:
+
+1. **beim Start** einmal alle offenen Workflows — sonst stünde die Kopie nach
+   einem Neustart bis zum ersten Takt auf dem alten Stand;
+2. **im Takt** jeder Workflow ohne Endstatus;
+3. **nach einem Ereignis**: meldet ein Schritt ein Ergebnis (fertig,
+   gescheitert, Dead Letter, storniert) oder reiht ein Worker einen
+   Folgeschritt ein, liest der Dienst diesen Workflow sofort und zwei
+   Sekunden später noch einmal. Die zweite Lesung ist nötig, weil das
+   Ereignis eines Schritts ankommt, bevor die Bibliothek den Zustand
+   fortschreibt. Nach „Workflow stornieren" gilt dasselbe.
+
+**Last auf Valkey.** Eine Lesung ist ein einzelnes `GET` auf den
+Zustandsschlüssel. Der Takt liest nacheinander, nicht gleichzeitig; bei
+tausend offenen Workflows sind das tausend `GET` je Minute. Anstöße aus
+Ereignissen werden je Workflow zusammengefasst: die fünfhundert Glieder
+einer Gruppe, die kurz nacheinander fertig werden, lösen nicht tausend
+Lesungen aus, sondern eine sofortige und eine verzögerte, bei weiteren
+Ereignissen während des Wartens eine weitere Runde. Workflows mit Endstatus
+liest der Takt nicht mehr, ebenso wenig solche, deren Zustand verfallen ist
+oder nie gelesen werden konnte; nur ein neues Ereignis stößt dort noch eine
+Lesung an. Ist das Backend nicht erreichbar, setzt der Leser für
+30 Sekunden aus, statt jeden Workflow in die volle Wartefrist laufen zu
+lassen; die Kopfzeile nennt den Grund, und die Kopie bleibt unverändert.
+
+### Bezug zur `result_ttl` der Worker
+
+Die Frist des Workflow-Zustands **gleitet**. `Client.apply` setzt sie beim
+Start aus der `result_ttl` der einreihenden Anwendung, danach setzt jeder
+Worker sie bei jedem Schreiben des Zustands auf seine eigene `result_ttl`
+neu (Kaskade wie oben, Vorgabe 24 Stunden). Nach dem letzten Schreiben —
+typischerweise dem Endstatus — bleibt der Zustand also noch eine
+`result_ttl` lang lesbar.
+
+Daraus folgt die Bedingung für den Takt: **`SQD_WORKFLOW_POLL_S` muss weit
+unter der kleinsten `result_ttl` der beteiligten Worker liegen.** Verfällt
+ein Zustand zwischen zwei Lesungen, hat die Kopie seinen Endstatus nie
+gesehen und zeigt „Zustand verfallen, zuletzt: läuft" statt „fertig". Mit den
+Vorgaben (60 Sekunden gegen 24 Stunden) ist das kein Thema; wer Worker mit
+einer `result_ttl` von wenigen Minuten fährt, senkt den Takt entsprechend.
+Die Lesung nach dem Ergebnis-Ereignis fängt den Normalfall zwar schon ab —
+der Takt ist das Netz, wenn ein Ereignis verloren ging oder der Dienst zu
+dem Zeitpunkt nicht lief.
+
+### Die Anzeigezustände
+
+Ein **Endstatus** — fertig, gescheitert, storniert — steht nur da, wenn eine
+Lesung des Zustands ihn geliefert hat. Das Dashboard leitet ihn nie aus den
+Schritten ab. Alle anderen Zustände sagen ausdrücklich, dass es keinen
+Endstatus kennt.
+
+| Anzeige | Endstatus? | Bedeutung |
+|---|---|---|
+| läuft | nein | Der Zustand ist lesbar und trägt noch keinen Endstatus. |
+| fertig | ja | Der Zustand trägt „completed". |
+| gescheitert | ja | Der Zustand trägt „failed"; oben steht der Fehlertext aus dem Zustand, darunter die gescheiterten Schritte laut Verzeichnis. |
+| storniert | ja | Der Zustand trägt „cancelled". Die Bibliothek schreibt das nur, wenn nach der Anforderung noch ein Schritt erfolgreich endet. |
+| Stornierung angefordert | nein | Dieses Dashboard hat die Stornierung ausgelöst, und laut Verzeichnis wartet oder läuft noch mindestens ein Schritt. Noch nicht aufgegriffene Schritte bricht der Worker beim Aufgreifen ab, laufende laufen zu Ende. Ein zweites Stornieren ist kein Fehler. |
+| Stornierung angefordert, nichts mehr aktiv | nein | Wie oben, aber kein Schritt läuft oder wartet mehr. Das ist der gewöhnliche Ausgang, wenn alle Glieder noch in der Queue standen: der Worker bricht jedes beim Aufgreifen ab, kein Schritt endet erfolgreich, und die Bibliothek schreibt deshalb **nie** „storniert". Der Zustand bleibt „läuft", bis er verfällt. Erneutes Stornieren wird nicht angeboten. |
+| Zustand verfallen, zuletzt: … | nein | Der Zustand ist aus Valkey verschwunden, ohne dass eine Lesung einen Endstatus gesehen hat. Hinter „zuletzt" steht, was vorher angezeigt wurde — „läuft", „Stornierung angefordert" oder „…, nichts mehr aktiv" —, dazu der Zeitpunkt der letzten Lesung. Wie der Workflow ausging, weiß das Dashboard nicht. |
+| Zustand nie gesehen | nein | Das Verzeichnis kennt Schritte des Workflows, aber der Dienst konnte seinen Zustand nie lesen, bevor er verfiel — etwa weil der Dienst länger nicht lief. Baum und Fortschritt zeigen nur die bekannten Schritte. |
+
+Stornierungen, die jemand an der Bibliothek vorbei auslöst (`handle.cancel()`
+in einer Anwendung), kennt das Dashboard nicht als „angefordert"; es sieht
+sie erst, wenn der Zustand „storniert" trägt.
+
+Status und Fortschritt kommen aus zwei Quellen: der Status aus der Lesung,
+der Fortschritt aus den Task-Zeilen, die der Worker-Hook über den
+Ereignisstrom meldet. Die Lesung kann schneller sein als der Hook-Puffer
+(ein Takt von einer Sekunde); eine Zeile kann deshalb kurz „fertig" mit
+weniger fertigen Schritten zeigen, als sie hat, bis die Ereignisse
+eingelesen sind.
+
+### Wann ein Workflow erscheint
+
+Mit **Anwendungs-Hook** erscheint ein Workflow mit der Einreihung seiner
+ersten Schritte — noch bevor ein Worker etwas aufgreift. **Ohne**
+Anwendungs-Hook erscheint er erst, wenn ein Worker einen seiner Schritte
+aufgreift: der Worker-Hook sieht die Einreihung nicht, und die erste Front
+(alle Glieder einer Gruppe, der ganze Kopf eines Chords) ist dann nur über
+das Muster der Kennung `<workflow_id>#<pfad>` erkennbar. Solche Kandidaten
+bleiben unsichtbar, bis eine Lesung des Zustands sie bestätigt. Die Liste
+trägt dazu einen stehenden Hinweis. Scheduler-Auslösungen und verzögerte
+Einreihungen passieren den Anwendungs-Hook ohnehin nie.
+
+### Neuaufbau des Verzeichnisses verliert die Kopie
+
+Die Kopie liegt in `directory.sqlite3`, stammt aber aus Lesungen, nicht aus
+dem Strom. Wird die Datei gelöscht und aus dem Strom neu aufgebaut (siehe
+oben), kommen die Task-Zeilen wieder, **die Kopie nicht**. Was dann zu
+sehen ist:
+
+- Workflows, deren Zustand noch in Valkey liegt, liest der Abgleich beim
+  Start neu; sie stehen nach der ersten Runde wieder vollständig da.
+- Workflows, deren Zustand schon verfallen ist, fallen auf „Zustand nie
+  gesehen" zurück — auch solche, die vorher „fertig" zeigten. Der Endstatus
+  ist dann nicht mehr zu erfahren.
+- Der eigene Storno-Vermerk ist ebenfalls fort; eine laufende Stornierung
+  erscheint wieder als „läuft", bis der Zustand „storniert" trägt.
+
+Wer die Endstatus älterer Workflows behalten will, löscht die Datei also nur,
+wenn es sein muss.
+
 ## Konten anlegen
 
 ```

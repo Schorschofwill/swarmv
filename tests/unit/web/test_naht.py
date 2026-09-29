@@ -43,6 +43,19 @@ Test-Liste (AGENTS.md):
 
 === ZYKLUS 5: Die Seite haengt am Live-Kanal ===
 9. Das gerenderte Geruest abonniert ``/live``.
+
+=== ZYKLUS 6: Der Workflow-Abgleich laeuft (Workflow-Ansicht U3) ===
+10. Nach dem Hochfahren liest der Dienst jeden offenen Workflow einmal,
+    ohne manuellen Anstoss, und meldet die geaenderte Kopie an die
+    Live-Schicht (KTD3, KTD10).
+11. Ein eingelesenes Ergebnis eines Workflow-Schritts stoesst eine Lesung
+    an -- die Naht vom Strom-Leser zum Abgleich.
+12. Ein nicht erreichbares Backend steht im Bericht (R33).
+12a. Ein Takt des Abgleichs, der scheitert, steht im Bericht.
+13. Das Herunterfahren schliesst den Leser; ohne das leckt je
+    Lebenszyklus eine Valkey-Verbindung.
+14. Eine noch ausstehende verzoegerte Lesung liest nach dem Herunterfahren
+    nicht mehr -- sie schriebe sonst in ein geschlossenes Verzeichnis.
 """
 
 from __future__ import annotations
@@ -591,3 +604,143 @@ async def test_ein_stillgelegter_takt_steht_im_bericht(tmp_path: Path) -> None:
             "ein dauerhaft scheiterndes Einlesen steht in keiner Antwort: "
             f"{services.status()['maintenance']}"
         )
+
+
+# --- Zyklus 6 -----------------------------------------------------------
+
+WF = "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"
+
+
+class FakeWorkflowleser:
+    """Liefert je Workflow ein festes Bild und merkt sich das Schliessen."""
+
+    def __init__(self, bild: Any = None) -> None:
+        from swarmq_dashboard.workflows import Workflowbild
+
+        self.bild = bild or Workflowbild(
+            zustand="gelesen", status="completed", form="signatur",
+            topologie={"kind": "signature", "task": "download", "args": [], "kwargs": {},
+                       "immutable": False},
+            step_tasks={"": f"{WF}#"}, fehler=None,
+        )
+        self.gelesen: list[str] = []
+        self.geschlossen = False
+
+    async def lesen(self, workflow_id: str) -> Any:
+        self.gelesen.append(workflow_id)
+        return self.bild
+
+    async def stornieren(self, workflow_id: str) -> Any:
+        raise AssertionError("nicht Teil dieser Naht")
+
+    async def close(self) -> None:
+        self.geschlossen = True
+
+
+def _schritt(typ: str, ts: float) -> Event:
+    return Event(type=typ, ts=ts, source="phx-w1:0", origin=Origin.PICKUP,
+                 payload={"task_id": f"{WF}#", "task_name": "download", "queue": "q",
+                          "workflow_id": WF, "step_path": ""})
+
+
+async def test_der_abgleich_liest_nach_dem_start_von_sich_aus(tmp_path: Path) -> None:
+    """Covers R5, R14. Ohne den Lauf beim Start bliebe eine Kopie nach einem
+    Neustart bis zum ersten Takt -- eine Minute -- auf dem alten Stand."""
+    config = _config(tmp_path)
+    w = DirectoryWriter(connect(config.directory_file))
+    w.apply([(None, _schritt("task_started", JETZT))])
+    w.close()
+    leser = FakeWorkflowleser()
+    app = _dienst(config, stream=FakeStream(), workflowleser=leser)
+    async with AsyncTestClient(app=app, base_url=BASIS):
+        services = app.state.services
+        schreiber = services.services_directory_writer
+        assert await _warte_bis(
+            lambda: (schreiber.workflow(WF) or {"status": None})["status"] == "completed"
+        ), "der Abgleich liest nach dem Start nicht von sich aus"
+        assert services.publisher.current_seq > 0, "die geaenderte Kopie erreicht die Live-Schicht nicht"
+
+
+async def test_ein_eingelesenes_ergebnis_stoesst_eine_lesung_an(tmp_path: Path) -> None:
+    """Covers R6, R14, KTD3. Die Lesung beim Start fand den Workflow noch
+    nicht; erst das Ergebnis im Strom bringt ihn -- und muss die Lesung
+    ausloesen, sonst wartete die Kopie eine volle Minute auf den Takt."""
+    config = _config(tmp_path)
+    strom = FakeStream()
+    leser = FakeWorkflowleser()
+    app = _dienst(config, stream=strom, workflowleser=leser)
+    async with AsyncTestClient(app=app, base_url=BASIS):
+        schreiber = app.state.services.services_directory_writer
+        strom.add(_schritt("task_completed", JETZT))
+        assert await _warte_bis(lambda: WF in leser.gelesen), (
+            "ein Ergebnis eines Workflow-Schritts stoesst keine Lesung an"
+        )
+        assert await _warte_bis(
+            lambda: (schreiber.workflow(WF) or {"status": None})["status"] == "completed"
+        )
+
+
+async def test_ein_unerreichbares_backend_des_abgleichs_steht_im_bericht(tmp_path: Path) -> None:
+    """Covers R5, R33. Die Kopie bleibt stehen, wie sie ist -- aber still
+    darf das nicht bleiben, sonst liest sich eine alte Kopie als aktuell."""
+    from swarmq_dashboard.workflows import Workflowbild
+
+    config = _config(tmp_path)
+    w = DirectoryWriter(connect(config.directory_file))
+    w.apply([(None, _schritt("task_started", JETZT))])
+    w.close()
+    leser = FakeWorkflowleser(Workflowbild(zustand="nicht_erreichbar",
+                                           grund="das Backend ist nicht erreichbar: weg"))
+    app = _dienst(config, stream=FakeStream(), workflowleser=leser)
+    async with AsyncTestClient(app=app, base_url=BASIS):
+        services = app.state.services
+        assert await _warte_bis(
+            lambda: services.status().get("workflows", {}).get("reason")
+            == "das Backend ist nicht erreichbar: weg"
+        ), f"der Grund fehlt im Bericht: {services.status().get('workflows')}"
+        assert services.status()["workflows"]["ok"] is False
+
+
+async def test_ein_scheiternder_abgleich_takt_steht_im_bericht(tmp_path: Path) -> None:
+    """Wie jeder andere Takt: ein Abgleich, der still nicht mehr arbeitet,
+    liesse jede Kopie auf ihrem letzten Stand stehen."""
+    class WerfenderLeser(FakeWorkflowleser):
+        async def lesen(self, workflow_id: str) -> Any:
+            raise RuntimeError("der Leser ist kaputt")
+
+    config = _config(tmp_path)
+    w = DirectoryWriter(connect(config.directory_file))
+    w.apply([(None, _schritt("task_started", JETZT))])
+    w.close()
+    app = _dienst(config, stream=FakeStream(), workflowleser=WerfenderLeser())
+    async with AsyncTestClient(app=app, base_url=BASIS):
+        services = app.state.services
+        assert await _warte_bis(
+            lambda: services.status()["maintenance"].get("workflows") == "der Leser ist kaputt"
+        ), f"der Ausfall steht nicht im Bericht: {services.status()['maintenance']}"
+
+
+async def test_das_herunterfahren_schliesst_den_workflowleser(tmp_path: Path) -> None:
+    """Der Leser haelt eine eigene Valkey-Verbindung; wie beim Canceller
+    leckte ohne das je Lebenszyklus eine."""
+    config = _config(tmp_path)
+    leser = FakeWorkflowleser()
+    app = _dienst(config, stream=FakeStream(), workflowleser=leser)
+    async with AsyncTestClient(app=app, base_url=BASIS):
+        pass
+    assert leser.geschlossen is True
+
+
+async def test_nach_dem_herunterfahren_liest_keine_ausstehende_lesung(tmp_path: Path) -> None:
+    """Das Herunterfahren weckt die schlafenden Takte -- und damit auch die
+    verzoegerte Lesung, die dann in die Verbindung schriebe, die gleich
+    geschlossen wird."""
+    config = _config(tmp_path)
+    strom = FakeStream()
+    leser = FakeWorkflowleser()
+    app = _dienst(config, stream=strom, workflowleser=leser)
+    async with AsyncTestClient(app=app, base_url=BASIS):
+        strom.add(_schritt("task_completed", JETZT))
+        assert await _warte_bis(lambda: WF in leser.gelesen)
+        vorher = len(leser.gelesen)
+    assert len(leser.gelesen) == vorher, "die verzoegerte Lesung lief nach dem Halt"

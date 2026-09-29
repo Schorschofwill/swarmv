@@ -1,0 +1,116 @@
+{#- Bausteine des Workflow-Baums, fuer Detail und fertige Glieder.
+
+    Jede Zeile traegt eine **stabile** Element-ID aus ihrem Topologie-Pfad:
+    ``live.js`` gleicht den DOM ab, und ohne feste IDs verschoebe eine neue
+    Zeile alle darunter -- das Teammitglied verloere beim Lesen die Stelle.
+    Die Pfadteile (Ziffern, ``g``, ``h``, ``b``) enthalten keinen
+    Bindestrich, "/" durch "-" ersetzt bleibt darum eindeutig. -#}
+
+{%- macro knoten_id(k) -%}
+  {%- if k.pfad is none %}knoten-task-{{ k.task_id }}
+  {%- else %}knoten{{ k.pfad|replace('/', '-') }}{% endif -%}
+{%- endmacro %}
+
+{#- Rolle eines Knotens als Wort; die Art nennt ``artname``. -#}
+{%- set rollenname = {'kopf': 'Kopf', 'body': 'Body'} %}
+{%- set statusname = {'eingereiht': 'eingereiht, noch nicht gemeldet',
+                      'nicht_eingereiht': 'nicht eingereiht'} %}
+
+{%- macro pfadzelle(k, tiefe) -%}
+  {#- Die Einrueckung traegt die Verschachtelung (R8); ein eigener Stil
+      waere eine Klasse mehr fuer genau eine Zahl. -#}
+  <td class="mono" style="padding-left: {{ 12 + tiefe * 20 }}px">
+    {%- if k.pfad is none %}?{% elif k.pfad == '' %}Wurzel{% else %}{{ k.pfad }}{% endif -%}
+  </td>
+{%- endmacro %}
+
+{%- macro ergebniszeile(k) -%}
+  {#- Nur an den direkten Gliedern eines Chord-Kopfs (R13, R18). Gelesen
+      hat die Route; hier steht nur, was dabei herauskam. -#}
+  {%- if k.ergebnis is not none %}
+  <div class="muted">Eingabe des Body:
+  {%- if not k.ergebnis.anzeigbar %} nicht einzeln anzeigbar
+  {%- else %}
+    {%- set bild = ergebnisse.get(k.pfad) %}
+    {%- if bild is none or bild.zustand == 'offen' %} noch keins
+    {%- elif bild.zustand == 'fehlt' %} Ergebnis abgelaufen
+    {%- elif bild.zustand in ('nicht_erreichbar', 'nicht_lesbar') %} {{ bild.grund }}
+    {%- elif bild.art == 'gescheitert' %} gescheitert: <span class="mono">{{ bild.text }}</span>
+    {%- elif bild.art == 'storniert' %} storniert
+    {%- else %} <span class="mono">{{ bild.text }}</span>
+    {%- endif %}
+  {%- endif %}
+  </div>
+  {%- endif %}
+{%- endmacro %}
+
+{%- macro zaehlertext(k) -%}
+  {%- for status, anzahl in k.zaehler|dictsort %}{{ anzahl }} {{ statusname.get(status, status) }}{% if not loop.last %} · {% endif %}{% endfor -%}
+{%- endmacro %}
+
+{%- macro wartet(k) -%}
+  {%- if k.wartet_auf is not none %}
+  <div class="dim">wartet auf {{ k.wartet_auf }} {{ 'Glied' if k.wartet_auf == 1 else 'Glieder' }}</div>
+  {%- endif %}
+{%- endmacro %}
+
+{%- macro blattzeile(k, tiefe) -%}
+  <tr id="{{ knoten_id(k) }}">
+    {{ pfadzelle(k, tiefe) }}
+    <td class="mono">
+      {%- if k.task_id %}<a class="trunc" href="/tasks/{{ k.task_id|urlencode }}">{{ k.task_name or k.task_id }}</a>
+      {%- else %}{{ k.task_name or '--' }}{% endif %}
+      {%- if k.rolle %} <span class="dim">{{ rollenname[k.rolle] }}</span>{% endif %}
+      {{- ergebniszeile(k) }}
+    </td>
+    <td>
+      {%- if k.status == 'nicht_eingereiht' %}
+      {#- AE3: das Praefix sagt, dass kein Ereignis da ist; der Grund, warum. -#}
+      <span class="tag {{ zustandsart(k.grund) }}"><span class="tag-dot"></span> nicht eingereiht — {{ k.grund }}</span>
+      {%- else %}
+      <span class="tag {{ zustandsart(k.status) }}"><span class="tag-dot"></span> {{ statusname.get(k.status, k.status) }}</span>
+      {%- endif %}
+      {{- wartet(k) }}
+    </td>
+    <td class="mono">
+      {%- set z = k.zeile %}
+      {%- if z is none %}--
+      {%- elif z.ended_at is not none and z.started_at is not none %}{{ dauer(z.ended_at - z.started_at) }}
+      {%- elif z.ended_at is not none %}--
+      {%- elif z.started_at is not none %}läuft seit {{ dauer(jetzt - z.started_at) }}
+      {%- else %}wartet seit {{ dauer(jetzt - z.first_seen_at) }}
+      {%- endif %}
+    </td>
+  </tr>
+{%- endmacro %}
+
+{#- Ein Knoten und alles darunter. Fertige Glieder einer Gruppe stehen als
+    **eine** Zeile mit ihrer Zahl (R9, KD6); was scheitert, laeuft oder
+    wartet, bleibt immer eine eigene Zeile. -#}
+{%- macro knoten_zeilen(k, tiefe=0) -%}
+  {%- if k.art == 'schritt' %}
+  {{ blattzeile(k, tiefe) }}
+  {%- else %}
+  <tr id="{{ knoten_id(k) }}">
+    {{ pfadzelle(k, tiefe) }}
+    <td>{{ artname(k.art) }}{% if k.rolle %} <span class="dim">{{ rollenname[k.rolle] }}</span>{% endif %}
+      {{- ergebniszeile(k) }}</td>
+    <td class="mono">{{ zaehlertext(k) or '--' }}{{ wartet(k) }}</td>
+    <td class="mono">--</td>
+  </tr>
+  {%- for kind in k.offene_kinder %}{{ knoten_zeilen(kind, tiefe + 1) }}{% endfor %}
+  {%- set gefaltet = k.gefaltete_kinder %}
+  {%- if gefaltet %}
+  {#- KTD13: die Unterseite blaettert zu 100 -- auch bei Hunderten Gliedern
+      bleibt der Baum so lesbar. -#}
+  <tr id="{{ knoten_id(k) }}-fertig">
+    <td style="padding-left: {{ 32 + tiefe * 20 }}px"></td>
+    <td colspan="3">
+      <a href="/workflows/{{ workflow_id|urlencode }}/glieder?gruppe={{ k.pfad|urlencode }}">
+        {{ zahl(gefaltet|length) }} fertig</a>
+      <span class="dim">— fertige Glieder dieser Gruppe</span>
+    </td>
+  </tr>
+  {%- endif %}
+  {%- endif %}
+{%- endmacro %}

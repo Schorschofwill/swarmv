@@ -81,15 +81,18 @@ def test_die_bereiche_sind_abgezaehlt_und_begruendet() -> None:
     zum Dead-Letter ohne echte Arbeit ausprobieren zu koennen.
 
     Der Test bleibt die Sperre gegen wildes Wachstum -- er zaehlt weiter ab
-    und faellt bei jedem fuenften Bereich. Was er nicht mehr tut, ist die
+    und faellt bei jedem sechsten Bereich. Was er nicht mehr tut, ist die
     Abweichung zu verschweigen.
+
+    **Workflows** kam mit der zweiten Stufe dazu (Workflow-Ansicht, R1,
+    KD2, KTD12): erst nach diesem roten Test, nicht nebenbei.
     """
-    assert [b.slug for b in BEREICHE] == ["worker", "tasks", "dlq", "probe"]
+    assert [b.slug for b in BEREICHE] == ["worker", "tasks", "workflows", "dlq", "probe"]
     html = render("base.html", status=_zustand(), account="ops", aktiv="worker")
     for bereich in BEREICHE:
         assert bereich.titel in html, f"{bereich.titel} fehlt in der Navigation"
     treffer = re.findall(r'class="nav-link"', html)
-    assert len(treffer) == 4, f"{len(treffer)} Navigationseintraege statt vier"
+    assert len(treffer) == 5, f"{len(treffer)} Navigationseintraege statt fuenf"
     # Der aktive Bereich traegt ``aria-current`` statt einer eigenen Klasse:
     # das Stylesheet haengt seine Hervorhebung daran, und ein Vorleseprogramm
     # bekommt die Auskunft damit gleich mit.
@@ -353,7 +356,7 @@ def test_kein_ascii_ersatz_im_sichtbaren_text_der_vorlagen() -> None:
                "duration", "requeue", "enqueued", "aktuell", "steuerung",
                "quellenname", "zeitraeume", "uebersicht",
                # Deutsche Woerter, die die Buchstabenfolge echt enthalten.
-               "quelle", "quellen", "neue", "neuen", "neuer"}
+               "quelle", "quellen", "neue", "neuen", "neuer", "dauer"}
 
     treffer: list[str] = []
     for datei in TEMPLATE_DIR.rglob("*.html"):
@@ -912,3 +915,84 @@ def test_fremdsprachiger_text_ist_als_solcher_ausgezeichnet() -> None:
     assert 'lang="en"' in treffer.group(0), (
         f"der englische Grund ist nicht ausgezeichnet: {treffer.group(0)}"
     )
+
+
+def test_die_workflow_zustaende_haben_eigene_zustandsarten() -> None:
+    """Workflow-Ansicht, U6 Schritt 3. Die Task-Schluessel sind anderes
+    Vokabular ("laufend", nicht "laeuft"): ohne eigene Eintraege fiele ein
+    laufender Workflow auf das neutrale ``is-idle`` und saehe aus wie einer,
+    ueber den nichts bekannt ist.
+
+    Die Gruende eines nicht eingereihten Schritts (R11) sind Wartezustaende;
+    "nie gestartet" ist endgueltig und neutral wie "storniert".
+    """
+    from swarmq_dashboard.web.templates import zustandsart
+    from swarmq_dashboard.workflow_baum import (
+        GRUND_GESCHEITERT,
+        GRUND_STORNIERT,
+        GRUND_STORNO_GLIED,
+        GRUND_VORGAENGER_FERTIG,
+        GRUND_WARTET,
+    )
+
+    erwartet = {
+        "laeuft": "is-run", "fertig": "is-ok", "gescheitert": "is-fail",
+        "storniert": "is-idle", "angefordert": "is-wait",
+        "angefordert_nichts_aktiv": "is-wait", "verfallen": "is-idle",
+        "nie_gesehen": "is-idle",
+        GRUND_WARTET: "is-wait", GRUND_VORGAENGER_FERTIG: "is-wait",
+        GRUND_STORNO_GLIED: "is-wait",
+        GRUND_GESCHEITERT: "is-idle", GRUND_STORNIERT: "is-idle",
+    }
+    falsch = {k: zustandsart(k) for k, v in erwartet.items() if zustandsart(k) != v}
+    assert not falsch, f"falsche Zustandsart: {falsch}"
+    # Die Task-Schluessel bleiben, was sie waren.
+    assert zustandsart("laufend") == "is-run" and zustandsart("wiederholung") == "is-wait"
+
+
+def test_eine_dauer_ist_auf_einen_blick_lesbar() -> None:
+    """Dauer und Wartezeit eines Workflow-Schritts (R8).
+
+    Ein Download dauert Minuten, ein Rechenschritt Millisekunden: eine feste
+    Einheit machte das eine unlesbar lang oder das andere zu "0 s". Kein Wert
+    ist **nicht** null (wie bei ``zahl``), und eine negative Spanne -- zwei
+    Hosts mit getrennten Uhren -- wird nicht als Zeit ausgegeben.
+    """
+    from swarmq_dashboard.web.templates import dauer
+
+    assert dauer(None) == "--"
+    assert dauer(0.25) == "250 ms"
+    assert dauer(12.34) == "12,3 s"
+    assert dauer(245.0) == "4 min 05 s"
+    assert dauer(7380.0) == "2 h 03 min"
+    assert dauer(-1.0) == "--"
+
+
+def test_die_topologie_art_hat_einen_namen_in_beiden_umgebungen() -> None:
+    """Workflow-Ansicht, Review #5. Die Zuordnung Art -> Wort stand in drei
+    Vorlagen und lief schon auseinander (``unbekannt`` fehlte in zweien).
+    Sie steht jetzt an **einer** Stelle, und beide Umgebungen -- die der
+    Anwendung und die von ``render`` -- kennen sie.
+
+    Keine Art ist "--"; eine Art, die diese Fassung nicht kennt, bleibt als
+    Code stehen statt zu verschwinden.
+    """
+    from litestar.plugins.jinja import JinjaTemplateEngine
+
+    from swarmq_dashboard.web.templates import artname, template_config
+
+    erwartet = {"schritt": "Schritt", "kette": "Kette", "gruppe": "Gruppe",
+                "chord": "Chord", "unbekannt": "Bekannte Schritte"}
+    falsch = {k: artname(k) for k, v in erwartet.items() if artname(k) != v}
+    assert not falsch, f"falscher Name: {falsch}"
+    assert artname(None) == "--"
+    assert artname("spirale") == "spirale"
+
+    config = template_config()
+    engine = JinjaTemplateEngine(directory=TEMPLATE_DIR)
+    assert config.engine_callback is not None
+    config.engine_callback(engine)
+    vorlage = "{{ artname('chord') }}"
+    assert engine.engine.from_string(vorlage).render() == "Chord"
+    from swarmq_dashboard.web.templates import _env
+    assert _env.from_string(vorlage).render() == "Chord"

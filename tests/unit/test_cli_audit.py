@@ -7,6 +7,8 @@ Test-Liste (AGENTS.md):
 3. Ein leerer Strom wird benannt, nicht als leere Ausgabe gezeigt.
 4. Ein nicht erreichbarer Strom wird benannt und ergibt einen Rueckgabewert
    ungleich null -- sonst liest ein Skript "keine Aktionen" statt "kein Strom".
+5. Die Aktion ``workflow_cancel`` (Workflow-Ansicht, U7) erscheint mit
+   Ergebnis und Ziel und laesst sich nach ihr filtern.
 """
 
 from __future__ import annotations
@@ -89,3 +91,19 @@ def test_nicht_erreichbarer_strom_wird_benannt(tmp_path: Path) -> None:
     assert code != 0
     assert "traceback" not in text.lower()
     assert text.strip()
+
+
+def test_workflow_cancel_erscheint_und_ist_filterbar(tmp_path: Path) -> None:
+    """Workflow-Ansicht, U7: "wer hat diesen Workflow storniert" beantwortet
+    die Kommandozeile wie bei Tasks."""
+    wf = "00000001-0000-4000-8000-000000000000"
+    eintraege = [*_EINTRAEGE,
+                 AuditEntry(action="workflow_cancel", ts=1_700_000_180.0, account="dev",
+                            target=wf, outcome="lief bereits")]
+    code, text = _lauf(tmp_path, "audit", "list", "--action", "workflow_cancel",
+                       strom=FakeStream(eintraege))
+    assert code == 0
+    zeilen = [z for z in text.splitlines() if z.strip()]
+    assert len(zeilen) == 1, text
+    assert "workflow_cancel" in zeilen[0] and "lief bereits" in zeilen[0]
+    assert wf in zeilen[0] and "dev" in zeilen[0]

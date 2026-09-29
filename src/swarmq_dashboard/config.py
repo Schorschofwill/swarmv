@@ -42,6 +42,11 @@ DEFAULT_STREAM_STALE_AFTER_S = 120.0
 #: Valkey-Datenbankindex des Ereignisstroms (KTD9). Nicht 0 -- die
 #: Integrationsvorrichtung der Bibliothek leert Index 0 bei jedem Testlauf.
 DEFAULT_STREAM_DB = 1
+#: Takt des Workflow-Abgleichs (Workflow-Ansicht, KTD3). Muss weit unter der
+#: kleinsten ``result_ttl`` der Worker liegen: jedes Schreiben des Zustands
+#: setzt dessen Frist neu, und ein Zustand, der zwischen zwei Lesungen
+#: verfaellt, faellt auf "Zustand verfallen" statt auf seinen Endstatus.
+DEFAULT_WORKFLOW_POLL_S = 60.0
 
 #: Verzeichnis fuer die beiden lokalen Dateien. Bewusst ein eigener Ort und
 #: nicht das Arbeitsverzeichnis: er wird mit 0700 angelegt, und der Betreiber
@@ -147,6 +152,7 @@ class DashboardConfig:
     #: Ort der beiden lokalen Dateien (R7a, KTD8). Dokumentiert in
     #: docs/reference/betrieb.md.
     data_dir: Path = Path(DEFAULT_DATA_DIR)
+    workflow_poll_s: float = DEFAULT_WORKFLOW_POLL_S
 
     @property
     def directory_file(self) -> Path:
@@ -188,6 +194,9 @@ class DashboardConfig:
                 source, "SQD_STREAM_STALE_AFTER_S", DEFAULT_STREAM_STALE_AFTER_S, float
             ),
             data_dir=Path(source.get("SQD_DATA_DIR", "").strip() or DEFAULT_DATA_DIR),
+            workflow_poll_s=_number(
+                source, "SQD_WORKFLOW_POLL_S", DEFAULT_WORKFLOW_POLL_S, float
+            ),
         )
 
 

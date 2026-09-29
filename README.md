@@ -1,8 +1,8 @@
 # swarmv — Dashboard für swarmq
 
 Flower-artiges Web-Dashboard für [swarmq](https://gitlab.com/schorsch-dev/swarmq):
-Worker-Übersicht, Task-Verzeichnis, Dead-Letter-Bedienung und Steuerung der
-Worker-Gruppen über den Kontrollkanal. Eigenes Paket, eigener Prozess, eigene
+Worker-Übersicht, Task-Verzeichnis, Workflow-Ansicht, Dead-Letter-Bedienung
+und Steuerung der Worker-Gruppen über den Kontrollkanal. Eigenes Paket, eigener Prozess, eigene
 Veröffentlichung; die Bibliothek bekommt dadurch keine neue Pflichtabhängigkeit.
 
 ## Stand (2026-09-24)
@@ -20,11 +20,21 @@ Veröffentlichung; die Bibliothek bekommt dadurch keine neue Pflichtabhängigkei
   das System für Tasks trägt, für `io` wie für `cpu` — und die
   **Ergebnisanzeige** auf der Detailseite
   (`docs/plans/2026-09-23-1050-feat-ergebnisanzeige-plan.md`).
+- **Workflows** (`docs/plans/2026-09-28-1003-feat-workflow-ansicht-plan.md`):
+  ein eigener Bereich listet Ketten, Gruppen und Chords mit Status und
+  Fortschritt; die Detailseite zeigt die Topologie als Baum — worauf ein Chord
+  wartet, welches Glied warum scheiterte, was in den Body ging — und
+  storniert den ganzen Workflow nach Bestätigung. Den Zustand liest der
+  Dienst selbst aus dem Backend und hält eine Kopie, damit Baum und Endstatus
+  die sieben Tage überdauern; ein Endstatus steht nur da, wenn der Zustand
+  ihn trägt. Takt, Anzeigezustände und der Bezug zur `result_ttl`:
+  `docs/reference/betrieb.md`.
 - Stack: `docs/reference/stack-entscheidung.md` — Litestar, msgspec, Granian,
   Jinja2 + HTMX, SQLite mit FTS5-Trigrammen, argon2id.
 - Oberfläche: `docs/reference/oberflaeche.md` und `docs/mockup/` (freigegeben).
 - **Betrieb: `docs/reference/betrieb.md`** — Datenverzeichnis, Rechte, was
-  gelöscht werden darf, Konten anlegen, und wo die Ergebnisse liegen.
+  gelöscht werden darf, Konten anlegen, wo die Ergebnisse liegen, und wie
+  die Workflow-Ansicht ihren Zustand liest.
 - Die Task-Detailseite zeigt neben Argumenten und Signalfolge auch das
   **Ergebnis**. Es wird bei jedem Aufruf im Backend der Bibliothek
   nachgeschlagen und nirgends gespeichert: Es hat eine eigene Verfallsfrist
@@ -139,6 +149,29 @@ Entwicklung auf 127.0.0.1 gibt es `--insecure-http`.
 gehört der Bibliothek, und ihre Integrationstests führen dort ein `FLUSHDB`
 aus. Ein eigener Index lässt sich mit `SQD_STREAM_URL` setzen; ohne die
 Variable wird er aus `SWARMQ_BACKEND_URL` abgeleitet.
+
+**Workflows liest der Dienst im Takt von `SQD_WORKFLOW_POLL_S`** (Vorgabe
+60 Sekunden) aus dem Backend, dazu gleich nach jedem Ergebnis eines Schritts.
+Der Takt muss weit unter der kleinsten `result_ttl` der Worker liegen: ein
+Zustand, der zwischen zwei Lesungen verfällt, erscheint als „Zustand
+verfallen" statt mit seinem Endstatus.
+
+Alle Einstellungen des Dienstes auf einen Blick:
+
+| Variable | Vorgabe | Wirkung |
+|---|---|---|
+| `SWARMQ_BROKER_URL` | Pflicht | RabbitMQ der Bibliothek |
+| `SWARMQ_BACKEND_URL` | Pflicht | Valkey der Bibliothek (Index 0) |
+| `SQD_STREAM_URL` | aus `SWARMQ_BACKEND_URL`, Index 1 | Ereignisstrom des Dashboards; auch die Hooks lesen ihn |
+| `SQD_DATA_DIR` | `./sqd-data` | Verzeichnis- und Kontendatei; `--data-dir` geht vor |
+| `SQD_RETENTION_DAYS` | `7` | Aufbewahrung von Verzeichnis, Strom und Workflow-Kopie |
+| `SQD_SESSION_IDLE_S` | `1800` | Inaktivitätsfrist einer Sitzung |
+| `SQD_DISCONNECTED_AFTER_S` | `40` | ab wann ein Worker als getrennt gilt |
+| `SQD_UNCONFIRMED_AFTER_S` | `15` | ab wann ein gesendeter Sollwert als unbestätigt gilt |
+| `SQD_STREAM_STALE_AFTER_S` | `120` | ab wann der Ereignisstrom als verzögert gilt |
+| `SQD_BACKLOG_CAP` | `300` | Rückstau je Live-Verbindung |
+| `SQD_WORKFLOW_POLL_S` | `60` | Takt des Workflow-Abgleichs in Sekunden |
+| `SQD_WORKER_GROUP` | Queue-Menge | nur im Worker: Gruppe des Hooks, muss zu `--group` passen |
 
 Was wohin gehört, welche Datei gelöscht werden darf und welche nicht:
 `docs/reference/betrieb.md`.

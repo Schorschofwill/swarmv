@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import time
 from typing import Any
+from urllib.parse import quote
 
 from litestar import Request, get, post
 from litestar.exceptions import NotFoundException
@@ -188,9 +189,16 @@ async def _ergebnis_zu(request: Request[Any, Any, Any], zeile: Any) -> Ergebnisb
     return bild
 
 
-@get("/tasks/{task_id:str}")
-async def detail(request: Request[Any, Any, Any], task_id: FromPath[str]) -> Template:
-    """Die Task-Ansicht mit allen Feldern, Argumenten und der Signalfolge."""
+@get("/tasks/{kennung:path}")
+async def detail(request: Request[Any, Any, Any], kennung: FromPath[str]) -> Template:
+    """Die Task-Ansicht mit allen Feldern, Argumenten und der Signalfolge.
+
+    **Die Kennung ist ein Pfad, kein Segment.** Ein Workflow-Schritt heisst
+    ``{workflow_id}#{step_path}``, und der Pfad enthaelt ``/``; der Rahmen
+    dekodiert ``%2F`` vor dem Routing, ein Segment-Parameter endete also
+    fuer jeden Schritt einer Kette, Gruppe oder eines Chords mit 404.
+    """
+    task_id = kennung.removeprefix("/")
     q = _abfragen(request)
     schreiber = request.app.state.services.services_directory_writer
     zeile = schreiber.row(task_id)
@@ -218,8 +226,8 @@ async def detail(request: Request[Any, Any, Any], task_id: FromPath[str]) -> Tem
     )
 
 
-@post("/tasks/{task_id:str}/cancel")
-async def cancel(request: Request[Any, Any, Any], task_id: FromPath[str]) -> Redirect:
+@post("/tasks/{kennung:path}")
+async def cancel(request: Request[Any, Any, Any], kennung: FromPath[str]) -> Redirect:
     """Eine Stornierung **anfordern** (R12, R12a).
 
     Drei Faelle, und keiner davon ist ein Absturz:
@@ -233,6 +241,14 @@ async def cancel(request: Request[Any, Any, Any], task_id: FromPath[str]) -> Red
     * Das Backend ist weg: benannt. Die Ansicht darf dann **nicht**
       behaupten, die Stornierung sei angefordert.
     """
+    # Aus demselben Grund wie in ``detail`` ein Pfad: die Aktion haengt als
+    # letztes Segment an der Kennung.
+    if not kennung.endswith("/cancel"):
+        raise NotFoundException(detail="unbekannte Aktion")
+    task_id = kennung.removeprefix("/").removesuffix("/cancel")
+    # Wie ``|urlencode`` in den Vorlagen: eine rohe Raute schnitte der
+    # Browser als Fragment ab, und der Redirect endete mit 404.
+    ziel = quote(task_id, safe="/")
     services = request.app.state.services
     schreiber = services.services_directory_writer
     if schreiber is None:
@@ -245,14 +261,14 @@ async def cancel(request: Request[Any, Any, Any], task_id: FromPath[str]) -> Red
     if zeile["status"] in BEENDET:
         await services.audit.record("task_cancel", account=konto, target=task_id,
                                     outcome="abgelehnt", detail="der Task ist bereits beendet")
-        return Redirect(f"/tasks/{task_id}?hinweis=beendet", status_code=303)
+        return Redirect(f"/tasks/{ziel}?hinweis=beendet", status_code=303)
 
     try:
         neu = await services.canceller.cancel(task_id)
     except Exception as exc:
         await services.audit.record("task_cancel", account=konto, target=task_id,
                                     outcome="fehlgeschlagen", detail=str(exc)[:200])
-        return Redirect(f"/tasks/{task_id}?hinweis=backend", status_code=303)
+        return Redirect(f"/tasks/{ziel}?hinweis=backend", status_code=303)
 
     # Erst **nach** dem gelungenen Merker festhalten: sonst zeigte die Ansicht
     # eine Anforderung, die nie ankam.
@@ -261,4 +277,4 @@ async def cancel(request: Request[Any, Any, Any], task_id: FromPath[str]) -> Red
         "task_cancel", account=konto, target=task_id,
         outcome="ok" if neu else "lief bereits",
     )
-    return Redirect(f"/tasks/{task_id}", status_code=303)
+    return Redirect(f"/tasks/{ziel}", status_code=303)
