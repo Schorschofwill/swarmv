@@ -91,6 +91,12 @@ Test-Liste (AGENTS.md):
 === Belastung ===
 31. Drei tief verschachtelte Formen bleiben ueberschneidungsfrei.
     (sofort gruen, Absicherung der Stop-Bedingung)
+
+=== ZYKLUS 12: Platz im Kasten (U3, R1) ===
+32. Jeder Grund eines nicht eingereihten Schritts passt in die zweite Zeile
+    des Kastens, so wie die Vorlage sie setzt (11 px IBM Plex Mono, 12 px
+    Einzug links und rechts). Aufgefallen beim Zeichnen von AE2: "nie
+    gestartet, Workflow gescheitert" lief ueber den Rand.
 """
 
 from __future__ import annotations
@@ -629,3 +635,28 @@ def test_verschachtelte_formen_bleiben_ueberschneidungsfrei(topologie: dict[str,
     d = diagramm(baum_aus(topologie))
 
     assert len([k for k in d.knoten if k.art == "schritt"]) >= 9
+
+
+# === ZYKLUS 12: Platz im Kasten (U3, R1) ===
+
+
+def test_jeder_grund_passt_in_den_kasten() -> None:
+    """Die zweite Zeile nennt den Grund voll (AE2); abgeschnitten saehe
+    "startet nie" wie "wartet" aus. IBM Plex Mono ist dicktengleich mit
+    0,6 em -- die Breite eines Texts ist damit eine Rechnung, kein Messen.
+    Die Zahlen sind die von ``.dk-zusatz`` in app.css und ``_diagramm.html``."""
+    from swarmq_dashboard.workflow_baum import (
+        GRUND_GESCHEITERT,
+        GRUND_STORNIERT,
+        GRUND_STORNO_GLIED,
+        GRUND_VORGAENGER_FERTIG,
+        GRUND_WARTET,
+    )
+    from swarmq_dashboard.workflow_diagramm import KASTEN_B
+
+    zeichen_b = 0.6 * 11
+    einzug = 12
+    for grund in (GRUND_WARTET, GRUND_GESCHEITERT, GRUND_STORNIERT, GRUND_STORNO_GLIED,
+                  GRUND_VORGAENGER_FERTIG):
+        breite = 2 * einzug + len(grund) * zeichen_b
+        assert breite <= KASTEN_B, f"{grund!r} braucht {breite:.0f} px, der Kasten hat {KASTEN_B:g}"

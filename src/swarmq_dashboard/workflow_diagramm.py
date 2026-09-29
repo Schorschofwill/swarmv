@@ -30,8 +30,10 @@ RAND = 16.0
 ABSTAND_X = 56.0
 #: Senkrechter Abstand zwischen den Gliedern einer Gruppe.
 ABSTAND_Y = 16.0
-#: Kasten eines Schritts.
-KASTEN_B = 200.0
+#: Kasten eines Schritts. Breit genug fuer den laengsten Grund in der
+#: zweiten Zeile ("wartet auf storniertes Glied, startet nie", 11 px Mono):
+#: abgeschnitten saehe "startet nie" wie ein Warten aus.
+KASTEN_B = 300.0
 KASTEN_H = 40.0
 #: Zeichen des Namens, die in einen Kasten passen; laenger wird gekuerzt,
 #: der volle Name steht im Titel des Knotens (KTD3).

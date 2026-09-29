@@ -1,0 +1,75 @@
+{#- Das Workflow-Diagramm (Workflow-Diagramm, U3, KTD3).
+
+    Die Geometrie kommt fertig aus ``workflow_diagramm.anordnen``; hier wird
+    nur gezeichnet. Jede Kennung stammt aus dem Topologie-Pfad (KTD4):
+    ``live.js`` gleicht die Seite mit Idiomorph ab, und feste IDs lassen es
+    Knoten fuer Knoten tauschen statt das Bild neu aufzubauen (R9). -#}
+
+{#- Die Kennung eines Baumknotens im Diagramm, fuer Spruenge aus dem
+    Fehlerkopf -- dieselbe Regel wie ``_kennung`` in ``workflow_diagramm``. -#}
+{%- macro knoten_id(k) -%}
+  {%- if k.pfad is none %}dk-task-{{ k.task_id }}
+  {%- else %}dk{{ k.pfad|replace('/', '-') }}{% endif -%}
+{%- endmacro %}
+
+{%- macro zusatz(k) -%}
+  {%- if k.wartet_auf is not none -%}
+    wartet auf {{ k.wartet_auf }} {{ 'Glied' if k.wartet_auf == 1 else 'Glieder' }}
+  {%- elif k.grund -%}{{ k.grund }}
+  {#- "läuft seit" und "wartet seit" nennen das Wort schon selbst. -#}
+  {%- elif k.dauer_text and k.dauer_text.startswith(k.wort ~ ' ') -%}{{ k.dauer_text }}
+  {%- elif k.dauer_text -%}{{ k.wort }} · {{ k.dauer_text }}
+  {%- else -%}{{ k.wort }}
+  {%- endif -%}
+{%- endmacro %}
+
+{#- Was ein Vorleseprogramm am Knoten sagt: Name, Zustand, Zusatz. Das
+    Zeichen allein waere fuer das Ohr nichts. -#}
+{%- macro vorlesen(k) -%}
+  {%- if k.art == 'sammel' %}{{ k.titel }}, fertige Glieder dieser Gruppe
+  {%- else %}{{ k.titel }}, {{ k.wort }}
+    {%- if k.grund %}, {{ k.grund }}{% endif %}
+    {%- if k.wartet_auf is not none %}, wartet auf {{ k.wartet_auf }} {{ 'Glied' if k.wartet_auf == 1 else 'Glieder' }}{% endif %}
+    {%- if k.dauer_text %}, {{ k.dauer_text }}{% endif %}
+  {%- endif -%}
+{%- endmacro %}
+
+{%- macro knoten(k) -%}
+  {#- Ohne Ziel kein Link (R5): ein nicht eingereihter Schritt hat keine
+      Task-Ansicht, ein Link dorthin fuehrte auf eine 404. -#}
+  {%- set tag = 'a' if k.link else 'g' %}
+  <{{ tag }} id="{{ k.kennung }}" class="dk-knoten {{ k.klasse }}"
+    {%- if k.link %} href="{{ k.link }}" aria-label="{{ vorlesen(k) }}"{% endif %}>
+    {#- Der volle Name: der Kasten zeigt ihn womoeglich gekuerzt (KTD3). -#}
+    <title>{{ k.titel }}</title>
+    <rect class="dk-kasten" x="{{ k.x }}" y="{{ k.y }}" width="{{ k.b }}" height="{{ k.h }}" rx="6"/>
+    <text class="dk-name" x="{{ k.x + 12 }}" y="{{ k.y + 17 }}">{{ k.zeichen }} {{ k.kurzname }}</text>
+    <text class="dk-zusatz" x="{{ k.x + 12 }}" y="{{ k.y + 31 }}">{{ zusatz(k) }}</text>
+  </{{ tag }}>
+{%- endmacro %}
+
+{#- ``role="group"``, nicht ``img``: ein Bild verbaerge die Links darin vor
+    dem Vorleseprogramm (KTD3). -#}
+{%- macro diagramm(d, beschreibung) -%}
+<svg id="workflow-diagramm" class="dk" role="group" aria-labelledby="workflow-diagramm-titel"
+     width="{{ d.breite }}" height="{{ d.hoehe }}" viewBox="0 0 {{ d.breite }} {{ d.hoehe }}">
+  <title id="workflow-diagramm-titel">{{ beschreibung }}</title>
+  {%- for li in d.linien %}
+  {#- Die Linie traegt die Zustandsart ihres Ziels (KTD6); gestrichelt,
+      wenn das Ziel nie starten wird, kraeftiger, wenn es laeuft oder wartet. -#}
+  <path id="{{ li.kennung }}" class="dk-linie {{ li.klasse }}
+    {%- if li.gestrichelt %} is-gestrichelt{% endif %}
+    {%- if li.hervorgehoben %} is-hervorgehoben{% endif %}" d="{{ li.pfad }}"/>
+  {%- endfor %}
+  {%- for k in d.knoten %}
+  {%- if k.art in ('schritt', 'sammel') %}
+  {{ knoten(k) }}
+  {%- else %}
+  {#- Startpunkt und Knotenpunkt (KTD2) sind Kreise ohne Beschriftung. -#}
+  <circle id="{{ k.kennung }}" class="dk-{{ k.art }}
+    {%- if k.art == 'punkt' %} {{ k.klasse }}{% endif %}"
+    cx="{{ k.x + k.b / 2 }}" cy="{{ k.y + k.h / 2 }}" r="{{ k.b / 2 }}"/>
+  {%- endif %}
+  {%- endfor %}
+</svg>
+{%- endmacro %}

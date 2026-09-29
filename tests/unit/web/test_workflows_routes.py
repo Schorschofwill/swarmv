@@ -107,6 +107,49 @@ stornierten und gescheiterten.
     Kopf-Glied nicht mehr, das gescheiterte erneut (DLQ-Requeue).
 37. Die Seite der fertigen Glieder liest beim zweiten Abruf nichts mehr aus
     dem Backend.
+
+=== ZYKLUS 10: Das Diagramm (Workflow-Diagramm, U3, R1, R5, R6, R9) ===
+38. Covers AE1. Ein Chord mit 50 Downloads (47 fertig, 2 laufend, 1 in
+    Wiederholung), Body nicht eingereiht: ein SVG mit dem Sammelknoten
+    ``dk-h-fertig`` "47 fertig", drei einzelnen Knoten und dem Body ``dk-b``
+    mit "wartet auf 3 Glieder"; von jedem der vier Knoten eine Linie zum Body.
+39. Jeder Schritt-Knoten ist ein Link zur Task-Ansicht (auch mit ``#`` in
+    der Kennung), der Sammelknoten zur Seite der fertigen Glieder; ein nicht
+    eingereihter Schritt hat keinen Link.
+40. Covers AE2. Ein gescheiterter Chord: der Body nennt "nie gestartet,
+    Workflow gescheitert", die Linien zu ihm sind gestrichelt.
+41. Das SVG traegt ``role="group"`` und eine Kurzbeschreibung in
+    ``<title>``, kein ``role="img"``; Knoten sind ``<a>`` mit ``aria-label``
+    und nennen Zustandszeichen und -wort (R1); ein abgeschnittener Name
+    steht voll im ``<title>`` des Knotens.
+41a. Die zweite Zeile nennt Wort und Dauer, ohne das Wort zu doppeln:
+    "fertig · 1,0 s", aber "läuft seit ..." statt "läuft · läuft seit ...".
+42. R6: das SVG hat seine echte Breite und steht in einem Behaelter, der
+    waagerecht scrollt, statt zu schrumpfen. (sofort gruen -- die Breite
+    kam mit Fall 38, der Behaelter mit dem Stylesheet; per Mutation belegt:
+    ohne ``overflow-x`` in ``.dk-rahmen`` oder mit ``width="100%"`` rot.)
+43. Covers AE5. Zweimal gerendert ergibt dieselben Kennungen in derselben
+    Reihenfolge, auch wenn ein sichtbares Glied dazwischen den Zustand
+    wechselt. (sofort gruen: die Kennungen kommen aus U1; der Test haelt
+    fest, dass die Vorlage keine eigenen, etwa laufenden Nummern, vergibt.)
+43a. Startpunkt und Knotenpunkt stehen als Kreise im Diagramm, mit ihren
+    Kennungen ``dk-start`` und ``dk-<pfad>-ein``; der Knotenpunkt traegt
+    die Zustandsart seiner Linien.
+
+=== ZYKLUS 11: Umschalter und gemerkte Wahl (Workflow-Diagramm, U4, R7, R8) ===
+44. Ohne Angabe und ohne Cookie zeigt die Seite das Diagramm, nicht die Liste.
+45. Covers AE4. ``?ansicht=liste`` zeigt die Liste und setzt das Cookie
+    (Pfad ``/workflows``, ``SameSite=Strict``, ``Secure``); ein folgender
+    Aufruf eines anderen Workflows ohne Angabe zeigt die Liste.
+46. ``?ansicht=diagramm`` schlaegt ein Cookie "liste" und setzt es um.
+    (sofort gruen: faellt aus Fall 45 ohne neuen Code.)
+47. Ein unbekannter Wert zeigt das Diagramm und setzt kein Cookie.
+48. In der Ansicht "diagramm" wird der Ergebnisleser nicht aufgerufen, in
+    der Liste wie bisher.
+49. Storno-Knopf und Fehlerkopf stehen in beiden Ansichten; der Sprung aus
+    dem Fehlerkopf zeigt auf den Knoten der gezeigten Ansicht.
+50. Covers AE5. Der Umschalter-Link der aktiven Ansicht traegt
+    ``aria-current``, beide Links tragen ``ansicht``.
 """
 
 from __future__ import annotations
@@ -258,6 +301,11 @@ async def _angemeldet(config: DashboardConfig, *, ergebnisleser: object | None =
     await c.post("/login", data={"account": "ops", "password": _PASSWORT,
                                  "_csrf_token": merkmal}, follow_redirects=False)
     return (c, app) if mit_app else c
+
+
+#: Die Liste statt des Diagramms (U4). Die Faelle bis Zyklus 9 pruefen die
+#: Liste; seit dem Diagramm ist sie nicht mehr die Vorgabe.
+_LISTE = {"ansicht": "liste"}
 
 
 def _zeile(html: str, kennung: str) -> str:
@@ -425,7 +473,7 @@ async def test_der_body_wartet_auf_den_laufenden_kopf(tmp_path: Path) -> None:
     v.close()
     c = await _angemeldet(config)
     try:
-        antwort = await c.get(f"/workflows/{wf}")
+        antwort = await c.get(f"/workflows/{wf}", params=_LISTE)
         assert antwort.status_code == 200
         body = _zeile(antwort.text, "knoten-b")
         assert "nicht eingereiht — wartet auf Vorgänger" in _text(body)
@@ -450,7 +498,7 @@ async def test_vorgaenger_fertig_ist_ein_wartezustand(tmp_path: Path) -> None:
     v.close()
     c = await _angemeldet(config)
     try:
-        body = _zeile((await c.get(f"/workflows/{wf}")).text, "knoten-b")
+        body = _zeile((await c.get(f"/workflows/{wf}", params=_LISTE)).text, "knoten-b")
         assert "nicht eingereiht — Vorgänger fertig, nicht eingereiht" in _text(body)
         assert 'class="tag is-wait"' in body
         assert "wartet auf 0" not in _text(body)
@@ -475,7 +523,7 @@ async def test_fertige_glieder_sind_eine_aufklappbare_zeile(tmp_path: Path) -> N
     v.close()
     c = await _angemeldet(config)
     try:
-        html = (await c.get(f"/workflows/{wf}")).text
+        html = (await c.get(f"/workflows/{wf}", params=_LISTE)).text
         baum = re.search(r'<tbody id="workflow-baum">(.*?)</tbody>', html, re.S)
         assert baum
         zeilen = re.findall(r'<tr id="([^"]+)"', baum.group(1))
@@ -499,7 +547,7 @@ async def test_gescheiterte_kette_nennt_fehler_und_schuldigen(tmp_path: Path) ->
     v.close()
     c = await _angemeldet(config)
     try:
-        html = (await c.get(f"/workflows/{wf}")).text
+        html = (await c.get(f"/workflows/{wf}", params=_LISTE)).text
         oben = html[:html.index('id="workflow-baum"')]
         assert "ValueError: kaputt im Zustand" in oben
         assert 'href="#knoten-1"' in oben, "kein Sprung zum gescheiterten Schritt"
@@ -524,7 +572,7 @@ async def test_fertig_aus_der_kopie_nach_dem_verfall(tmp_path: Path) -> None:
     v.close()
     c = await _angemeldet(config)
     try:
-        html = (await c.get(f"/workflows/{wf}")).text
+        html = (await c.get(f"/workflows/{wf}", params=_LISTE)).text
         oben = html[:html.index('id="workflow-baum"')]
         assert 'class="tag is-ok"' in oben and "fertig" in _text(oben)
         assert "verfallen" not in _text(oben)
@@ -546,7 +594,7 @@ async def test_nie_gesehen_zeigt_die_bekannten_schritte(tmp_path: Path) -> None:
     v.close()
     c = await _angemeldet(config)
     try:
-        html = (await c.get(f"/workflows/{wf}")).text
+        html = (await c.get(f"/workflows/{wf}", params=_LISTE)).text
         oben = _text(html[:html.index('id="workflow-baum"')])
         assert "Zustand nie gesehen" in oben
         assert "nie lesen können" in oben
@@ -566,7 +614,7 @@ async def test_schrittkennung_mit_raute_fuehrt_zur_task_ansicht(tmp_path: Path) 
     v.close()
     c = await _angemeldet(config)
     try:
-        html = (await c.get(f"/workflows/{wf}")).text
+        html = (await c.get(f"/workflows/{wf}", params=_LISTE)).text
         verweis = re.search(r'<a class="trunc" href="(/tasks/[^"]+)">einzeln</a>',
                             _zeile(html, "knoten"))
         assert verweis and verweis.group(1) == f"/tasks/{wf}%23"
@@ -613,7 +661,7 @@ async def test_ein_beendetes_kopfglied_zeigt_sein_ergebnis(tmp_path: Path) -> No
     leser = _Zaehlleser(Ergebnisbild(zustand="fehlt", art=None, text=""))
     c = await _angemeldet(config, ergebnisleser=leser)
     try:
-        html = (await c.get(f"/workflows/{wf}")).text
+        html = (await c.get(f"/workflows/{wf}", params=_LISTE)).text
         assert "Ergebnis abgelaufen" in _text(_zeile(html, "knoten-h-g0"))
         assert "Ergebnis abgelaufen" not in _text(_zeile(html, "knoten-h-g1"))
         assert leser.aufrufe == [f"{wf}#/h/g0"]
@@ -637,7 +685,7 @@ async def test_ein_gruppen_kopfglied_ist_nicht_einzeln_anzeigbar(tmp_path: Path)
     leser = _Zaehlleser(Ergebnisbild(zustand="da", art="fertig", text="{}"))
     c = await _angemeldet(config, ergebnisleser=leser)
     try:
-        html = (await c.get(f"/workflows/{wf}")).text
+        html = (await c.get(f"/workflows/{wf}", params=_LISTE)).text
         assert "nicht einzeln anzeigbar" in _text(_zeile(html, "knoten-h-g0"))
         assert leser.aufrufe == []
     finally:
@@ -660,7 +708,7 @@ async def test_ein_ketten_kopfglied_zeigt_das_ergebnis_des_letzten_schritts(
     leser = _Zaehlleser(Ergebnisbild(zustand="da", art="gescheitert", text="TypeError: b"))
     c = await _angemeldet(config, ergebnisleser=leser)
     try:
-        html = (await c.get(f"/workflows/{wf}")).text
+        html = (await c.get(f"/workflows/{wf}", params=_LISTE)).text
         assert "gescheitert: TypeError: b" in _text(_zeile(html, "knoten-h-g0"))
         assert leser.aufrufe == [f"{wf}#/h/g0/1"]
     finally:
@@ -684,7 +732,7 @@ async def test_die_gefaltete_zeile_oeffnet_die_fertigen_glieder(tmp_path: Path) 
     leser = _Zaehlleser(Ergebnisbild(zustand="fehlt", art=None, text=""))
     c = await _angemeldet(config, ergebnisleser=leser)
     try:
-        baum = (await c.get(f"/workflows/{wf}")).text
+        baum = (await c.get(f"/workflows/{wf}", params=_LISTE)).text
         assert leser.aufrufe == [], "gefaltete Glieder wurden im Baum gelesen"
         verweis = re.search(r'<a href="([^"]+)">\s*150 fertig</a>',
                             _zeile(baum, "knoten-h-fertig"))
@@ -864,7 +912,7 @@ async def test_ein_laufender_workflow_bietet_stornieren_mit_bestaetigung(tmp_pat
     leser = _StornoLeser(_laufender_workflow(config, wf))
     c = await _angemeldet(config, workflowleser=leser)
     try:
-        seite = (await c.get(f"/workflows/{wf}")).text
+        seite = (await c.get(f"/workflows/{wf}", params=_LISTE)).text
         formular = re.search(rf'<form method="post" action="/workflows/{wf}/cancel">.*?</form>',
                              seite, re.S)
         assert formular, "kein Storno-Formular"
@@ -893,7 +941,7 @@ async def test_ein_fertiger_workflow_bietet_keinen_knopf(tmp_path: Path) -> None
                                       topologie=_DOWNLOADS, step_tasks=step_tasks))
     c = await _angemeldet(config, workflowleser=leser)
     try:
-        seite = (await c.get(f"/workflows/{wf}")).text
+        seite = (await c.get(f"/workflows/{wf}", params=_LISTE)).text
         assert "fertig" in _text(seite)
         assert "Workflow stornieren" not in seite
         assert f"/workflows/{wf}/cancel" not in seite
@@ -964,7 +1012,7 @@ async def test_ein_inzwischen_fertiger_workflow_ist_nicht_mehr_stornierbar(
     leser = _StornoLeser(laeuft)
     c, app = await _mit_audit(config, leser)
     try:
-        assert "Workflow stornieren" in (await c.get(f"/workflows/{wf}")).text
+        assert "Workflow stornieren" in (await c.get(f"/workflows/{wf}", params=_LISTE)).text
         leser.bild = Workflowbild(zustand="gelesen", status="completed", form="gruppe",
                                   topologie=laeuft.topologie, step_tasks=laeuft.step_tasks)
         antwort = await _stornieren(c, wf)
@@ -1155,7 +1203,7 @@ async def test_nach_dem_abbruch_aller_wartenden_ist_nichts_mehr_aktiv(tmp_path: 
                                          "queue": "wf"}))
         worker.close()
 
-        seite = await c.get(f"/workflows/{wf}")
+        seite = await c.get(f"/workflows/{wf}", params=_LISTE)
         text = _text(seite.text)
         assert "Stornierung angefordert, nichts mehr aktiv" in text
         # Die Glieder tragen "storniert" zu Recht; der Workflow nicht (R6).
@@ -1190,7 +1238,7 @@ async def test_ein_vor_dem_start_storniertes_glied_hat_keine_dauer(tmp_path: Pat
     v.close()
     c = await _angemeldet(config)
     try:
-        html = (await c.get(f"/workflows/{wf}")).text
+        html = (await c.get(f"/workflows/{wf}", params=_LISTE)).text
         assert _dauerzelle(html, "knoten-g0") == "--"
     finally:
         await c.__aexit__(None, None, None)
@@ -1207,7 +1255,7 @@ async def test_die_dauer_steht_nach_ende_und_waehrend_des_laufs(tmp_path: Path) 
     v.close()
     c = await _angemeldet(config)
     try:
-        html = (await c.get(f"/workflows/{wf}")).text
+        html = (await c.get(f"/workflows/{wf}", params=_LISTE)).text
         assert _dauerzelle(html, "knoten-0") == "1,0 s"
         assert _dauerzelle(html, "knoten-1").startswith("läuft seit ")
     finally:
@@ -1230,7 +1278,7 @@ async def test_kaputte_topologie_ist_ein_benannter_zustand(tmp_path: Path) -> No
         assert "Topologie nicht lesbar" in _zeile(liste.text, f"workflow-{kaputt}")
         assert "Topologie nicht lesbar" not in _zeile(liste.text, f"workflow-{heil}")
 
-        detail = await c.get(f"/workflows/{kaputt}")
+        detail = await c.get(f"/workflows/{kaputt}", params=_LISTE)
         assert detail.status_code == 200
         oben = _text(detail.text[:detail.text.index('id="workflow-baum"')])
         assert "Topologie nicht lesbar" in oben
@@ -1283,11 +1331,11 @@ async def test_die_detailseite_liest_ein_storniertes_kopfglied_nur_einmal(
     leser = SwarmQErgebnisleser(config.broker_url, config.backend_url, app=app)
     c = await _angemeldet(config, ergebnisleser=leser)
     try:
-        erste = await c.get(f"/workflows/{wf}")
+        erste = await c.get(f"/workflows/{wf}", params=_LISTE)
         assert erste.status_code == 200
         assert sorted(app.rufe) == sorted([storniert, gescheitert])
 
-        zweite = await c.get(f"/workflows/{wf}")
+        zweite = await c.get(f"/workflows/{wf}", params=_LISTE)
         assert zweite.status_code == 200
         assert sorted(app.rufe) == sorted([storniert, gescheitert, gescheitert])
     finally:
@@ -1316,5 +1364,421 @@ async def test_die_fertigen_glieder_werden_beim_zweiten_abruf_nicht_gelesen(
             assert seite.status_code == 200
             assert len(re.findall(r'<tr id="knoten', seite.text)) == 3
         assert sorted(app.rufe) == sorted(fertige)
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+# --- Zyklus 10: Das Diagramm (U3) ------------------------------------------
+
+
+def _svg(html: str) -> str:
+    """Das Diagramm der Seite."""
+    treffer = re.search(r'<svg id="workflow-diagramm".*?</svg>', html, re.S)
+    assert treffer, "kein Diagramm auf der Seite"
+    return treffer.group(0)
+
+
+def _element(svg: str, kennung: str) -> str:
+    """Das Element mit ``id="<kennung>"`` samt Inhalt -- ein Knoten ist ein
+    ``<a>`` oder ``<g>``, eine Linie ein ``<path>``."""
+    treffer = re.search(
+        rf'<(a|g|path|circle)\b[^>]*\bid="{re.escape(kennung)}"[^>]*?(?:/>|>.*?</\1>)',
+        svg, re.S)
+    assert treffer, f"kein Element {kennung!r} im Diagramm"
+    return treffer.group(0)
+
+
+def _chord_mit_fuenfzig(v: _Verzeichnis, wf: str) -> None:
+    """AE1: 47 fertig, 2 laufend, 1 in Wiederholung, Body nicht eingereiht."""
+    for i in range(50):
+        signale: tuple[str, ...] = ("task_started", "task_completed")
+        if i in (12, 31):
+            signale = ("task_started",)
+        elif i == 40:
+            signale = ("task_started", "task_failed", "task_retrying")
+        v.schritt(wf, f"/h/g{i}", 1_700_000_000.0 + i, *signale, name=f"bericht-{i}")
+    v.lesung(wf, _chord(_gruppe(*[_sig_top("download")] * 50), _sig_top("zusammenfassen")))
+
+
+async def test_das_diagramm_faltet_die_fertigen_und_fuehrt_in_den_body(
+        tmp_path: Path) -> None:
+    """Covers AE1. Links der Sammelknoten und drei einzelne Knoten, rechts
+    der Body mit der Zahl offener Glieder -- und je eine Linie zum Body."""
+    config = _config(tmp_path)
+    v = _Verzeichnis(config)
+    wf = _wf(1)
+    _chord_mit_fuenfzig(v, wf)
+    v.close()
+    c = await _angemeldet(config)
+    try:
+        svg = _svg((await c.get(f"/workflows/{wf}")).text)
+        assert "47 fertig" in _text(_element(svg, "dk-h-fertig"))
+        for glied in ("dk-h-g12", "dk-h-g31", "dk-h-g40"):
+            _element(svg, glied)
+        assert "wartet auf 3 Glieder" in _text(_element(svg, "dk-b"))
+        zum_body = re.findall(r'<path[^>]*\bid="(dk-kante-[^"]*-b)"', svg)
+        assert sorted(zum_body) == sorted(
+            f"dk-kante-{q}-b" for q in ("h-fertig", "h-g12", "h-g31", "h-g40")), zum_body
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+async def test_ein_knoten_fuehrt_zur_task_ansicht_der_sammelknoten_zu_den_gliedern(
+        tmp_path: Path) -> None:
+    """R5: ein Klick vom Knoten zur Task-Ansicht -- die Kennung traegt ``#``
+    und muss kodiert sein, sonst ist sie ein Sprungziel. Der Body ist nicht
+    eingereiht und hat keine Task-Ansicht, also keinen Link."""
+    config = _config(tmp_path)
+    v = _Verzeichnis(config)
+    wf = _wf(1)
+    _chord_mit_fuenfzig(v, wf)
+    v.close()
+    c = await _angemeldet(config)
+    try:
+        svg = _svg((await c.get(f"/workflows/{wf}")).text)
+        glied = _element(svg, "dk-h-g12")
+        assert glied.startswith("<a ") and f'href="/tasks/{wf}%23/h/g12"' in glied, glied
+        sammel = _element(svg, "dk-h-fertig")
+        assert sammel.startswith("<a ")
+        assert f'href="/workflows/{wf}/glieder?gruppe=/h"' in sammel, sammel
+        body = _element(svg, "dk-b")
+        assert body.startswith("<g ") and "href=" not in body, body
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+async def test_linien_zu_einem_nie_gestarteten_body_sind_gestrichelt(tmp_path: Path) -> None:
+    """Covers AE2. Der Chord ist gescheitert, der Body wird nie starten: er
+    sagt es selbst, und die Linien zu ihm sind gestrichelt (R3)."""
+    config = _config(tmp_path)
+    v = _Verzeichnis(config)
+    wf = _wf(1)
+    v.schritt(wf, "/h/g0", 1_700_000_000.0, "task_started", "task_completed")
+    v.schritt(wf, "/h/g1", 1_700_000_010.0, "task_started", "task_failed", fehler="kaputt")
+    v.lesung(wf, _chord(_gruppe(*[_sig_top("download")] * 2), _sig_top("zusammenfassen")),
+             status="failed", fehler={"type": "ValueError", "message": "kaputt"})
+    v.close()
+    c = await _angemeldet(config)
+    try:
+        svg = _svg((await c.get(f"/workflows/{wf}")).text)
+        assert "nie gestartet, Workflow gescheitert" in _text(_element(svg, "dk-b"))
+        linien = re.findall(r'<path[^>]*\bid="dk-kante-[^"]*-b"[^>]*>', svg)
+        assert len(linien) == 2, linien
+        for linie in linien:
+            assert "is-gestrichelt" in linie, linie
+        assert "is-gestrichelt" not in _element(svg, "dk-kante-start-h-g1")
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+async def test_das_diagramm_ist_fuer_screenreader_eine_gruppe_aus_links(
+        tmp_path: Path) -> None:
+    """KTD3: ``role="img"`` verbaerge die Links; ``group`` mit Titel laesst
+    sie erreichbar. Jeder Knoten nennt Zeichen und Wort (R1), und ein
+    gekuerzter Name steht voll im Titel des Knotens."""
+    config = _config(tmp_path)
+    v = _Verzeichnis(config)
+    wf, lang = _wf(1), _wf(2)
+    _chord_mit_fuenfzig(v, wf)
+    name = "berichte.erzeugen_und_versenden_an_alle_kunden"
+    v.schritt(lang, "", 1_700_000_000.0, "task_started", name=name)
+    v.lesung(lang, _sig_top(name))
+    v.close()
+    c = await _angemeldet(config)
+    try:
+        svg = _svg((await c.get(f"/workflows/{wf}")).text)
+        kopf = svg[:svg.index(">") + 1]
+        assert 'role="group"' in kopf and 'role="img"' not in svg, kopf
+        assert re.match(r'<svg[^>]*>\s*<title[^>]*>[^<]*\S[^<]*</title>', svg), svg[:300]
+        glied = _element(svg, "dk-h-g40")
+        assert re.search(r'aria-label="download, Wiederholung', glied), glied
+        assert "↻" in glied and "Wiederholung" in _text(glied)
+
+        knoten = _element(_svg((await c.get(f"/workflows/{lang}")).text), "dk")
+        assert f"<title>{name}</title>" in knoten, knoten
+        assert "…" in _text(knoten.replace(f"<title>{name}</title>", ""))
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+async def test_die_zweite_zeile_doppelt_das_wort_nicht(tmp_path: Path) -> None:
+    """R1: Wort und Dauer wie in der Liste -- "läuft seit" sagt das Wort
+    schon; "läuft · läuft seit" liest sich wie ein Fehler der Anzeige."""
+    config = _config(tmp_path)
+    v = _Verzeichnis(config)
+    wf = _wf(1)
+    v.schritt(wf, "/0", 1_700_000_000.0, "task_started", "task_completed", name="a")
+    v.schritt(wf, "/1", 1_700_000_010.0, "task_started", name="b")
+    v.lesung(wf, _kette(_sig_top("a"), _sig_top("b")))
+    v.close()
+    c = await _angemeldet(config)
+    try:
+        svg = _svg((await c.get(f"/workflows/{wf}")).text)
+        assert "fertig · 1,0 s" in _text(_element(svg, "dk-0"))
+        laufend = _text(_element(svg, "dk-1"))
+        assert "läuft seit " in laufend and "läuft · " not in laufend, laufend
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+async def test_ein_breites_diagramm_scrollt_statt_zu_schrumpfen(tmp_path: Path) -> None:
+    """R6: eine lange Kette ist breiter als jede Karte. Mit ``width="100%"``
+    schrumpfte das SVG samt Schrift; es behaelt seine Breite, und sein
+    Behaelter schiebt waagerecht -- wie ``.card-table`` bei breiten Tabellen."""
+    from swarmq_dashboard.web.templates import STATIC_DIR
+
+    config = _config(tmp_path)
+    v = _Verzeichnis(config)
+    wf = _wf(1)
+    v.schritt(wf, "/0", 1_700_000_000.0, "task_started", name="s0")
+    v.lesung(wf, _kette(*[_sig_top(f"s{i}") for i in range(8)]))
+    v.close()
+    c = await _angemeldet(config)
+    try:
+        html = (await c.get(f"/workflows/{wf}")).text
+        rahmen = re.search(r'<div class="dk-rahmen">\s*<svg id="workflow-diagramm"[^>]*>', html)
+        assert rahmen, "das Diagramm steht nicht in seinem Behaelter"
+        breite = re.search(r'\bwidth="([0-9.]+)"', rahmen.group(0))
+        assert breite and float(breite.group(1)) > 2000, rahmen.group(0)
+        css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+        regel = re.search(r"\n  \.dk-rahmen \{([^}]*)\}", css)
+        assert regel and re.search(r"overflow-x:\s*auto", regel.group(1)), regel
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+def _kennungen(svg: str) -> list[str]:
+    return re.findall(r'\bid="(dk-[^"]*)"', svg)
+
+
+async def test_die_kennungen_bleiben_ueber_ein_neuladen_gleich(tmp_path: Path) -> None:
+    """Covers AE5. ``live.js`` laedt die Seite und Idiomorph gleicht Element
+    fuer Element ab -- nur mit festen Kennungen tauscht es den geaenderten
+    Knoten, statt das ganze Bild neu aufzubauen (R9)."""
+    config = _config(tmp_path)
+    v = _Verzeichnis(config)
+    wf = _wf(1)
+    _chord_mit_fuenfzig(v, wf)
+    c = await _angemeldet(config)
+    try:
+        erste = _kennungen(_svg((await c.get(f"/workflows/{wf}")).text))
+        assert len(erste) == len(set(erste)) and "dk-b" in erste, erste
+        assert erste == _kennungen(_svg((await c.get(f"/workflows/{wf}")).text))
+
+        v.schritt(wf, "/h/g31", 1_700_000_031.0, "task_started", "task_failed",
+                  name="bericht-31")
+        danach = (await c.get(f"/workflows/{wf}")).text
+        assert "is-fail" in _element(_svg(danach), "dk-h-g31")
+        assert _kennungen(_svg(danach)) == erste
+    finally:
+        v.close()
+        await c.__aexit__(None, None, None)
+
+
+async def test_start_und_knotenpunkt_sind_gezeichnet(tmp_path: Path) -> None:
+    """KTD2: zwei Gruppen hintereinander treffen sich in einem Knotenpunkt;
+    ohne ihn liefen die Linien ins Leere -- sie enden an seinem Rand."""
+    config = _config(tmp_path)
+    v = _Verzeichnis(config)
+    wf = _wf(1)
+    v.schritt(wf, "/0/g0", 1_700_000_000.0, "task_started", "task_completed", name="a")
+    v.schritt(wf, "/0/g1", 1_700_000_001.0, "task_started", name="b")
+    v.lesung(wf, _kette(_gruppe(_sig_top("a"), _sig_top("b")),
+                        _gruppe(_sig_top("c"), _sig_top("d"))))
+    v.close()
+    c = await _angemeldet(config)
+    try:
+        svg = _svg((await c.get(f"/workflows/{wf}")).text)
+        assert _element(svg, "dk-start").startswith("<circle ")
+        punkt = _element(svg, "dk-1-ein")
+        assert punkt.startswith("<circle "), punkt
+        art = re.search(r"\b(is-(?:ok|run|wait|fail|idle))\b",
+                        _element(svg, "dk-kante-0-fertig-1-ein"))
+        assert art and art.group(1) in punkt, punkt
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+# --- Zyklus 11: Umschalter und gemerkte Wahl (U4) ----------------------------
+
+
+async def test_ohne_wahl_zeigt_die_seite_das_diagramm(tmp_path: Path) -> None:
+    """R8: wer nie gewaehlt hat, sieht das Diagramm -- und nur das; beide
+    Ansichten untereinander waeren die verworfene Variante aus KD2."""
+    config = _config(tmp_path)
+    v = _Verzeichnis(config)
+    wf = _wf(1)
+    _chord_mit_fuenfzig(v, wf)
+    v.close()
+    c = await _angemeldet(config)
+    try:
+        antwort = await c.get(f"/workflows/{wf}")
+        _svg(antwort.text)
+        assert 'id="workflow-baum"' not in antwort.text
+        assert "sqd_workflow_ansicht" not in antwort.headers.get("set-cookie", "")
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+def _zwei_workflows(config: DashboardConfig) -> tuple[str, str]:
+    v = _Verzeichnis(config)
+    erster, zweiter = _wf(1), _wf(2)
+    for wf in (erster, zweiter):
+        v.schritt(wf, "/0", 1_700_000_000.0, "task_started", name="a")
+        v.lesung(wf, _kette(_sig_top("a"), _sig_top("b")))
+    v.close()
+    return erster, zweiter
+
+
+def _ansicht_cookie(antwort: Any) -> str:
+    """Die Set-Cookie-Zeile der Ansicht, oder ``""``."""
+    for zeile in antwort.headers.get_list("set-cookie"):
+        if zeile.startswith("sqd_workflow_ansicht="):
+            return str(zeile)
+    return ""
+
+
+async def test_die_gewaehlte_liste_bleibt_fuer_den_naechsten_workflow(
+        tmp_path: Path) -> None:
+    """Covers AE4. Die Wahl steht in der Adresse und im Cookie (KTD5): wer
+    "Liste" gewaehlt hat, bekommt sie auch beim naechsten Workflow."""
+    config = _config(tmp_path)
+    erster, zweiter = _zwei_workflows(config)
+    c = await _angemeldet(config)
+    try:
+        gewaehlt = await c.get(f"/workflows/{erster}", params={"ansicht": "liste"})
+        assert 'id="workflow-baum"' in gewaehlt.text
+        cookie = _ansicht_cookie(gewaehlt)
+        assert cookie.startswith("sqd_workflow_ansicht=liste;"), cookie
+        teile = {t.strip().lower() for t in cookie.split(";")}
+        assert {"path=/workflows", "samesite=strict", "secure"} <= teile, cookie
+
+        spaeter = await c.get(f"/workflows/{zweiter}")
+        assert 'id="workflow-baum"' in spaeter.text
+        assert 'id="workflow-diagramm"' not in spaeter.text
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+async def test_ein_unbekannter_wert_zeigt_das_diagramm_und_merkt_nichts(
+        tmp_path: Path) -> None:
+    """KTD5: ein verstuemmelter Verweis aus einem Ticket ist keine Wahl --
+    weder fuer diese Seite noch fuer die naechsten; auch ein untergeschobenes
+    Cookie waehlt nichts Unbekanntes."""
+    config = _config(tmp_path)
+    erster, zweiter = _zwei_workflows(config)
+    c = await _angemeldet(config)
+    try:
+        antwort = await c.get(f"/workflows/{erster}", params={"ansicht": "tabelle"})
+        _svg(antwort.text)
+        assert 'id="workflow-baum"' not in antwort.text
+        assert _ansicht_cookie(antwort) == ""
+
+        c.cookies.set("sqd_workflow_ansicht", "<b>", domain="testserver.local",
+                      path="/workflows")
+        _svg((await c.get(f"/workflows/{zweiter}")).text)
+
+        # Auch neben einer gemerkten Liste gilt ein unbekannter Wert als
+        # Diagramm (KTD5) -- und die gemerkte Wahl bleibt, wie sie war.
+        await c.get(f"/workflows/{erster}", params={"ansicht": "liste"})
+        neben = await c.get(f"/workflows/{zweiter}", params={"ansicht": "tabelle"})
+        _svg(neben.text)
+        assert _ansicht_cookie(neben) == ""
+        assert 'id="workflow-baum"' in (await c.get(f"/workflows/{zweiter}")).text
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+async def test_die_adresse_schlaegt_das_cookie_und_setzt_es_um(tmp_path: Path) -> None:
+    """KTD5: erst die Adresse, dann das Cookie. Wer von der Liste zurueck
+    zum Diagramm schaltet, bekommt es auch beim naechsten Workflow."""
+    config = _config(tmp_path)
+    erster, zweiter = _zwei_workflows(config)
+    c = await _angemeldet(config)
+    try:
+        await c.get(f"/workflows/{erster}", params=_LISTE)
+        zurueck = await c.get(f"/workflows/{erster}", params={"ansicht": "diagramm"})
+        _svg(zurueck.text)
+        assert _ansicht_cookie(zurueck).startswith("sqd_workflow_ansicht=diagramm;")
+        _svg((await c.get(f"/workflows/{zweiter}")).text)
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+async def test_das_diagramm_liest_keine_ergebnisse(tmp_path: Path) -> None:
+    """U4: das Diagramm zeigt die Eingabe des Body nicht -- ein Backend-Zugriff
+    je Live-Meldung waere dort eine Last fuer nichts. Die Liste liest wie
+    bisher."""
+    config = _config(tmp_path)
+    v = _Verzeichnis(config)
+    wf = _wf(1)
+    gescheitert = v.schritt(wf, "/h/g0", 1_700_000_000.0, "task_started", "task_failed",
+                            fehler="kaputt")
+    v.schritt(wf, "/h/g1", 1_700_000_010.0, "task_started")
+    v.lesung(wf, _chord(_gruppe(*[_sig_top("download")] * 2), _sig_top("zusammenfassen")))
+    v.close()
+    leser = _Zaehlleser()
+    c = await _angemeldet(config, ergebnisleser=leser)
+    try:
+        _svg((await c.get(f"/workflows/{wf}")).text)
+        assert leser.aufrufe == []
+        await c.get(f"/workflows/{wf}", params=_LISTE)
+        assert leser.aufrufe == [gescheitert]
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+async def test_kopfangaben_stehen_in_beiden_ansichten(tmp_path: Path) -> None:
+    """R7: Status, Fehlerkopf und Stornieren stehen in beiden Ansichten. Der
+    Sprung aus dem Fehlerkopf fuehrt zum Knoten der **gezeigten** Ansicht --
+    ``#knoten-1`` zeigte im Diagramm ins Leere."""
+    config = _config(tmp_path)
+    v = _Verzeichnis(config)
+    laeuft, kaputt = _wf(1), _wf(2)
+    v.schritt(laeuft, "/0", 1_700_000_000.0, "task_started", name="a")
+    v.lesung(laeuft, _kette(_sig_top("a"), _sig_top("b")))
+    v.schritt(kaputt, "/0", 1_700_000_000.0, "task_started", "task_completed", name="a")
+    v.schritt(kaputt, "/1", 1_700_000_010.0, "task_started", "task_failed", name="b",
+              fehler="ValueError: kaputt")
+    v.lesung(kaputt, _kette(_sig_top("a"), _sig_top("b"), _sig_top("c")), status="failed",
+             fehler={"type": "ValueError", "message": "kaputt im Zustand"})
+    v.close()
+    c = await _angemeldet(config)
+    try:
+        for ansicht, sprung in (("diagramm", "dk-1"), ("liste", "knoten-1")):
+            seite = (await c.get(f"/workflows/{laeuft}", params={"ansicht": ansicht})).text
+            assert "Workflow stornieren" in seite, ansicht
+            seite = (await c.get(f"/workflows/{kaputt}", params={"ansicht": ansicht})).text
+            assert "ValueError: kaputt im Zustand" in seite, ansicht
+            assert f'href="#{sprung}"' in seite and f'id="{sprung}"' in seite, ansicht
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+def _umschalter(html: str) -> dict[str, str]:
+    """Die Links des Umschalters: Ziel -> ganzes Tag."""
+    nav = re.search(r'<nav class="ansicht"[^>]*>(.*?)</nav>', html, re.S)
+    assert nav, "kein Umschalter auf der Seite"
+    return {m.group(1).replace("&amp;", "&"): m.group(0)
+            for m in re.finditer(r'<a [^>]*href="([^"]*)"[^>]*>', nav.group(1))}
+
+
+async def test_der_umschalter_markiert_die_aktive_ansicht(tmp_path: Path) -> None:
+    """Covers AE5. Zwei Links "Diagramm | Liste" mit ``?ansicht=``; der
+    aktive traegt ``aria-current`` -- auch, wenn die Wahl nur im Cookie
+    steht und die Adresse keine traegt."""
+    config = _config(tmp_path)
+    erster, zweiter = _zwei_workflows(config)
+    c = await _angemeldet(config)
+    try:
+        links = _umschalter((await c.get(f"/workflows/{erster}")).text)
+        assert set(links) == {"?ansicht=diagramm", "?ansicht=liste"}, links
+        assert 'aria-current="page"' in links["?ansicht=diagramm"]
+        assert "aria-current" not in links["?ansicht=liste"]
+
+        await c.get(f"/workflows/{erster}", params=_LISTE)
+        links = _umschalter((await c.get(f"/workflows/{zweiter}")).text)
+        assert 'aria-current="page"' in links["?ansicht=liste"]
+        assert "aria-current" not in links["?ansicht=diagramm"]
     finally:
         await c.__aexit__(None, None, None)

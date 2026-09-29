@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% import "workflows/_baum.html" as b with context %}
+{% import "workflows/_diagramm.html" as dg %}
 {% block titel %}Workflow {{ workflow_id }}{% endblock %}
 {% block inhalt %}
 
@@ -87,7 +88,7 @@
     <tbody>
       {%- for f in baum.fehlschlaege %}
       <tr>
-        <td class="mono"><a href="#{{ b.knoten_id(f) }}">{{ f.pfad if f.pfad is not none else '?' }}</a></td>
+        <td class="mono"><a href="#{{ b.knoten_id(f) if ansicht == 'liste' else dg.knoten_id(f) }}">{{ f.pfad if f.pfad is not none else '?' }}</a></td>
         <td class="mono">
           {%- if f.task_id %}<a href="/tasks/{{ f.task_id|urlencode }}">{{ f.task_name or f.task_id }}</a>
           {%- else %}{{ f.task_name or '--' }}{% endif %}</td>
@@ -126,7 +127,25 @@
 {%- endif %}
 
 <section class="card">
-  <h3 class="card-section">Schritte</h3>
+  {#- R7, KD2: zwei vollwertige Ansichten. Die Wahl steht in der Adresse,
+      die Route merkt sie im Cookie (KTD5); ``live.js`` laedt dieselbe
+      Adresse nach, die Ansicht bleibt also stehen (R9). -#}
+  <div class="card-section ansicht-kopf">
+    <h3>Schritte</h3>
+    <nav class="ansicht" aria-label="Ansicht der Schritte">
+      {%- for wert, wort in (('diagramm', 'Diagramm'), ('liste', 'Liste')) %}
+      <a class="qtab" href="?ansicht={{ wert }}"
+        {%- if ansicht == wert %} aria-current="page"{% endif %}>{{ wort }}</a>
+      {%- endfor %}
+    </nav>
+  </div>
+  {%- if ansicht == 'diagramm' %}
+  <div class="dk-rahmen">
+    {{ dg.diagramm(diagramm, 'Workflow ' ~ workflow_id ~ ' als Diagramm: ' ~ artname(baum.form)
+                   ~ ', ' ~ fortschritt.fertig ~ ' von ' ~ fortschritt.gesamt ~ ' Schritten fertig, '
+                   ~ anzeige.text) }}
+  </div>
+  {%- else %}
   <div class="card-table">
   <table>
     <colgroup>
@@ -141,6 +160,7 @@
     </tbody>
   </table>
   </div>
+  {%- endif %}
 </section>
 
 {% endblock %}

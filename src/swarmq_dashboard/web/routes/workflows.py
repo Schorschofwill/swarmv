@@ -23,6 +23,7 @@ from typing import Annotated, Any
 from urllib.parse import quote, urlencode
 
 from litestar import Request, get, post
+from litestar.datastructures import Cookie
 from litestar.enums import RequestEncodingType
 from litestar.exceptions import NotFoundException
 from litestar.params import Body, FromPath
@@ -31,8 +32,10 @@ from litestar.response import Redirect, Template
 from swarmq_dashboard.directory.queries import Workflowfilter
 from swarmq_dashboard.web.auth import SESSION_ACCOUNT_KEY
 from swarmq_dashboard.web.ergebnis import Ergebnisbild
+from swarmq_dashboard.web.routes.login import _sicher
 from swarmq_dashboard.web.routes.tasks import BEENDET, ZEITRAEUME, _abfragen, _zahl
 from swarmq_dashboard.workflow_baum import Knoten, knoten_wobei
+from swarmq_dashboard.workflow_diagramm import anordnen
 from swarmq_dashboard.workflows import (
     AUSGANG_NEU_GESETZT,
     AUSGANG_NICHT_GEFUNDEN,
@@ -116,6 +119,32 @@ def _weiterlink(request: Request[Any, Any, Any], cursor: str | None) -> str:
     teile = {k: p.get(k, "") for k in ("q", "status", "seit", "since", "until")}
     teile["cursor"] = cursor
     return urlencode({k: v for k, v in teile.items() if v})
+
+
+#: Die Ansichten der Detailseite (KD2); die erste ist die Vorgabe (R8).
+ANSICHTEN = ("diagramm", "liste")
+#: Das Cookie, das die zuletzt gewaehlte Ansicht haelt (KTD5).
+ANSICHT_COOKIE = "sqd_workflow_ansicht"
+
+
+def _ansicht(request: Request[Any, Any, Any]) -> tuple[str, Cookie | None]:
+    """Welche Ansicht die Detailseite zeigt, und das Cookie, das eine Wahl
+    aus der Adresse festhaelt (KTD5).
+
+    Erst die Adresse, dann das Cookie, sonst das Diagramm. Nur eine Wahl
+    aus der Adresse schreibt das Cookie -- sie ist ein Klick auf den
+    Umschalter. ``live.js`` laedt ``location.href``; traegt die Adresse die
+    Wahl, bleibt sie beim Nachladen erhalten, sonst haelt sie das Cookie.
+    Ein unbekannter Wert gilt als Diagramm und merkt nichts -- ein
+    verstuemmelter Verweis soll keine gemerkte Wahl ueberschreiben.
+    """
+    gewaehlt = request.query_params.get("ansicht", request.cookies.get(ANSICHT_COOKIE))
+    if gewaehlt not in ANSICHTEN:
+        return ANSICHTEN[0], None
+    if "ansicht" not in request.query_params:
+        return gewaehlt, None
+    return gewaehlt, Cookie(key=ANSICHT_COOKIE, value=gewaehlt, path="/workflows",
+                            secure=_sicher(request), httponly=True, samesite="strict")
 
 
 def _kontext(request: Request[Any, Any, Any], **kontext: Any) -> dict[str, Any]:
@@ -206,6 +235,8 @@ async def workflow_detail(request: Request[Any, Any, Any],
             "hat ihn bestätigt."
         )
     baum = detail.baum
+    jetzt = time.time()
+    ansicht, cookie = _ansicht(request)
     return Template(
         "workflows/detail.html",
         context=_kontext(
@@ -217,9 +248,16 @@ async def workflow_detail(request: Request[Any, Any, Any],
             last_seen_at=detail.last_seen_at,
             gelesen_at=detail.kopie.gelesen_at,
             hinweis=request.query_params.get("hinweis"),
-            ergebnisse=await _ergebnisse(request, _sichtbare_kopfglieder(baum.wurzel)),
-            jetzt=time.time(),
+            ansicht=ansicht,
+            # Das Diagramm nennt die Eingabe des Body nicht und liest darum
+            # kein Ergebnis -- sonst kostete jede Live-Meldung Backend-Zugriffe
+            # fuer nichts (U4).
+            ergebnisse=(await _ergebnisse(request, _sichtbare_kopfglieder(baum.wurzel))
+                        if ansicht == "liste" else {}),
+            diagramm=anordnen(baum, workflow_id=workflow_id, jetzt=jetzt),
+            jetzt=jetzt,
         ),
+        cookies=[cookie] if cookie is not None else [],
     )
 
 
