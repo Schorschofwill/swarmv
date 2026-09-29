@@ -24,7 +24,12 @@ Veröffentlichung; die Bibliothek bekommt dadurch keine neue Pflichtabhängigkei
   ein eigener Bereich listet Ketten, Gruppen und Chords mit Status und
   Fortschritt; die Detailseite zeigt die Topologie als Baum — worauf ein Chord
   wartet, welches Glied warum scheiterte, was in den Body ging — und
-  storniert den ganzen Workflow nach Bestätigung. Den Zustand liest der
+  storniert den ganzen Workflow nach Bestätigung. Seit dem
+  **Workflow-Diagramm** (`docs/plans/2026-09-29-1015-feat-workflow-diagramm-plan.md`)
+  zeigt sie die Schritte zuerst als Diagramm aus Knoten und Linien. Der
+  Umschalter „Diagramm | Liste“ führt zur eingerückten Liste, und die Seite
+  merkt sich die Wahl. Zeichen, Farben und Linienarten:
+  `docs/reference/oberflaeche.md`. Den Zustand liest der
   Dienst selbst aus dem Backend und hält eine Kopie, damit Baum und Endstatus
   die sieben Tage überdauern; ein Endstatus steht nur da, wenn der Zustand
   ihn trägt. Takt, Anzeigezustände und der Bezug zur `result_ttl`:

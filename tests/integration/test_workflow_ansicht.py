@@ -28,6 +28,30 @@ Test-Liste (AGENTS.md):
        die Ansicht zeigt "Stornierung angefordert, nichts mehr aktiv" --
        keinen Endstatus, kein erneutes Stornieren. Der Zustand in Valkey
        steht dabei wirklich noch auf "running" (R6).
+
+=== ZYKLUS 3: Der echte Chord als Diagramm (Workflow-Diagramm U5, Covers F1, R1, R2) ===
+3. [x] Ohne Angabe und ohne Cookie zeigt die Detailseite das Diagramm,
+       nicht die Liste: drei wartende Downloads untereinander, vom
+       Startpunkt aufgefaechert, jeder mit einer Linie zum Body, der
+       "wartet auf 3 Glieder" nennt. Nach dem Worker steht der Body auf
+       "fertig", die Downloads sind zum Sammelknoten "3 fertig" gefaltet,
+       der auf die Seite der fertigen Glieder verweist.
+       (Das Verhalten stand aus U3/U4; rot war der Fall zuerst an der
+       eigenen Erwartung -- die Glieder stehen je nach Ankunft des
+       Hook-Ereignisses auf "eingereiht" oder "wartet seit", beides
+       neutral. Per Mutation belegt: mit der Liste als Vorgabe scheitert
+       er am fehlenden Diagramm.)
+
+=== ZYKLUS 4: Umschalter und gemerkte Wahl (Workflow-Diagramm U5, Covers AE4, R7, R8) ===
+4. [x] "Liste" in der Adresse zeigt den Baum und setzt das Cookie
+       (Pfad /workflows, SameSite=Strict, HttpOnly, Secure); ein anderer
+       Workflow ohne Angabe zeigt danach die Liste. "Diagramm" in der
+       Adresse schaltet zurueck und merkt auch das. Ein unbekannter Wert
+       zeigt das Diagramm und laesst die gemerkte Wahl stehen.
+       (Zuerst rot am eigenen Test: jede Antwort erneuert auch das
+       Sitzungs-Cookie, geprueft wird nur das Ansicht-Cookie. Per Mutation
+       belegt: liest die Route das Cookie nicht, zeigt der zweite Workflow
+       das Diagramm statt der Liste.)
 """
 
 from __future__ import annotations
@@ -330,6 +354,51 @@ def _status(detail_html: str) -> str:
     return treffer.group(1)
 
 
+@dataclass(frozen=True)
+class Diagrammknoten:
+    """Ein Knoten des Diagramms, wie die Seite ihn liefert."""
+
+    kennung: str
+    klasse: str
+    titel: str
+    text: str
+    link: str | None
+
+
+def _diagramm(detail_html: str) -> tuple[dict[str, Diagrammknoten], set[str]] | None:
+    """Knoten und Linienkennungen des Diagramms, ``None`` ohne Diagramm.
+
+    Aus dem Markup, nicht aus ``anordnen``: geprueft wird, was ueber HTTP
+    ankommt. Die Linien bleiben Kennungen -- ``dk-kante-<von>-<nach>`` laesst
+    sich nicht eindeutig zerlegen, die Pfade enthalten selbst Striche.
+    """
+    svg = re.search(r'<svg id="workflow-diagramm".*?</svg>', detail_html, re.S)
+    if svg is None:
+        return None
+    knoten: dict[str, Diagrammknoten] = {}
+    for m in re.finditer(r'<(a|g) id="(dk-[^"]+)" class="dk-knoten ([^"]+)"([^>]*)>(.*?)</\1>',
+                         svg.group(0), re.S):
+        link = re.search(r'href="([^"]*)"', m.group(4))
+        titel = re.search(r"<title>(.*?)</title>", m.group(5), re.S)
+        text = " ".join(re.sub(r"<title>.*?</title>|<[^>]+>", " ", m.group(5), flags=re.S).split())
+        knoten[m.group(2)] = Diagrammknoten(
+            kennung=m.group(2), klasse=m.group(3).strip(),
+            titel=titel.group(1).strip() if titel else "", text=text,
+            link=link.group(1) if link else None,
+        )
+    linien = set(re.findall(r'<path id="(dk-kante-[^"]+)" class="dk-linie', svg.group(0)))
+    return knoten, linien
+
+
+def _name(k: Diagrammknoten) -> str:
+    """Der Teil einer Knotenkennung, der in eine Linienkennung eingeht (KTD4)."""
+    return k.kennung.removeprefix("dk-")
+
+
+def _schritte(knoten: dict[str, Diagrammknoten], task_name: str) -> list[Diagrammknoten]:
+    return [k for k in knoten.values() if k.titel == task_name]
+
+
 # -- Faelle --------------------------------------------------------------------
 
 
@@ -418,3 +487,125 @@ async def test_ein_wartender_chord_wird_storniert_und_nichts_ist_mehr_aktiv(lauf
     assert lauf.audit is not None
     eintraege = [e for e in await lauf.audit.read(action="workflow_cancel") if e.target == wf]
     assert [e.outcome for e in eintraege] == ["ok"], eintraege
+
+
+async def test_ein_echter_chord_steht_als_diagramm_da_und_wird_fertig(lauf: Lauf) -> None:
+    """Covers F1, R1, R2. Der Chord aus dem Durchstich, diesmal im Diagramm:
+    ohne Wahl ist es die Vorgabe, und Knoten wie Linien entstehen aus dem
+    Zustand, den Bibliothek und Worker schreiben."""
+    wf = await _starten(lauf)
+    lade, fasse = f"{lauf.queue}_lade", f"{lauf.queue}_fasse"
+
+    def body_wartet(d: str) -> bool:
+        bild = _diagramm(d)
+        return bild is not None and any(
+            "wartet auf 3 Glieder" in k.text for k in _schritte(bild[0], fasse))
+
+    wartend = await _warten(_detail(lauf, wf), body_wartet, was="Body wartet auf 3")
+    assert 'id="workflow-baum"' not in wartend, "R8: ohne Wahl zeigt die Seite das Diagramm"
+    bild = _diagramm(wartend)
+    assert bild is not None
+    knoten, linien = bild
+    kopf = _schritte(knoten, lade)
+    [body] = _schritte(knoten, fasse)
+    assert len(kopf) == 3, knoten
+    # Jeder Schritt ist Zeichen, Wort und Name -- Farbe allein nie (R1).
+    for glied in kopf:
+        # "eingereiht" aus der Topologie oder "wartet seit" aus dem Ereignis
+        # des Anwendungs-Hooks -- je nachdem, was zuerst ankam; neutral beides.
+        assert glied.klasse == "is-idle" and glied.text.startswith("○ "), glied
+        assert "eingereiht" in glied.text or "wartet seit" in glied.text, glied
+        assert glied.link is not None and glied.link.startswith("/tasks/"), glied
+    assert body.link is None, "R5: ein nicht eingereihter Body hat keine Task-Ansicht"
+    # Der Kopf faechert vom Startpunkt auf und fuehrt in den Body (R2).
+    for glied in kopf:
+        assert f"dk-kante-start-{_name(glied)}" in linien, (glied.kennung, linien)
+        assert f"dk-kante-{_name(glied)}-{_name(body)}" in linien, (glied.kennung, linien)
+
+    await lauf.worker_starten()
+
+    def body_fertig(d: str) -> bool:
+        bild = _diagramm(d)
+        return bild is not None and any(
+            k.klasse == "is-ok" and "fertig" in k.text for k in _schritte(bild[0], fasse))
+
+    fertig = await _warten(_detail(lauf, wf), body_fertig, was="Body fertig")
+    bild = _diagramm(fertig)
+    assert bild is not None
+    knoten, linien = bild
+    [body_nachher] = _schritte(knoten, fasse)
+    # Dieselbe Kennung wie vorher: idiomorph gleicht den Knoten ab (R9).
+    assert body_nachher.kennung == body.kennung
+    assert body_nachher.link is not None and body_nachher.link.startswith("/tasks/")
+    # Die fertigen Downloads sind gefaltet (R4) und verweisen auf ihre Seite.
+    assert _schritte(knoten, lade) == [], knoten
+    [sammel] = [k for k in knoten.values() if k.kennung.endswith("-fertig")]
+    assert sammel.titel == "3 fertig", sammel
+    assert sammel.link is not None and sammel.link.startswith(f"/workflows/{wf}/glieder?gruppe="), sammel
+    assert f"dk-kante-{_name(sammel)}-{_name(body)}" in linien, linien
+
+
+def _ansicht_der_seite(detail_html: str) -> str:
+    """Welche Ansicht die Seite zeigt -- genau eine, nie beide (R7)."""
+    diagramm = _diagramm(detail_html) is not None
+    liste = 'id="workflow-baum"' in detail_html
+    assert diagramm != liste, "die Seite zeigt beide Ansichten oder keine"
+    return "diagramm" if diagramm else "liste"
+
+
+def _ansicht_cookie(antwort: Any) -> str | None:
+    """Das gesetzte Ansicht-Cookie einer Antwort; die Sitzung erneuert ihr
+    eigenes Cookie bei jeder Antwort und zaehlt hier nicht."""
+    eigene = [c for c in antwort.headers.get_list("set-cookie")
+              if c.startswith("sqd_workflow_ansicht=")]
+    assert len(eigene) <= 1, eigene
+    return eigene[0] if eigene else None
+
+
+async def test_die_gewaehlte_ansicht_steht_in_der_adresse_und_wird_gemerkt(lauf: Lauf) -> None:
+    """Covers AE4, R7, R8. Der Umschalter gegen den echten Dienst, mit dem
+    Cookie, wie der Client es zuruecksendet -- nicht wie eine Attrappe es
+    sich vorstellt."""
+    erster = await _starten(lauf)
+    zweiter = await _starten(lauf)
+
+    def mit_body(d: str) -> bool:
+        bild = _diagramm(d)
+        return bild is not None and any(k.kennung == "dk-b" for k in bild[0].values())
+
+    for wf in (erster, zweiter):
+        await _warten(_detail(lauf, wf), mit_body, was=f"Diagramm von {wf} mit Body")
+
+    liste = await lauf.web.get(f"/workflows/{erster}?ansicht=liste", headers={"accept": "text/html"})
+    assert liste.status_code == 200
+    assert _ansicht_der_seite(liste.text) == "liste"
+    assert 'id="knoten-b"' in liste.text, "die Liste zeigt den Baum mit dem Body"
+    assert re.search(r'href="\?ansicht=liste"\s+aria-current="page"', liste.text), \
+        "der Umschalter markiert die gewaehlte Ansicht"
+    cookie = _ansicht_cookie(liste)
+    assert cookie is not None and cookie.startswith("sqd_workflow_ansicht=liste;"), cookie
+    for merkmal in ("Path=/workflows", "SameSite=Strict", "HttpOnly", "Secure"):
+        assert merkmal.lower() in cookie.lower(), (merkmal, cookie)
+
+    # Ein anderer Workflow ohne Angabe: die gemerkte Wahl gilt (AE4).
+    anderer = await _detail(lauf, zweiter)()
+    assert anderer is not None and _ansicht_der_seite(anderer) == "liste"
+    # Dieselben Kopfangaben in beiden Ansichten (R7).
+    assert _status(anderer) == "läuft" and "Workflow stornieren" in anderer
+
+    # Ein verstuemmelter Wert zeigt das Diagramm, merkt aber nichts.
+    quatsch = await lauf.web.get(f"/workflows/{zweiter}?ansicht=quatsch",
+                                 headers={"accept": "text/html"})
+    assert _ansicht_der_seite(quatsch.text) == "diagramm"
+    assert _ansicht_cookie(quatsch) is None
+    nach_quatsch = await _detail(lauf, zweiter)()
+    assert nach_quatsch is not None and _ansicht_der_seite(nach_quatsch) == "liste"
+
+    # Zurueck zum Diagramm -- auch das wird gemerkt.
+    zurueck = await lauf.web.get(f"/workflows/{zweiter}?ansicht=diagramm",
+                                 headers={"accept": "text/html"})
+    assert _ansicht_der_seite(zurueck.text) == "diagramm"
+    gemerkt = _ansicht_cookie(zurueck)
+    assert gemerkt is not None and gemerkt.startswith("sqd_workflow_ansicht=diagramm;"), gemerkt
+    wieder = await _detail(lauf, erster)()
+    assert wieder is not None and _ansicht_der_seite(wieder) == "diagramm"

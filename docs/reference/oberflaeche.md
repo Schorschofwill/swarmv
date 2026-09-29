@@ -118,6 +118,89 @@ erst in eine zweite Runde:
   einem Absturz. Die dauerhafte Liste kommt aus dem Verzeichnis und ist als
   möglicherweise unvollständig beschriftet; sie kostet nichts.
 
+## Workflow-Diagramm
+
+Die Detailseite eines Workflows zeigt seine Schritte als Diagramm aus Knoten
+und Linien (`docs/plans/2026-09-29-1015-feat-workflow-diagramm-plan.md`).
+Das SVG rendert der Server aus `workflow_diagramm.anordnen` und der Vorlage
+`workflows/_diagramm.html`; es braucht kein JavaScript und keine Bibliothek.
+
+**Anordnung.** Das Diagramm läuft von links nach rechts und beginnt an einem
+kleinen Startpunkt. Eine Kette steht hintereinander, die Glieder einer Gruppe
+stehen untereinander, ein Chord fächert in seinen Kopf auf und führt in den
+Body zusammen. Verschachtelte Teile rücken nach rechts. Knoten und Linien
+überschneiden sich nicht. Folgen zwei Blöcke mit je mehreren Anschlüssen
+aufeinander (Gruppe nach Gruppe), laufen die Linien über einen kleinen
+Knotenpunkt statt über eine Matrix aus Linien.
+
+**Knoten.** Jeder Schritt ist ein Kasten mit Zustandszeichen, Task-Name und
+einer zweiten Zeile: Zustandswort und Dauer („läuft seit 2,1 s“), der Grund
+eines nicht eingereihten Schritts oder „wartet auf 3 Glieder“. Ein zu langer
+Name wird gekürzt und steht vollständig im Tooltip. Die Farbe trägt den
+Zustand nie allein, Zeichen und Wort stehen immer dabei:
+
+| Zeichen | Farbe | Zustände |
+|---|---|---|
+| ✓ | ok | fertig |
+| ▶ | läuft | läuft |
+| ↻ | wartet | Wiederholung, nicht eingereiht mit „wartet auf Vorgänger“ oder „startet nie“ wegen eines stornierten Glieds |
+| ✗ | Fehler | gescheitert, Dead Letter, abgelaufen, abgewiesen |
+| ○ | neutral | eingereiht, wartet, storniert, „nie gestartet …“ |
+
+Die Klassen sind dieselben wie bei den Zustandsmarken (`is-ok`, `is-run`,
+`is-wait`, `is-fail`, `is-idle`, aus `zustandsart()`). Der Kasten trägt Rahmen
+und Hintergrund der Zustandsfarbe; ein neutraler Kasten hat einen gestrichelten
+Rahmen. Die Farben kommen aus den `light-dark()`-Marken, die dunkle Fassung
+gilt damit ohne eigene Regel.
+
+**Sammelknoten.** Die fertigen Glieder einer Gruppe stehen als ein Knoten
+„N fertig“ oben im Stapel, wie in der Liste. Er verweist auf die Seite der
+fertigen Glieder. Auffällige Glieder (laufend, in Wiederholung, gescheitert)
+stehen einzeln darunter.
+
+**Links.** Jeder Schritt-Knoten führt auf die Task-Ansicht des Schritts. Ein
+nicht eingereihter Schritt hat keine Task-Ansicht und darum keinen Link. Jeder
+Link hat ein `aria-label` mit Name, Zustand und Zusatz sowie einen sichtbaren
+Fokusrahmen. Das SVG trägt `role="group"` und eine Kurzbeschreibung, nicht
+`role="img"`: ein Bild verbärge die Links vor dem Vorleseprogramm.
+
+**Linien.** Eine Linie trägt die Farbe ihres Ziel-Schritts, so dass sich eine
+Linie zu einem laufenden Schritt (blau), zu einer Wiederholung (bernstein) und
+zu einem eingereihten Schritt (neutral) unterscheidet; zu einem fertigen ist
+sie grün. Es gibt drei Strich-Arten:
+
+- **durchgezogen:** der Normalfall.
+- **kräftiger (`is-hervorgehoben`):** das Ziel ist aktiv, also eingereiht,
+  wartend, laufend oder in Wiederholung. So sieht man, wo der Workflow gerade
+  steht.
+- **gestrichelt (`is-gestrichelt`):** das Ziel wird nie starten („nie
+  gestartet, Workflow gescheitert“, „nie gestartet, Workflow storniert“,
+  „wartet auf storniertes Glied, startet nie“).
+
+Eine Linie in einen Knotenpunkt übernimmt die auffälligste Farbe der Linien,
+die aus ihm herausführen. Sie ist gestrichelt, wenn alle diese Linien
+gestrichelt sind.
+
+**Breite.** Ist das Diagramm breiter als die Karte, scrollt es waagerecht
+(`.dk-rahmen`). Es schrumpft nicht, damit der Text lesbar bleibt.
+
+**Umschalter „Diagramm | Liste“.** Über den Schritten steht ein Umschalter
+zwischen Diagramm und der eingerückten Liste. Beide Ansichten zeigen denselben
+Stand und dieselben Kopfangaben: Status, Fehlerkopf, Stornieren. Die Wahl
+steht in der Adresse (`?ansicht=diagramm` oder `?ansicht=liste`) und wird im
+Cookie `sqd_workflow_ansicht` gemerkt (Pfad `/workflows`, `SameSite=Strict`,
+`HttpOnly`, `Secure` wie die übrigen Cookies). Ein späterer Aufruf ohne Angabe
+zeigt die zuletzt gewählte Ansicht, auch bei einem anderen Workflow. Wer nie
+gewählt hat, sieht das Diagramm. Ein unbekannter Wert in der Adresse zeigt das
+Diagramm und lässt die gemerkte Wahl stehen.
+
+**Live.** Die Live-Aktualisierung lädt dieselbe Adresse nach, die gewählte
+Ansicht bleibt also erhalten. Jeder Knoten und jede Linie hat eine stabile
+Kennung aus dem Topologie-Pfad: `dk-h-g0` für einen Knoten, `dk-h-fertig` für
+den Sammelknoten, `dk-start` für den Startpunkt, `dk-<pfad>-ein` für einen
+Knotenpunkt und `dk-kante-<von>-<nach>` für eine Linie. Idiomorph gleicht
+daran Element für Element ab, statt das Bild neu aufzubauen.
+
 ## Bewusste Abweichungen
 
 **Knöpfe sind 32 px statt der üblichen 44 px Mindestgröße für Touch.** Das
