@@ -11,13 +11,12 @@ Wert noch nicht gelesen.
 from __future__ import annotations
 
 import enum
-import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
 from swarmq_dashboard.config import DEFAULT_UNCONFIRMED_AFTER_S
-from swarmq_dashboard.stream import StreamUnavailable
+from swarmq_dashboard.zugang import Zugang
 
 #: Wenn der Dienst nach einem Neustart einen Sollwert im Kanal findet, den
 #: er nicht selbst gesendet hat. Die Frist aus R17 braucht einen Anfang;
@@ -440,13 +439,21 @@ def _maskiert(gruppe: str) -> str:
     return gruppe
 
 
-class SwarmQSetpointStore:
+class SwarmQSetpointStore(Zugang):
     """Der Kontrollkanal ueber den Sollwert-Speicher der Bibliothek.
 
     Die Verbindung entsteht **traege**, wie beim Stornieren und bei der
     Dead-Letter-Bedienung: die Worker-Uebersicht ist die Startseite, und wer
     sie nur oeffnet, soll keine zusaetzliche Backend-Verbindung bezahlen.
+    Riegel, Sperrfrist und Schliessen kommen aus
+    :class:`~swarmq_dashboard.zugang.Zugang`. Anders als die beiden Leser
+    sperrt der Speicher nach einem Fehler mitten im Aufruf **nicht**: der
+    Fehler geht an die ``Steuerung``, die ihn im Steuerbild nennt.
     """
+
+    SPERRE_S = SPERRE_S
+    CONNECT_TIMEOUT_S = CONNECT_TIMEOUT_S
+    SPERRTEXT = "der Kontrollkanal ist nicht erreichbar: {exc}"
 
     def __init__(
         self,
@@ -456,44 +463,23 @@ class SwarmQSetpointStore:
         verbinden: Callable[[], Awaitable[Any]] | None = None,
         uhr: Callable[[], float] | None = None,
     ) -> None:
-        self._backend_url = backend_url
-        self._store: Any | None = store
+        super().__init__(backend_url, kern=store, verbinden=verbinden, uhr=uhr)
+        #: Ein eingesetzter Speicher gehoert dem Aufrufer: ``close()`` laesst
+        #: ihn offen und erhalten.
         self._eigen = store is None
-        self._verbinden = verbinden or self._kern_verbinden
-        self._uhr = uhr or time.monotonic
-        #: Bis wann nicht erneut gewaehlt wird, und warum.
-        self._gesperrt_bis = 0.0
-        self._grund = ""
-        #: Der eigene Klient. Die Bibliothek schliesst einen eingesetzten
-        #: Klienten nicht -- das ist ihr Vertrag, und hier unsere Pflicht.
-        self._client: Any | None = None
 
-    async def _kern_verbinden(self) -> Any:
-        """Den Sollwert-Speicher der Bibliothek auf einem **eigenen** Klienten.
-
-        Der Kern baut seinen Klienten sonst fuer den Worker-Pfad: fuenf
-        Versuche mit Backoff bis 2 s, gemessen 3,2 s bis zur Aufgabe. Fuer
-        einen Worker ist das richtig -- er soll eine zuckende Leitung
-        ueberstehen. Fuer die Startseite ist es falsch: sie soll sagen, dass
-        das Backend weg ist, und zwar sofort.
+    async def _kern_auf(self, client: Any) -> Any:
+        """Den Sollwert-Speicher der Bibliothek auf dem **eigenen** Klienten.
 
         ``ValkeySetpointStore(client=...)`` uebernimmt einen fertigen
         Klienten mitsamt dessen Einstellungen -- und schliesst ihn nicht,
-        deshalb schliesst ``close()`` ihn hier selbst.
-
-        Der ``ping()`` ist Pflicht: mit eingesetztem Klienten ist
-        ``connect()`` ein Nichts, und ``from_url`` baut keine Verbindung auf.
-        Ohne ihn meldete diese Methode Erfolg gegen einen toten Port.
+        deshalb schliesst ``close()`` ihn selbst. Geprueft wird ueber den
+        ``ping()`` des Speichers, damit ein Fehlschlag in dessen Worten
+        erscheint.
         """
-        import valkey.asyncio
         from swarmq.backend.valkey.control import ValkeySetpointStore
 
-        self._client = valkey.asyncio.Valkey.from_url(
-            self._backend_url,
-            socket_connect_timeout=CONNECT_TIMEOUT_S,
-            socket_timeout=CONNECT_TIMEOUT_S,
-        )
-        store = ValkeySetpointStore(client=self._client)
+        store = ValkeySetpointStore(client=client)
         await store.ping()
         return store
 
@@ -503,37 +489,15 @@ class SwarmQSetpointStore:
         Nach einem Fehlversuch bleibt die Wahl fuer ``SPERRE_S`` aus: sonst
         bezahlt jeder Seitenaufruf denselben Zeitablauf noch einmal.
         """
-        if self._store is not None:
-            return
-        if self._uhr() < self._gesperrt_bis:
-            raise StreamUnavailable(self._grund)
-        try:
-            self._store = await self._verbinden()
-        except Exception as exc:
-            await self.close()
-            self._grund = f"der Kontrollkanal ist nicht erreichbar: {exc}"
-            self._gesperrt_bis = self._uhr() + SPERRE_S
-            raise StreamUnavailable(self._grund) from exc
+        await super().connect()
 
-    async def close(self) -> None:
-        if self._store is not None and self._eigen:
-            try:
-                await self._store.close()
-            except Exception:
-                pass
-            self._store = None
-        if self._client is not None:
-            try:
-                await self._client.aclose()
-            except Exception:
-                pass
-            self._client = None
+    async def _kern_schliessen(self) -> None:
+        if self._eigen:
+            await super()._kern_schliessen()
 
     async def _verbunden(self) -> Any:
-        await self.connect()
-        if self._store is None:   # pragma: no cover -- connect() wirft vorher
-            raise StreamUnavailable("der Kontrollkanal ist nicht verbunden")
-        return self._store
+        # ``connect()`` liefert hier nichts (R2); der Speicher kommt aus der Basis.
+        return await super().connect()
 
     async def status_aller(self, gruppe: str) -> list[Mapping[str, Any]]:
         """Die Rueckmeldungen aller Supervisoren dieser Gruppe (U16 Punkt 2)."""

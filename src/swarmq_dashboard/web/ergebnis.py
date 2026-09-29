@@ -12,12 +12,13 @@ Der Leser wandelt darum jede Ausnahme in einen Zustand.
 from __future__ import annotations
 
 import json
-import time
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 from swarmq_dashboard.stream import StreamUnavailable
+from swarmq_dashboard.zugang import Zugang
 
 #: Anzeigegrenze, gemessen an der UTF-8-Laenge der **Darstellung** (KTD3).
 #: Die Zahl ist nicht gemessen, sondern gewaehlt: eine Karte fasst ungefaehr
@@ -30,6 +31,18 @@ GRENZE_B = 8 * 1024
 #: Kontrollkanal. Kuerzer waere wirkungslos, viel laenger liesse die
 #: Rueckkehr des Backends zu lange unbemerkt.
 SPERRE_S = 30.0
+
+#: Wie viele beendete Ergebnisse der Leser behaelt (KTD3). Ein fertiges oder
+#: storniertes Ergebnis aendert sich nicht mehr; die Grenze haelt nur den
+#: Speicher eines langlebigen Dienstes klein. 4096 deckt die Kopf-Glieder
+#: einiger grosser Workflows, die gleichzeitig offen sind.
+SPEICHER_N = 4096
+
+#: Die Arten, die sich nicht mehr aendern und darum gespeichert werden.
+#: "gescheitert" gehoert nicht dazu: ein Requeue aus der Dead-Letter-Queue
+#: reiht dieselbe Kennung neu ein, und ein erfolgreicher Lauf ueberschreibt
+#: das Fehlerergebnis.
+ENDGUELTIG = frozenset({"fertig", "storniert"})
 
 #: Frist fuer den Aufbau und fuer jede einzelne Abfrage (KTD4). Kurz: Die
 #: Detailseite ist kein Ort zum Warten.
@@ -89,8 +102,15 @@ class Ergebnisleser(Protocol):
     async def lesen(self, task_id: str) -> Ergebnisbild: ...
 
 
-class SwarmQErgebnisleser:
-    """Der Leser ueber die oeffentliche API der Bibliothek (KD2)."""
+class SwarmQErgebnisleser(Zugang):
+    """Der Leser ueber die oeffentliche API der Bibliothek (KD2).
+
+    Verbindungsaufbau, Riegel, Sperrfrist und Schliessen kommen aus
+    :class:`~swarmq_dashboard.zugang.Zugang`.
+    """
+
+    SPERRE_S = SPERRE_S
+    CONNECT_TIMEOUT_S = CONNECT_TIMEOUT_S
 
     def __init__(
         self,
@@ -100,46 +120,27 @@ class SwarmQErgebnisleser:
         app: Any | None = None,
         verbinden: Callable[[], Awaitable[Any]] | None = None,
         uhr: Callable[[], float] | None = None,
+        speicher_n: int = SPEICHER_N,
     ) -> None:
+        super().__init__(backend_url, kern=app, verbinden=verbinden, uhr=uhr)
         self._broker_url = broker_url
-        self._backend_url = backend_url
-        self._app = app
-        self._verbinden = verbinden or self._kern_verbinden
-        self._uhr = uhr or time.monotonic
-        #: Bis wann nicht erneut gewaehlt wird, und warum.
-        self._gesperrt_bis = 0.0
-        self._grund = ""
-        #: Der eigene Klient. Die Bibliothek schliesst einen eingesetzten
-        #: Klienten nicht -- das ist ihr Vertrag, und hier unsere Pflicht.
-        self._client: Any | None = None
+        #: Beendete Ergebnisse je Task-Kennung, der zuletzt genutzte hinten.
+        self._gespeichert: OrderedDict[str, Ergebnisbild] = OrderedDict()
+        self._speicher_n = speicher_n
 
-    async def _kern_verbinden(self) -> Any:
-        """Die Bibliothek auf einem **eigenen** Valkey-Klienten.
+    async def _kern_auf(self, client: Any) -> Any:
+        """Die Bibliothek auf dem **eigenen** Valkey-Klienten.
 
-        Hier und nirgendwo sonst entsteht KTD4s Frist: ``get_result`` reicht
-        keine durch -- mit ``timeout=0`` ist es ein blanker GET ohne Deadline
-        --, und der Klient, den die Bibliothek sich sonst selbst baut, ist
-        fuer den Worker-Pfad eingestellt: fuenf Versuche mit Backoff, gemessen
-        3,2 s bis zur Aufgabe. Fuer einen Worker richtig, fuer die
-        Detailseite falsch.
-
-        Der ``ping()`` ist Pflicht: Mit eingesetztem Klienten ist ``connect()``
-        ein Nichts, und ``from_url`` baut keine Verbindung auf. Ohne ihn
-        meldete diese Methode Erfolg gegen einen toten Port -- und der
-        Fehlschlag kaeme erst beim Lesen, also nach der Sperre statt vor ihr.
+        Hier entsteht KTD4s Frist: ``get_result`` reicht keine durch -- mit
+        ``timeout=0`` ist es ein blanker GET ohne Deadline. Der ``ping()``
+        davor ist Pflicht, sonst kaeme der Fehlschlag erst beim Lesen.
         """
-        import valkey.asyncio
         from swarmq import SwarmQ
         from swarmq.backend.valkey import ValkeyBackend
         from swarmq.broker.rabbitmq import RabbitMQBroker
 
-        self._client = valkey.asyncio.Valkey.from_url(
-            self._backend_url,
-            socket_connect_timeout=CONNECT_TIMEOUT_S,
-            socket_timeout=CONNECT_TIMEOUT_S,
-        )
-        await self._client.ping()
-        backend = ValkeyBackend(client=self._client)
+        await client.ping()
+        backend = ValkeyBackend(client=client)
         # Der Broker wird zum Lesen nicht gebraucht -- das Ergebnis liegt im
         # Backend. Das Objekt muss es trotzdem geben, weil die Bibliothek
         # beides zusammen haelt; verbunden wird es nie.
@@ -151,49 +152,33 @@ class SwarmQErgebnisleser:
         Traege wie beim Stornieren und beim Kontrollkanal: Wer die Liste
         ansieht, bezahlt keine Backend-Verbindung.
         """
-        if self._app is not None:
-            return
-        if self._uhr() < self._gesperrt_bis:
-            raise StreamUnavailable(self._grund)
-        try:
-            self._app = await self._verbinden()
-        except Exception as exc:
-            self._sperren(f"das Backend ist nicht erreichbar: {exc}")
-            raise StreamUnavailable(self._grund) from exc
-
-    async def close(self) -> None:
-        """Die Verbindung verwerfen. Wirft nie.
-
-        Gehoert in die Schliessliste von ``Services.shutdown()``: Der Leser
-        haelt eine eigene Valkey-Verbindung, und ohne das leckt je
-        Lebenszyklus eine -- derselbe Fehler, der beim Canceller schon einmal
-        passiert ist.
-        """
-        app, self._app = self._app, None
-        schliessen = getattr(app, "close", None)
-        if schliessen is not None:
-            try:
-                ergebnis = schliessen()
-                if hasattr(ergebnis, "__await__"):
-                    await ergebnis
-            except Exception:
-                pass
-        if self._client is not None:
-            try:
-                await self._client.aclose()
-            except Exception:
-                pass
-            self._client = None
-
-    def _sperren(self, grund: str) -> None:
-        """Fuer ``SPERRE_S`` nicht mehr waehlen, mit diesem Grund."""
-        self._grund = grund
-        self._gesperrt_bis = self._uhr() + SPERRE_S
+        await super().connect()
 
     async def lesen(self, task_id: str) -> Ergebnisbild:
-        """Das Ergebnis holen und als Zustand zurueckgeben."""
+        """Das Ergebnis holen und als Zustand zurueckgeben.
+
+        Ein fertiges oder storniertes Ergebnis kommt nach der ersten Lesung
+        aus dem Speicher -- **vor** dem Verbindungsaufbau: ein Treffer liest
+        nicht und verbindet nicht, auch nicht waehrend der Sperre. Verfaellt
+        es danach in Valkey, bleibt es trotzdem sichtbar, bis der Dienst neu
+        startet (KTD3). Alles andere wird bei jeder Anfrage neu gelesen.
+        """
+        gespeichert = self._gespeichert.get(task_id)
+        if gespeichert is not None:
+            self._gespeichert.move_to_end(task_id)
+            return gespeichert
+        bild = await self._frisch_lesen(task_id)
+        if bild.zustand == "da" and bild.art in ENDGUELTIG:
+            self._gespeichert[task_id] = bild
+            if len(self._gespeichert) > self._speicher_n:
+                self._gespeichert.popitem(last=False)
+        return bild
+
+    async def _frisch_lesen(self, task_id: str) -> Ergebnisbild:
+        """Das Ergebnis aus dem Backend holen, ohne Zwischenspeicher."""
         try:
-            await self.connect()
+            # ``connect()`` liefert hier nichts (R2); die App kommt aus der Basis.
+            app = await super().connect()
         except StreamUnavailable as exc:
             return Ergebnisbild(
                 zustand="nicht_erreichbar", art=None, text="", grund=str(exc),
@@ -205,14 +190,8 @@ class SwarmQErgebnisleser:
             TaskError,
         )
 
-        if self._app is None:   # pragma: no cover -- connect() wirft vorher
-            return Ergebnisbild(
-                zustand="nicht_erreichbar", art=None, text="",
-                grund="das Backend ist nicht verbunden",
-            )
-
         try:
-            wert = await self._app.get_result(task_id, timeout=0)
+            wert = await app.get_result(task_id, timeout=0)
         except ResultNotReadyError:
             return Ergebnisbild(zustand="fehlt", art=None, text="")
         except ResultSerializationError as exc:
@@ -244,10 +223,9 @@ class SwarmQErgebnisleser:
             # greifen. Stirbt das Backend, nachdem der Leser verbunden war,
             # kehrt ``connect()`` weiterhin sofort zurueck; ohne diesen Zweig
             # laeuft jeder Seitenaufruf erneut in die volle Frist.
-            await self.close()
-            self._sperren(f"das Backend ist nicht erreichbar: {exc}")
             return Ergebnisbild(
-                zustand="nicht_erreichbar", art=None, text="", grund=self._grund,
+                zustand="nicht_erreichbar", art=None, text="",
+                grund=await self._ausfall(exc),
             )
         text, abgeschnitten, groesse = _kuerzen(_darstellen(wert))
         return Ergebnisbild(

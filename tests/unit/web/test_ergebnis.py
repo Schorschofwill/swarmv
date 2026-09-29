@@ -27,10 +27,31 @@ Sperrfrist (KTD1):
  12. [x] nach gescheitertem Verbinden wird innerhalb der Frist nicht gewaehlt
  13. [x] nach gescheitertem **Lesen** wird gar nicht mehr zugegriffen
  14. [x] nach Ablauf der Frist wird wieder versucht
+
+Gemeinsame Basis (Aufraeumen U3; R1, R2):
+ 15. [x] zwei gleichzeitige erste Lesungen bauen genau eine Verbindung
+ 16. [x] scheitert der ``ping()`` des eigenen Klienten, wird er genau einmal
+         geschlossen und nicht behalten
+ 17. [x] nach gescheitertem Aufbau steht der bisherige Sperrtext da
+ 18. [x] ``close()`` vertraegt eine App mit synchronem und mit asynchronem
+         ``close``
+
+Zwischenspeicher fuer beendete Ergebnisse (Aufraeumen U4; R3, KTD3):
+ 19. [x] zweimal dieselbe fertige Kennung -> ein ``get_result``, zweimal
+         dasselbe Bild
+ 20. [x] storniert wird ebenso gespeichert
+ 21. [x] gescheitert wird bei jeder Anfrage neu gelesen (DLQ-Requeue)
+ 22. [x] fehlt, nicht_lesbar und nicht_erreichbar werden neu gelesen
+ 23. [x] ein fertiges Ergebnis, das danach im Backend verschwindet, bleibt
+         fertig (die benannte Ausnahme der Product authority)
+ 24. [x] ueber die Obergrenze faellt der am laengsten ungenutzte Eintrag
+         heraus und wird bei Bedarf neu gelesen; ein Treffer frischt auf
+ 25. [x] ein Treffer verbindet nicht -- auch nicht waehrend der Sperre
 """
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -365,3 +386,299 @@ async def test_nach_ablauf_der_frist_wird_wieder_versucht() -> None:
 
     assert len(versuche) == 2, "nach Ablauf der Frist wurde nicht erneut gewaehlt"
     assert bild.zustand == "da"
+
+
+class _WartendesVerbinden:
+    """Ein Verbindungsaufbau, der haengt, bis der Test ihn freigibt."""
+
+    def __init__(self, app: Any) -> None:
+        self._app = app
+        self.versuche = 0
+        self.begonnen = asyncio.Event()
+        self.frei = asyncio.Event()
+
+    async def __call__(self) -> Any:
+        self.versuche += 1
+        self.begonnen.set()
+        await self.frei.wait()
+        return self._app
+
+
+@pytest.mark.timeout(5)
+async def test_zwei_gleichzeitige_erste_lesungen_bauen_eine_verbindung() -> None:
+    """R1: Workflow-Detail und Glieder-Seite lesen nebenlaeufig. Ohne Riegel
+    baute jede erste Lesung einen eigenen Klienten, und ``close()``
+    schloesse nur den letzten -- die anderen leckten."""
+    verbinden = _WartendesVerbinden(_App({"pid": 1}))
+    leser = SwarmQErgebnisleser("amqp://x", "valkey://x", verbinden=verbinden, uhr=_Uhr())
+
+    erste = asyncio.create_task(leser.lesen("t1"))
+    zweite = asyncio.create_task(leser.lesen("t2"))
+    await verbinden.begonnen.wait()
+    verbinden.frei.set()
+    bilder = await asyncio.gather(erste, zweite)
+
+    assert verbinden.versuche == 1
+    assert [b.zustand for b in bilder] == ["da", "da"]
+
+
+class _KlientOhnePing:
+    """Ein Valkey-Klient, dessen ``ping()`` scheitert."""
+
+    def __init__(self) -> None:
+        self.geschlossen = 0
+
+    async def ping(self) -> None:
+        raise ConnectionError("Port 6399 zu")
+
+    async def aclose(self) -> None:
+        self.geschlossen += 1
+
+
+@pytest.mark.timeout(5)
+async def test_ein_gescheiterter_ping_schliesst_den_eigenen_klienten(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """R1: Der Klient wird erst nach dem ``ping()`` behalten. Scheitert er,
+    wird er sofort geschlossen -- und ``close()`` schliesst ihn nicht ein
+    zweites Mal. Vorher blieb er offen liegen, bis zufaellig jemand
+    ``close()`` rief."""
+    import valkey.asyncio
+
+    klient = _KlientOhnePing()
+    monkeypatch.setattr(valkey.asyncio.Valkey, "from_url", lambda *a, **k: klient)
+    leser = SwarmQErgebnisleser("amqp://x", "valkey://x", uhr=_Uhr())
+
+    bild = await leser.lesen("t1")
+    assert bild.zustand == "nicht_erreichbar"
+    assert klient.geschlossen == 1
+
+    await leser.close()
+    assert klient.geschlossen == 1
+
+
+@pytest.mark.timeout(5)
+async def test_nach_gescheitertem_aufbau_steht_der_bisherige_sperrtext_da() -> None:
+    """R2: Der Wortlaut des Sperrgrunds bleibt -- die Karte spricht vom
+    Backend, beim ersten Versuch wie waehrend der Sperre."""
+    async def verbinden() -> Any:
+        raise OSError("connection refused")
+
+    leser = SwarmQErgebnisleser("amqp://x", "valkey://x", verbinden=verbinden, uhr=_Uhr())
+
+    erstes = await leser.lesen("t1")
+    zweites = await leser.lesen("t2")
+
+    assert erstes.grund == "das Backend ist nicht erreichbar: connection refused"
+    assert zweites.grund == erstes.grund
+
+
+class _SyncSchliessbareApp(_App):
+    """Eine App mit synchronem ``close``."""
+
+    def __init__(self, *, wirft: bool = False) -> None:
+        super().__init__({"pid": 1})
+        self._close_wirft = wirft
+        self.geschlossen = 0
+
+    def close(self) -> None:
+        self.geschlossen += 1
+        if self._close_wirft:
+            raise RuntimeError("schon zu")
+
+
+class _AsyncSchliessbareApp(_SyncSchliessbareApp):
+    """Eine App mit asynchronem ``close``."""
+
+    async def close(self) -> None:  # type: ignore[override]
+        super().close()
+
+
+@pytest.mark.timeout(5)
+@pytest.mark.parametrize("art", [_SyncSchliessbareApp, _AsyncSchliessbareApp],
+                         ids=["synchron", "asynchron"])
+@pytest.mark.parametrize("wirft", [False, True], ids=["sauber", "close_wirft"])
+async def test_close_vertraegt_synchrones_und_asynchrones_close(
+    art: type[_SyncSchliessbareApp], wirft: bool,
+) -> None:
+    """R2: ``close()`` gehoert in die Schliessliste von ``Services.shutdown()``
+    und wirft nie -- gleich, ob die App synchron oder asynchron schliesst.
+    Ein zweites ``close()`` schliesst nicht noch einmal."""
+    app = art(wirft=wirft)
+    leser = SwarmQErgebnisleser("amqp://x", "valkey://x", verbinden=lambda: _sofort(app), uhr=_Uhr())
+    await leser.lesen("t1")
+
+    await leser.close()
+    await leser.close()
+
+    assert app.geschlossen == 1
+
+
+async def _sofort(app: Any) -> Any:
+    return app
+
+
+# --- Zwischenspeicher (Aufraeumen U4) ------------------------------------
+
+
+class _Wechselapp(_App):
+    """Eine App, deren Antwort der Test zwischen zwei Lesungen umstellt."""
+
+    def umstellen(self, wert: Any = None, *, wirft: BaseException | None = None) -> None:
+        self._wert = wert
+        self._wirft = wirft
+
+
+@pytest.mark.timeout(5)
+async def test_ein_fertiges_ergebnis_wird_nur_einmal_gelesen() -> None:
+    """R3: ein fertiges Ergebnis aendert sich nicht mehr. Jede Live-Meldung
+    rendert die Detailseite neu -- ohne Speicher je Kopf-Glied eine Lesung."""
+    app = _App({"pid": 42})
+    leser = SwarmQErgebnisleser("amqp://x", "valkey://x", app=app)
+
+    erstes = await leser.lesen("t1")
+    zweites = await leser.lesen("t1")
+
+    assert len(app.rufe) == 1
+    assert zweites == erstes
+    assert zweites.art == "fertig"
+
+
+@pytest.mark.timeout(5)
+async def test_ein_storniertes_ergebnis_wird_nur_einmal_gelesen() -> None:
+    """R3: auch ein Storno ist endgueltig -- die Bibliothek reiht einen
+    stornierten Task nicht wieder ein."""
+    from swarmq.exceptions import TaskCancelledError
+
+    app = _App(wirft=TaskCancelledError("t1"))
+    leser = SwarmQErgebnisleser("amqp://x", "valkey://x", app=app)
+
+    erstes = await leser.lesen("t1")
+    zweites = await leser.lesen("t1")
+
+    assert len(app.rufe) == 1
+    assert zweites == erstes
+    assert zweites.art == "storniert"
+
+
+@pytest.mark.timeout(5)
+async def test_ein_gescheitertes_ergebnis_wird_jedes_mal_gelesen() -> None:
+    """KTD3: ein Requeue aus der Dead-Letter-Queue reiht dieselbe Kennung neu
+    ein, und ein erfolgreicher Lauf ueberschreibt das Fehlerergebnis. Stuende
+    "gescheitert" im Speicher, zeigte die Seite den alten Fehler weiter."""
+    from swarmq.exceptions import TaskError
+
+    app = _Wechselapp(wirft=TaskError("ZeroDivisionError: division by zero"))
+    leser = SwarmQErgebnisleser("amqp://x", "valkey://x", app=app)
+
+    erstes = await leser.lesen("t1")
+    app.umstellen({"pid": 7})
+    zweites = await leser.lesen("t1")
+
+    assert erstes.art == "gescheitert"
+    assert len(app.rufe) == 2
+    assert zweites.art == "fertig"
+
+
+def _ausnahme(name: str) -> BaseException:
+    """Die Ausnahme, mit der die Bibliothek bzw. die Leitung antwortet."""
+    from swarmq.exceptions import ResultNotReadyError, ResultSerializationError
+
+    return {
+        "fehlt": ResultNotReadyError("t1"),
+        "nicht_lesbar": ResultSerializationError("unknown ext code 7"),
+        "nicht_erreichbar": OSError("connection lost"),
+    }[name]
+
+
+@pytest.mark.timeout(5)
+@pytest.mark.parametrize("zustand", ["fehlt", "nicht_lesbar", "nicht_erreichbar"])
+async def test_ohne_endgueltiges_ergebnis_wird_jedes_mal_gelesen(zustand: str) -> None:
+    """R3: nur ein Ergebnis, das sich nicht mehr aendert, steht im Speicher.
+    Ein fehlendes kann noch kommen, ein unlesbares nach einem Update lesbar
+    werden, und ein totes Backend kehrt zurueck."""
+    from swarmq_dashboard.web.ergebnis import SPERRE_S
+
+    app = _Wechselapp(wirft=_ausnahme(zustand))
+    uhr = _Uhr()
+    leser = SwarmQErgebnisleser("amqp://x", "valkey://x", verbinden=lambda: _sofort(app), uhr=uhr)
+
+    erstes = await leser.lesen("t1")
+    app.umstellen({"pid": 7})
+    # Ueber eine etwaige Sperre hinaus -- sie ist nicht, was hier geprueft wird.
+    uhr.jetzt += SPERRE_S + 1
+    zweites = await leser.lesen("t1")
+
+    assert erstes.zustand == zustand
+    assert len(app.rufe) == 2
+    assert zweites.art == "fertig"
+
+
+@pytest.mark.timeout(5)
+async def test_ein_verfallenes_fertiges_ergebnis_bleibt_fertig() -> None:
+    """Die benannte Ausnahme der Product authority (KTD3): verfaellt ein
+    gelesenes fertiges Ergebnis in Valkey, zeigt der Speicher es weiter --
+    bis zum Neustart des Dienstes, der dann "abgelaufen" zeigt."""
+    from swarmq.exceptions import ResultNotReadyError
+
+    app = _Wechselapp({"pid": 42})
+    leser = SwarmQErgebnisleser("amqp://x", "valkey://x", app=app)
+
+    erstes = await leser.lesen("t1")
+    app.umstellen(wirft=ResultNotReadyError("t1"))
+    zweites = await leser.lesen("t1")
+
+    assert zweites == erstes
+    assert zweites.zustand == "da" and zweites.art == "fertig"
+
+
+@pytest.mark.timeout(5)
+async def test_ueber_der_obergrenze_faellt_der_aelteste_eintrag_heraus() -> None:
+    """R3: der Speicher ist nach Eintraegen begrenzt -- ein langlebiger Dienst
+    saehe sonst jede je gelesene Kennung. Was herausfaellt, wird bei Bedarf
+    wieder gelesen."""
+    app = _App({"pid": 1})
+    leser = SwarmQErgebnisleser("amqp://x", "valkey://x", app=app, speicher_n=2)
+
+    for kennung in ("t1", "t2", "t3", "t2", "t3", "t1"):
+        await leser.lesen(kennung)
+
+    assert [k for k, _ in app.rufe] == ["t1", "t2", "t3", "t1"]
+
+
+@pytest.mark.timeout(5)
+async def test_ein_treffer_haelt_seinen_eintrag_im_speicher() -> None:
+    """R3, KTD3 (LRU): wer gerade gelesen wird, faellt nicht heraus. Die
+    Kopf-Glieder einer offenen Detailseite werden bei jeder Live-Meldung
+    getroffen; ein FIFO verdraengte sie trotzdem, sobald andere Seiten genug
+    neue Kennungen lesen."""
+    app = _App({"pid": 1})
+    leser = SwarmQErgebnisleser("amqp://x", "valkey://x", app=app, speicher_n=2)
+
+    for kennung in ("t1", "t2", "t1", "t3", "t1", "t2"):
+        await leser.lesen(kennung)
+
+    assert [k for k, _ in app.rufe] == ["t1", "t2", "t3", "t2"]
+
+
+@pytest.mark.timeout(5)
+async def test_ein_treffer_verbindet_nicht_auch_nicht_waehrend_der_sperre() -> None:
+    """KTD3: der Speicher sitzt **vor** dem Verbindungsaufbau. Faellt das
+    Backend aus, bleiben die schon gelesenen fertigen Glieder sichtbar, statt
+    mit "nicht erreichbar" zu verschwinden -- und kein Treffer waehlt neu."""
+    versuche: list[int] = []
+    app = _Wechselapp({"pid": 42})
+
+    async def verbinden() -> Any:
+        versuche.append(1)
+        return app
+
+    leser = SwarmQErgebnisleser("amqp://x", "valkey://x", verbinden=verbinden, uhr=_Uhr())
+
+    erstes = await leser.lesen("t1")
+    app.umstellen(wirft=OSError("connection lost"))
+    assert (await leser.lesen("t2")).zustand == "nicht_erreichbar"
+    zweites = await leser.lesen("t1")
+
+    assert zweites == erstes
+    assert len(versuche) == 1

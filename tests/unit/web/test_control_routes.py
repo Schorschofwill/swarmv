@@ -171,7 +171,7 @@ async def test_ohne_kontrollkanal_bleibt_die_startseite_vollstaendig(
     bevor die Bibliotheksfassung mit dem Kanal draussen ist.
     """
     monkeypatch.setattr(
-        "swarmq_dashboard.web.app.kontrollkanal_grund",
+        "swarmq_dashboard.web.services.kontrollkanal_grund",
         lambda: "Steuerung nicht verfügbar: die installierte swarmq-Fassung bringt den Kontrollkanal nicht mit.",
     )
     c, app = await _angemeldet(_config(tmp_path))

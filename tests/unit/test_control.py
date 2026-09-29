@@ -47,10 +47,21 @@ Der Kanal selbst (U16 Punkt 1 und 2):
  32. [x] ein unlesbarer Sollwert im Kanal liest sich als keiner
  33. [x] ein nicht erreichbarer Kanal wird zur Auskunft, nicht zur Ausnahme
  34. [x] ein toter Kanal wird nicht bei jedem Aufruf neu gewaehlt
+
+Gemeinsame Basis der Valkey-Klienten (Aufraeumen U3; R1, R2):
+ 35. [x] zwei gleichzeitige erste Aufrufe bauen genau eine Verbindung
+ 36. [x] ein gescheiterter ``ping()`` schliesst den eigenen Klienten genau
+         einmal (Charakterisierung)
+ 37. [x] ``close()`` laesst einen eingesetzten ``store=`` offen, und der
+         naechste Aufruf nutzt ihn weiter
+ 38. [x] ein Fehler mitten in ``schreiben`` sperrt nicht und erreicht die
+         ``Steuerung``
+ 39. [x] nach gescheitertem Aufbau steht der bisherige Sperrtext da
 """
 
 from __future__ import annotations
 
+import asyncio
 import re
 from collections.abc import AsyncIterator, Mapping
 from typing import Any
@@ -667,3 +678,158 @@ async def test_ein_toter_kanal_wird_nicht_bei_jedem_aufruf_neu_gewaehlt() -> Non
     with pytest.raises(StreamUnavailable):
         await store.status_aller("orders-eu")
     assert versuche == 2, "nach der Sperrfrist wird nicht wieder gewaehlt"
+
+
+class _WartendesVerbinden:
+    """Ein Verbindungsaufbau, der haengt, bis der Test ihn freigibt."""
+
+    def __init__(self, store: Any) -> None:
+        self._store = store
+        self.versuche = 0
+        self.begonnen = asyncio.Event()
+        self.frei = asyncio.Event()
+
+    async def __call__(self) -> Any:
+        self.versuche += 1
+        self.begonnen.set()
+        await self.frei.wait()
+        return self._store
+
+
+@pytest.mark.timeout(5)
+async def test_zwei_gleichzeitige_erste_aufrufe_bauen_eine_verbindung() -> None:
+    """R1: Die Startseite fragt je Gruppe nebenlaeufig. Ohne Riegel baute
+    jeder erste Aufruf einen eigenen Klienten, und ``close()`` schloesse nur
+    den letzten -- die anderen leckten."""
+    kern = FakeKernStore([], {})
+    verbinden = _WartendesVerbinden(kern)
+    store = SwarmQSetpointStore("valkey://localhost:6399/0", verbinden=verbinden)
+
+    erster = asyncio.create_task(store.status_aller("orders-eu"))
+    zweiter = asyncio.create_task(store.status_aller("billing"))
+    await verbinden.begonnen.wait()
+    verbinden.frei.set()
+    await asyncio.gather(erster, zweiter)
+
+    assert verbinden.versuche == 1
+
+
+class _KlientOhnePing:
+    """Ein Valkey-Klient, dessen ``ping()`` scheitert."""
+
+    def __init__(self) -> None:
+        self.geschlossen = 0
+
+    async def ping(self) -> None:
+        raise ConnectionError("Port 6399 zu")
+
+    async def aclose(self) -> None:
+        self.geschlossen += 1
+
+
+@pytest.mark.timeout(5)
+async def test_ein_gescheiterter_ping_schliesst_den_eigenen_klienten(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """R1, Charakterisierung: Der Fehlerzweig von ``connect()`` schliesst den
+    Klienten schon heute. Die gemeinsame Basis darf das nicht verlieren --
+    und ``close()`` schliesst ihn danach nicht ein zweites Mal."""
+    import valkey.asyncio
+
+    klient = _KlientOhnePing()
+    monkeypatch.setattr(valkey.asyncio.Valkey, "from_url", lambda *a, **k: klient)
+    store = SwarmQSetpointStore("valkey://localhost:6399/0", uhr=lambda: 0.0)
+
+    with pytest.raises(StreamUnavailable):
+        await store.status_aller("orders-eu")
+    assert klient.geschlossen == 1
+
+    await store.close()
+    assert klient.geschlossen == 1
+
+
+class _SchliessbarerKernStore(FakeKernStore):
+    """Ein Kern-Speicher, der mitzaehlt, wie oft er geschlossen wurde."""
+
+    def __init__(self) -> None:
+        super().__init__([], {})
+        self.geschlossen = 0
+
+    async def close(self) -> None:
+        self.geschlossen += 1
+
+
+@pytest.mark.timeout(5)
+async def test_close_laesst_einen_eingesetzten_speicher_offen() -> None:
+    """R2: Ein mit ``store=`` eingesetzter Speicher gehoert dem Aufrufer.
+    ``close()`` schliesst ihn nicht und verwirft ihn nicht -- der naechste
+    Aufruf nutzt ihn weiter, ohne neu zu verbinden."""
+    kern = _SchliessbarerKernStore()
+    store = SwarmQSetpointStore("valkey://localhost:6399/0", store=kern)
+
+    await store.close()
+    await store.schreiben("orders-eu", Sollwert(2, 8))
+
+    assert kern.geschlossen == 0
+    assert [gruppe for gruppe, _ in kern.geschrieben] == ["orders-eu"]
+
+
+class _EinmalWerfenderKernStore(FakeKernStore):
+    """Ein Kern-Speicher, dessen erstes Schreiben an der Leitung scheitert."""
+
+    def __init__(self) -> None:
+        super().__init__([], {})
+        self.versuche = 0
+
+    async def write_setpoint(self, group: str, setpoint: object) -> None:
+        self.versuche += 1
+        if self.versuche == 1:
+            raise ConnectionError("Verbindung verloren")
+        await super().write_setpoint(group, setpoint)
+
+
+@pytest.mark.timeout(5)
+async def test_ein_fehler_mitten_im_schreiben_sperrt_nicht() -> None:
+    """R2: Anders als die beiden Leser sperrt der Sollwert-Speicher nach
+    einem Fehler mitten im Aufruf nicht. Der Fehler geht an die
+    ``Steuerung`` weiter, und der naechste Klick schreibt ueber dieselbe
+    Verbindung."""
+    kern = _EinmalWerfenderKernStore()
+    versuche = 0
+
+    async def verbinden() -> object:
+        nonlocal versuche
+        versuche += 1
+        return kern
+
+    steuerung = Steuerung(
+        SwarmQSetpointStore("valkey://localhost:6399/0", verbinden=verbinden, uhr=lambda: 0.0)
+    )
+
+    with pytest.raises(ConnectionError, match="Verbindung verloren"):
+        await steuerung.setzen("orders-eu", Sollwert(2, 8), now=1.0)
+    await steuerung.setzen("orders-eu", Sollwert(2, 8), now=2.0)
+
+    assert [gruppe for gruppe, _ in kern.geschrieben] == ["orders-eu"]
+    assert steuerung.gesendet_at("orders-eu") == 2.0
+    assert versuche == 1
+
+
+@pytest.mark.timeout(5)
+async def test_nach_gescheitertem_aufbau_steht_der_bisherige_sperrtext_da() -> None:
+    """R2: Der Wortlaut des Sperrgrunds bleibt je Klient -- die Startseite
+    spricht vom Kontrollkanal, nicht vom Backend."""
+    async def verbinden() -> object:
+        raise OSError("Error 111")
+
+    store = SwarmQSetpointStore(
+        "valkey://127.0.0.1:1/0", verbinden=verbinden, uhr=lambda: 0.0
+    )
+
+    with pytest.raises(StreamUnavailable) as erster:
+        await store.gelesen("orders-eu")
+    with pytest.raises(StreamUnavailable) as zweiter:
+        await store.gelesen("orders-eu")
+
+    assert str(erster.value) == "der Kontrollkanal ist nicht erreichbar: Error 111"
+    assert str(zweiter.value) == str(erster.value)

@@ -1,0 +1,736 @@
+"""Die Aussenverbindungen des Dienstes und ihre Takte.
+
+Ein Grundsatz traegt dieses Modul: **kein Teil des Hochfahrens darf den Start
+verhindern** (R33). Ein Dashboard, das nicht startet, weil der Broker fehlt,
+ist genau in dem Vorfall weg, fuer den es gebaut wurde. Jeder Schritt wird
+darum einzeln versucht, sein Fehlgrund festgehalten und von der Kopfzeile
+ausgewiesen -- benannt, nicht als leere Flaeche.
+
+Dasselbe gilt fuer die Rueckkehr: kommt ein Dienst wieder, muss die Anzeige
+umspringen, ohne dass jemand das Dashboard neu startet. Deshalb ist die
+Erreichbarkeit nichts, was einmal beim Start ermittelt wird, sondern etwas,
+das ``refresh()`` im Takt nachfuehrt.
+
+Aus ``web/app.py`` hierher gezogen (KTD4): dort bleiben App-Bau und
+Verdrahtung, und ``web/app.py`` reicht die bisherigen Namen weiter.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import time
+from collections.abc import Awaitable, Callable
+from contextlib import suppress
+from typing import Any
+
+from argon2 import PasswordHasher
+from litestar.channels import ChannelsPlugin
+from litestar.channels.backends.memory import MemoryChannelsBackend
+
+from swarmq_dashboard.accounts import AccountStore
+from swarmq_dashboard.audit import AuditLog
+from swarmq_dashboard.broker import BrokerObserver, BrokerUnavailable
+from swarmq_dashboard.config import DashboardConfig
+from swarmq_dashboard.control import (
+    SetpointStore,
+    Steuerung,
+    SwarmQSetpointStore,
+    kontrollkanal_grund,
+)
+from swarmq_dashboard.directory.abgleich import Abgleich
+from swarmq_dashboard.directory.reader import DEFAULT_BATCH, StreamReader
+from swarmq_dashboard.directory.schema import connect
+from swarmq_dashboard.directory.writer import DirectoryWriter
+from swarmq_dashboard.dlq import DlqService, SwarmQDlqAdmin
+from swarmq_dashboard.events import TASK_STREAM
+from swarmq_dashboard.stream import StreamUnavailable, ValkeyStreamClient
+from swarmq_dashboard.web.auth import (
+    DELAY_BASE_S,
+    MAX_DELAY_S,
+    LoginThrottle,
+    SqliteStore,
+)
+from swarmq_dashboard.web.cancel import Canceller, SwarmQCanceller
+from swarmq_dashboard.web.ergebnis import Ergebnisleser, SwarmQErgebnisleser
+from swarmq_dashboard.web.probe import ProbeSender
+from swarmq_dashboard.web.stream import LIVE_CHANNEL, LivePublisher
+from swarmq_dashboard.workflows import SwarmQWorkflowleser, Workflowleser
+
+#: Takt der Pflege: Erreichbarkeit nachfuehren, Abgelaufenes wegraeumen.
+#: Grosszuegig -- die Rueckkehr eines Dienstes darf ein paar Sekunden spaeter
+#: sichtbar werden, aber nicht erst nach einem Neustart.
+DEFAULT_MAINTENANCE_S = 10.0
+#: Wartezeit zwischen zwei Durchlaeufen, **wenn nichts mehr zu holen war**.
+#: Ein voller Stapel fuehrt sofort zum naechsten Durchlauf -- sonst braeuchte
+#: ein Rueckstand von zehntausend Ereignissen bei Stapelgroesse 500 zwanzig
+#: Sekunden, in denen die Ansicht alt ist und nicht sagt, warum.
+DEFAULT_INGEST_S = 0.5
+#: Notbremse fuer eine einzelne Erreichbarkeitspruefung -- **laenger** als
+#: jede Frist, die sie umschliesst (``stream.DEFAULT_CONNECT_TIMEOUT_S``,
+#: ``broker.CONNECT_TIMEOUT_S``). Andersherum war sie schaedlich: sie brach
+#: die innere Frist immer zuerst ab, mit ``CancelledError``, und das lief an
+#: jedem ``except Exception`` vorbei -- der halb aufgebaute Klient blieb
+#: liegen. Gemessen 25 Takte, 25 offene Dateizeiger. Sie greift jetzt nur
+#: noch, wenn eine innere Frist selbst versagt.
+#:
+#: Ohne sie haelt ein
+#: Dienst, der die Verbindung annimmt und dann schweigt, den ganzen Takt auf
+#: -- gemessen sechs Sekunden je Durchlauf gegen ein totes Backend, und in
+#: dieser Zeit laeuft weder die Aufbewahrung noch die Anzeige nach. Eine
+#: ueberschrittene Frist ist kein Fehler des Dienstes, sondern eine Auskunft
+#: ueber ihn, und sie steht so im Bericht.
+PROBE_TIMEOUT_S = 6.0
+#: Wie lange das Herunterfahren auf einen auslaufenden Takt wartet.
+STOP_TIMEOUT_S = 5.0
+
+
+def _teil(ok: bool, reason: str | None = None) -> dict[str, Any]:
+    """Ein Teil des Zustandsberichts. ``reason`` ist bei ``ok`` immer leer."""
+    return {"ok": ok, "reason": None if ok else (reason or "nicht erreichbar")}
+
+
+class Services:
+    """Haelt die Aussenverbindungen des Dienstes und ihren Zustand.
+
+    Bewusst kein Litestar-Plugin: der Lebenszyklus ist hier die einfachere
+    Sache, und diese Klasse laesst sich ohne Anwendung pruefen.
+    """
+
+    def __init__(
+        self,
+        config: DashboardConfig,
+        *,
+        hasher: PasswordHasher | None = None,
+        throttle_scale: float = 1.0,
+        canceller: Canceller | None = None,
+        broker: Any | None = None,
+        dlq_admin: Any | None = None,
+        stream: Any | None = None,
+        setpoint_store: SetpointStore | None = None,
+        probe_sender: Any | None = None,
+        ergebnisleser: Ergebnisleser | None = None,
+        workflowleser: Workflowleser | None = None,
+    ) -> None:
+        self._config = config
+        self._hasher = hasher
+        #: Massstab der Anmeldebremse. Nur fuer die Testreihe kleiner als 1 --
+        #: sie prueft die Bremse ueber echte Anfragen und bezahlt die
+        #: Wartezeit sonst in Sekunden Laufzeit.
+        self._throttle_scale = throttle_scale
+        #: Das Stornieren. Es haengt am **Backend** der Bibliothek (Valkey
+        #: Index 0), nicht am Ereignisstrom des Dashboards -- der Merker
+        #: gehoert swarmq, nicht uns.
+        self.canceller: Canceller = canceller or SwarmQCanceller(
+            config.broker_url, config.backend_url
+        )
+        #: Die Dead-Letter-Bedienung (U15). Ihre Verbindung entsteht **traege**
+        #: -- erst bei der ersten Aktion. Das Oeffnen der Seite kommt ohne sie
+        #: aus: die Tiefe liefert die passive Beobachtung, die gescheiterten
+        #: Tasks das Verzeichnis. Wer nur hinsieht, bezahlt nichts (R28).
+        self._dlq_admin: Any = dlq_admin or SwarmQDlqAdmin(config.broker_url)
+        self.dlq = DlqService(self._dlq_admin)
+        #: Die Sollwert-Steuerung (U16). Die Faehigkeitspruefung laeuft
+        #: **beim Bauen** und nicht bei der ersten Aktion: ein Bereich, der
+        #: erst beim Klicken zugibt, dass es ihn nicht gibt, ist schlechter
+        #: als einer, der gar nicht erst anbietet (R33, AE15). Ein von aussen
+        #: eingesetzter Kanal ueberspringt sie -- er ist der Beweis, dass es
+        #: ihn gibt.
+        grund = None if setpoint_store is not None else kontrollkanal_grund()
+        self._setpoint_store: SetpointStore | None = setpoint_store
+        if self._setpoint_store is None and grund is None:
+            self._setpoint_store = SwarmQSetpointStore(config.backend_url)
+        self.steuerung = Steuerung(self._setpoint_store, grund=grund)
+        #: Das Einreihen von Proben -- die einzige Stelle, an der der
+        #: Dienst selbst Arbeit erzeugt. Traege verbunden wie das
+        #: Stornieren: wer nur hinsieht, bezahlt keine Broker-Verbindung.
+        self.probe_sender: Any = probe_sender or ProbeSender(
+            broker_url=config.broker_url, backend_url=config.backend_url,
+            stream_url=config.stream_url,
+        )
+        #: Das Nachschlagen von Ergebnissen (U1). Wie das Stornieren am
+        #: **Backend** der Bibliothek und traege verbunden: Wer die Liste
+        #: ansieht, bezahlt keine Verbindung -- gelesen wird erst auf der
+        #: Detailseite eines beendeten Tasks.
+        self.ergebnisse: Ergebnisleser = ergebnisleser or SwarmQErgebnisleser(
+            config.broker_url, config.backend_url
+        )
+        #: Das Lesen des Workflow-Zustands (Workflow-Ansicht, U1). Am
+        #: **Backend** der Bibliothek wie das Stornieren, mit eigener
+        #: Valkey-Verbindung -- darum in der Schliessliste von ``shutdown()``.
+        self.workflowleser: Workflowleser = workflowleser or SwarmQWorkflowleser(
+            config.broker_url, config.backend_url
+        )
+        #: Der Abgleich der Workflow-Kopie (U3). Entsteht mit dem
+        #: Verzeichnis, weil er hineinschreibt.
+        self.abgleich: Abgleich | None = None
+        #: Der Audit-Strom (R27). Er haengt am Ereignisstrom, nicht an der
+        #: Kontendatei -- und er darf fehlen, ohne eine Aktion aufzuhalten.
+        self.audit = AuditLog(None)
+        #: Die Kanal-Verteilung der Live-Schicht und ihr Sender. Der Deckel
+        #: verhindert das unbegrenzte Wachsen einer stehengebliebenen Ansicht
+        #: (KTD6); **bemerkt** wird ein Verlust ueber die Folgenummern, weil
+        #: der Rahmen den Ueberlauf ohne Rueckmeldung verwirft.
+        self.live = ChannelsPlugin(
+            backend=MemoryChannelsBackend(history=0),
+            channels=[LIVE_CHANNEL],
+            subscriber_max_backlog=config.backlog_cap,
+            # ``dropleft`` haelt die **juengsten** Nachrichten: eine Ansicht
+            # will den aktuellen Stand, nicht den aeltesten. Und zusammen mit
+            # dem Anfangswert der Folgenummer faellt der Verlust sofort auf,
+            # nicht erst bei der naechsten Nachricht.
+            subscriber_backlog_strategy="dropleft",
+        )
+        self.publisher = LivePublisher(self.live)
+        self.accounts: AccountStore | None = None
+        self.throttle: LoginThrottle | None = None
+        #: Der Speicher aus der Registratur -- eine vierte Verbindung auf die
+        #: Kontendatei, die niemand schloss.
+        self._sitzungsspeicher: SqliteStore | None = None
+        self._stream_url = config.stream_url
+        self._backend_url = config.backend_url
+        self._broker_url = config.broker_url
+
+        #: Gesetzt, sobald der Dienst herunterfaehrt. Die Takte sehen darauf
+        #: und kehren zurueck, **statt** abgebrochen zu werden: ein Abbruch
+        #: beendet die Aufgabe, nicht den Arbeitsfaden, in dem gerade eine
+        #: SQLite-Anweisung laeuft. Wird die Verbindung darunter geschlossen,
+        #: stuerzt der Prozess ab -- nachgemessen, ein Speicherzugriffsfehler
+        #: mitten im Einlesen.
+        self._halt = False
+        #: Weckt die schlafenden Takte beim Herunterfahren. Ein blosses
+        #: ``asyncio.sleep(every_s)`` laesst sie bis zu einem vollen Takt --
+        #: im Betrieb zehn Sekunden -- weiterschlafen, und das Herunterfahren
+        #: wartet so lange. Gemessen kostete das jeden Test fuenf Sekunden.
+        self._wecker = asyncio.Event()
+        self.reader: StreamReader | None = None
+        self.services_directory_writer: DirectoryWriter | None = None
+        #: Von aussen gesetzte Aussenverbindungen. Sie ueberleben das
+        #: Herunterfahren, die laufenden nicht: ``startup()`` ist idempotent
+        #: zugesagt, und ein zweiter Lebenszyklus muss dieselben Vorgaben
+        #: wiederfinden -- sonst faehrt er gegen die echten Adressen, obwohl
+        #: jemand ausdruecklich etwas anderes eingesetzt hat.
+        self._stream_vorgabe = stream
+        self._broker_vorgabe = broker
+        self._stream: ValkeyStreamClient | None = stream
+        self._backend: ValkeyStreamClient | None = None
+        self._broker: Any | None = broker
+
+        self._gruende: dict[str, str | None] = {
+            "directory": "noch nicht geoeffnet",
+            "accounts": "noch nicht geoeffnet",
+            "takt_refresh": None,
+            "takt_purge": None,
+            "takt_ingest": None,
+            "takt_workflows": None,
+            # Die drei Teile der Pflege einzeln: faellt einer aus, sollen die
+            # anderen weiterlaufen **und** der Ausfall benannt sein.
+            "pflege_retention": None,
+            "pflege_throttle": None,
+            "pflege_sessions": None,
+            "stream": "noch nicht verbunden",
+            "backend": "noch nicht verbunden",
+            "broker": "noch nicht verbunden",
+        }
+
+    # -- Lebenszyklus ----------------------------------------------------
+
+    async def startup(self) -> None:
+        """Alles hochfahren, was geht. Wirft nie.
+
+        Setzt den Halt-Merker zurueck. Ohne das war die zugesagte Idempotenz
+        eine Luege: nach einem ``shutdown()`` blieb ``_halt`` stehen, alle
+        drei Takte pruefen ihn als Erstes, und der zweite Lebenszyklus
+        derselben Anwendung las nichts, raeumte nichts auf und fuehrte nichts
+        nach -- waehrend der Bericht alles in Ordnung meldete.
+        """
+        self._halt = False
+        self._wecker.clear()
+        return await self._startup()
+
+    async def _startup(self) -> None:
+        """
+
+        Idempotent: ein zweiter Aufruf baut nichts doppelt auf. Das ist keine
+        Bequemlichkeit -- ein Lebenszyklus, der beim zweiten Durchlauf wirft,
+        macht aus einem Neustartversuch einen endgueltigen Ausfall.
+        """
+        self._verzeichnis_oeffnen()
+        self._konten_oeffnen()
+        await self.live._on_startup()
+        await self.refresh()
+
+    def _konten_oeffnen(self) -> None:
+        """Konten und Bremse. Beide in derselben eigenen Datei (KTD8) -- sie
+        haengen an keinem Netzdienst und muessen darum auch dann stehen, wenn
+        sonst nichts erreichbar ist.
+
+        Gekapselt wie jeder andere Startschritt: das war der einzige, der es
+        nicht war, und eine unlesbare Kontendatei -- aus einer Ruecksicherung,
+        von einem ``ExecStartPre`` -- liess ``startup()`` werfen. Der Dienst
+        kam dann gar nicht hoch und konnte auch nicht sagen, woran es liegt.
+        Ohne Konten meldet sich niemand an; die Kopfzeile sagt aber, warum.
+        """
+        if self.accounts is not None:
+            return
+        try:
+            self.accounts = AccountStore(self._config.accounts_file, hasher=self._hasher)
+            self.throttle = LoginThrottle(
+                self._config.accounts_file,
+                base_delay_s=DELAY_BASE_S * self._throttle_scale,
+                max_delay_s=MAX_DELAY_S * self._throttle_scale,
+            )
+            self._sitzungsspeicher = SqliteStore(self._config.accounts_file)
+            self._gruende["accounts"] = None
+        except Exception as exc:
+            self._gruende["accounts"] = str(exc)
+
+    def _verzeichnis_oeffnen(self) -> None:
+        if self.services_directory_writer is not None:
+            return
+        try:
+            con = connect(self._config.directory_file)
+            self.services_directory_writer = DirectoryWriter(con)
+            # Die Naht zur Live-Schicht. Sie wird hier gesetzt und nicht im
+            # Leser gebaut: der Leser soll nichts von der Weboberflaeche
+            # wissen.
+            self.reader = StreamReader(
+                _NochNichtVerbunden(), self.services_directory_writer, stream_key=TASK_STREAM
+            )
+            self.reader.melder = self._eingearbeitet
+            self.abgleich = Abgleich(
+                self.services_directory_writer, self.workflowleser,
+                melden=self._workflow_melden, schlafen=self._schlafen,
+            )
+            self._gruende["directory"] = None
+        except Exception as exc:
+            # Ohne Verzeichnis ist das Dashboard fast nutzlos -- aber "fast"
+            # ist nicht "ganz": die Kopfzeile kann immer noch sagen, was fehlt.
+            self._gruende["directory"] = str(exc)
+
+    async def refresh(self) -> None:
+        """Erreichbarkeit neu ermitteln. Wirft nie.
+
+        Im Takt gefahren, nicht nur beim Start: sonst bliebe die Anzeige nach
+        der Rueckkehr eines Dienstes auf "nicht erreichbar" stehen, und der
+        Betreiber startete das Dashboard neu, weil es faelschlich "weg" sagt.
+        """
+        self._stream, self._gruende["stream"] = await self._valkey(self._stream, self._stream_url)
+        self._backend, self._gruende["backend"] = await self._valkey(
+            self._backend, self._backend_url
+        )
+        if self.reader is not None and self._stream is not None:
+            self.reader._source = self._stream
+        # Derselbe Strom, eigener Schluessel und eigener Deckel (R9, R27).
+        self.audit = AuditLog(self._stream)
+        await self._broker_pruefen()
+
+    async def _valkey(
+        self, vorhanden: ValkeyStreamClient | None, url: str
+    ) -> tuple[ValkeyStreamClient | None, str | None]:
+        client = vorhanden if vorhanden is not None else ValkeyStreamClient(url)
+        try:
+            await asyncio.wait_for(client.connect(), timeout=PROBE_TIMEOUT_S)
+        except TimeoutError:
+            await _leise_schliessen(client)
+            return None, f"antwortet nicht innerhalb von {PROBE_TIMEOUT_S:.0f} s"
+        except StreamUnavailable as exc:
+            await _leise_schliessen(client)
+            return None, str(exc)
+        return client, None
+
+    async def queue_stats(self, queues: list[str]) -> dict[str, Any]:
+        """Tiefe und Konsumenten je Queue -- oder je Queue ein Fehlgrund.
+
+        Nie eine leere Antwort und nie eine Null, wo eine Auskunft fehlt: eine
+        Null laese sich als "kein Rueckstau", und das ist die gefaehrlichste
+        stille Falschaussage der Worker-Seite (R18, R14).
+        """
+        from swarmq_dashboard.broker import QueueStats
+
+        if not queues:
+            return {}
+        if self._broker is None:
+            grund = self._gruende["broker"] or "der Broker ist nicht verbunden"
+            return {q: QueueStats(queue=q, error=grund) for q in queues}
+        try:
+            return dict(await self._broker.stats_many(queues))
+        except Exception as exc:
+            return {q: QueueStats(queue=q, error=str(exc)) for q in queues}
+
+    async def _broker_pruefen(self) -> None:
+        if self._broker is None:
+            self._broker = BrokerObserver(self._broker_url)
+        try:
+            await asyncio.wait_for(self._broker.connect(), timeout=PROBE_TIMEOUT_S)
+            self._gruende["broker"] = None
+        except TimeoutError:
+            # Eine ueberschrittene Frist ist kein Fehler des Dienstes, sondern
+            # eine Auskunft ueber ihn -- und sie muss dastehen. Ohne die Frist
+            # hielt ein Broker, der die Verbindung annimmt und dann schweigt,
+            # den ganzen Takt auf: gemessen sechs Sekunden je Durchlauf, in
+            # denen weder die Anzeige nachlief noch die Aufbewahrung ablief.
+            self._gruende["broker"] = (
+                f"der Broker antwortet nicht innerhalb von {PROBE_TIMEOUT_S:.0f} s"
+            )
+        except BrokerUnavailable as exc:
+            self._gruende["broker"] = str(exc)
+
+    async def _schlafen(self, sekunden: float) -> None:
+        """Warten -- aber nicht laenger, als der Dienst da ist."""
+        with suppress(TimeoutError):
+            await asyncio.wait_for(self._wecker.wait(), timeout=sekunden)
+
+    async def stop_tasks(self, aufgaben: list[asyncio.Task[None]]) -> None:
+        """Die Takte anhalten, **bevor** etwas geschlossen wird.
+
+        Erst freundlich: ``_halt`` setzen und die Aufgaben auslaufen lassen.
+        Ein Abbruch beendet nur die Aufgabe, nicht den Arbeitsfaden, in dem
+        gerade eine SQLite-Anweisung laeuft -- und die Verbindung darunter zu
+        schliessen war ein Speicherzugriffsfehler, kein Fehlerbild mit
+        Meldung. Erst wenn eine Aufgabe die Frist ueberzieht, wird sie
+        abgebrochen; dann ist der Absturz immer noch moeglich, aber er ist
+        nicht mehr der Normalfall.
+        """
+        self._halt = True
+        # Der Abgleich zuerst: das Wecken unten weckt auch seine verzoegerten
+        # Lesungen, und die schrieben sonst in das Verzeichnis, das gleich
+        # geschlossen wird.
+        if self.abgleich is not None:
+            self.abgleich.anhalten()
+        self._wecker.set()
+        if self.abgleich is not None:
+            with suppress(TimeoutError):
+                await asyncio.wait_for(self.abgleich.abwarten(), timeout=STOP_TIMEOUT_S)
+        if aufgaben:
+            await asyncio.wait(aufgaben, timeout=STOP_TIMEOUT_S)
+        for aufgabe in aufgaben:
+            if not aufgabe.done():
+                aufgabe.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await aufgabe
+
+    async def shutdown(self) -> None:
+        """Alles schliessen, auch das, was nie hochkam. Wirft nie."""
+        self._halt = True
+        self._wecker.set()
+        # Der Canceller gehoert dazu: er haelt eine eigene Valkey-Verbindung,
+        # und ohne ihn leckte je Lebenszyklus eine.
+        for teil in (self._stream, self._backend, self._broker, self._dlq_admin,
+                     self.canceller, self._setpoint_store, self.probe_sender,
+                     self.ergebnisse, self.workflowleser):
+            await _leise_schliessen(teil)
+        self._stream = self._stream_vorgabe
+        self._backend = None
+        self._broker = self._broker_vorgabe
+        if self.services_directory_writer is not None:
+            try:
+                self.services_directory_writer.close()
+            except Exception:
+                pass
+            self.services_directory_writer = None
+            self.reader = None
+            # Der Abgleich haelt den Schreiber; bliebe er stehen, ueberlebte
+            # die geschlossene Verbindung den Lebenszyklus.
+            self.abgleich = None
+        # Auch die drei Verbindungen auf die Kontendatei. Gemessen blieben
+        # ohne das sechs Dateizeiger offen, und ueber fuenf Lebenszyklen
+        # wuchsen sie linear auf dreissig -- und das Herunterfahren ist
+        # ohnehin nicht abgeschlossen, solange die letzten Schreibvorgaenge
+        # nicht zusammengefuehrt sind.
+        try:
+            await self.live._on_shutdown()
+        except Exception:
+            pass
+        for lokal in (self.accounts, self.throttle, self._sitzungsspeicher):
+            if lokal is not None:
+                try:
+                    lokal.close()
+                except Exception:
+                    pass
+        self.accounts = None
+        self.throttle = None
+        self._sitzungsspeicher = None
+
+    def start_maintenance(self, *, every_s: float = DEFAULT_MAINTENANCE_S
+                          ) -> list[asyncio.Task[None]]:
+        """Die Takte starten: Erreichbarkeit nachfuehren und aufraeumen.
+
+        Beide haben dieselbe Begruendung -- etwas, das der Dienst von sich aus
+        tun muss, weil es sonst niemand tut:
+
+        * ``refresh()`` rief ausser ``startup()`` **niemand**. Ohne den Takt
+          bleibt die Anzeige nach der Rueckkehr eines Dienstes dauerhaft auf
+          "nicht erreichbar" -- worauf der Betreiber das Dashboard neu
+          startet, also genau das tut, was der Absatz verhindern wollte.
+        * ``purge()`` und ``reader.maintain()`` hatten ueberhaupt keinen
+          Aufrufer. Ohne das erste waechst die Kontendatei (hochgerechnet
+          673 MiB in einer Woche), ohne das zweite laeuft die
+          Aufbewahrungsfrist nie ab -- und damit bleibt der Klartext der
+          Kundenargumente liegen, entgegen R7a.
+
+        **Zwei getrennte Aufgaben**, nicht zwei Schritte in einer. Vorher
+        liefen sie nacheinander; jeder Schritt war zwar einzeln gegen
+        Ausnahmen gekapselt, aber nicht gegen **Dauer**. Gemessen: gegen einen
+        toten Broker braucht ``refresh()` sekundenlang, und das Aufraeumen kam
+        in keinem einzigen Takt an die Reihe. Damit haette die Trennung genau
+        den Ausfall zurueckgeholt, gegen den sie eingezogen wurde -- nur
+        unsichtbar, weil kein Fehler entsteht. Getrennte Aufgaben koennen sich
+        nicht gegenseitig aushungern.
+        """
+        return [
+            self._takt(self.refresh, "refresh", every_s),
+            self._takt(self._aufraeumen, "purge", every_s),
+            # Ein eigener Takt mit eigenem Abstand (KTD3), und einmal gleich
+            # beim Start: sonst stuende eine Kopie nach einem Neustart bis
+            # zum ersten Takt auf dem alten Stand.
+            self._takt(self._abgleichen, "workflows", self._config.workflow_poll_s,
+                       sofort=True),
+        ]
+
+    def _takt(self, schritt: Callable[[], Awaitable[None]], name: str,
+              every_s: float, *, sofort: bool = False) -> asyncio.Task[None]:
+        """Eine wiederkehrende Aufgabe, die nie an einem Fehler endet.
+
+        ``sofort`` laesst den ersten Schritt vor dem ersten Warten laufen.
+        """
+
+        async def lauf() -> None:
+            erster = sofort
+            while not self._halt:
+                if not erster:
+                    await self._schlafen(every_s)
+                erster = False
+                if self._halt:
+                    return
+                try:
+                    await schritt()
+                    self._gruende[f"takt_{name}"] = None
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    # Ein Fehler beendet den Takt nicht -- sonst steht die
+                    # Anzeige nach der ersten Stoerung fuer immer. Er
+                    # verschwindet aber auch nicht: der Bericht nennt ihn.
+                    self._gruende[f"takt_{name}"] = str(exc)
+
+        return asyncio.ensure_future(lauf())
+
+    def start_ingest(self, *, every_s: float = DEFAULT_INGEST_S) -> asyncio.Task[None]:
+        """Den Strom-Leser antreiben -- die Naht, ohne die nichts geschieht.
+
+        Aus der Pruefung von Stufe D: ``poll_once`` hatte im ganzen Dienst
+        **keinen Aufrufer**. Der Leser wurde gebaut, bekam seine Quelle
+        eingehaengt, und las nie. Das Verzeichnis blieb leer, jede Seite
+        dauerhaft ohne Zeile, der Neuaufbau ewig "laeuft" -- und die
+        Kopfzeile meldete dabei "Strom: aktuell". Alle Tests waren gruen,
+        weil jeder von ihnen ``poll_once`` selbst rief.
+
+        Ein eigener Takt und nicht im Pflegetakt: das Einlesen ist die
+        Hauptarbeit und braucht einen halben Takt, das Aufraeumen kommt alle
+        zehn Sekunden. In einen Topf geworfen waere die Ansicht entweder
+        zehn Sekunden alt oder das Aufraeumen liefe zwanzigmal zu oft.
+        """
+
+        async def takt() -> None:
+            while not self._halt:
+                try:
+                    gelesen = await self._einlesen()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    self._gruende["takt_ingest"] = str(exc)
+                    gelesen = 0
+                else:
+                    self._gruende["takt_ingest"] = None
+                # Voller Stapel heisst: da ist noch mehr. Dann sofort weiter,
+                # statt den Rueckstand im Halbsekundentakt abzutragen.
+                if gelesen < DEFAULT_BATCH:
+                    await self._schlafen(every_s)
+
+        return asyncio.ensure_future(takt())
+
+    async def _einlesen(self) -> int:
+        if self.reader is None:
+            return 0
+        return await self.reader.poll_once()
+
+    async def _eingearbeitet(self, ereignisse: list[tuple[str | None, Any]]) -> None:
+        """Was der Strom-Leser eingearbeitet hat: an die Ansichten und an den
+        Abgleich, der nach Ergebnissen von Workflow-Schritten liest (KTD3)."""
+        await self._live_melden(ereignisse)
+        if self.abgleich is not None:
+            await self.abgleich.eingearbeitet(ereignisse)
+
+    async def _live_melden(self, ereignisse: list[tuple[str | None, Any]]) -> None:
+        """Was eingearbeitet wurde, an die offenen Ansichten weitergeben (R13).
+
+        Der Sender war gebaut und hatte ebenfalls keinen Aufrufer; die
+        Live-Schicht lieferte darum nur Herzschlaege. Gemeldet wird je
+        Ereignis Art und Task -- mehr braucht die Ansicht nicht, um die
+        betroffene Zeile nachzuladen, und weniger waere ein Wecken ohne
+        Auskunft.
+        """
+        for _sid, ev in ereignisse:
+            await self.publisher.publish(
+                ev.type, {"task_id": str(ev.payload.get("task_id") or ""),
+                          "worker_id": str(ev.payload.get("worker_id") or ""),
+                          "ts": ev.ts}
+            )
+
+    async def _abgleichen(self) -> None:
+        if self.abgleich is not None:
+            await self.abgleich.alle_lesen()
+
+    async def _workflow_melden(self, workflow_id: str) -> None:
+        """Eine geaenderte Workflow-Kopie an die offenen Ansichten (KTD10).
+
+        Diese Aenderungen haben kein Strom-Ereignis; ohne die Meldung zeigte
+        eine offene Seite den Endstatus erst beim naechsten Schritt.
+        """
+        await self.publisher.publish(
+            "workflow_abgeglichen", {"workflow_id": workflow_id, "ts": time.time()}
+        )
+
+    async def _aufraeumen(self) -> None:
+        """Die Frist anwenden, abgelaufene Sitzungen und Bremszaehler entfernen.
+
+        Die Aufbewahrung stand vorher in keinem Takt: ``reader.maintain`` und
+        damit ``writer.expire`` hatten keinen Aufrufer. Gemessen ueberlebte
+        eine dreissig Tage alte Zeile samt Klartext vierzig Pflegelaeufe.
+        Damit war R7a gebrochen -- und die Kopfzeile nannte trotzdem sieben
+        Tage. Die Frist ist die einzige technische Begrenzung, unter der die
+        Klartext-Entscheidung aus KD11 vertretbar ist.
+
+        **Jeder Schritt einzeln gekapselt**, aus demselben Grund, aus dem die
+        Takte getrennt laufen: zusammen legte ein scheiterndes ``maintain``
+        -- etwa weil der Strom nicht verbunden ist -- das Aufraeumen der
+        Sitzungen still mit. Der erste Entwurf dieser Methode tat genau das,
+        und die Testreihe zeigte es sofort.
+        """
+        for schritt, name in (
+            (self._frist_anwenden, "retention"),
+            (self._bremse_aufraeumen, "throttle"),
+            (self._sitzungen_aufraeumen, "sessions"),
+        ):
+            try:
+                await schritt()
+                self._gruende[f"pflege_{name}"] = None
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._gruende[f"pflege_{name}"] = str(exc)
+
+    async def _frist_anwenden(self) -> None:
+        if self.reader is not None:
+            await self.reader.maintain(retention_s=self._config.retention_days * 86400.0)
+
+    async def _bremse_aufraeumen(self) -> None:
+        if self.throttle is not None:
+            await asyncio.to_thread(self.throttle.purge)
+
+    async def _sitzungen_aufraeumen(self) -> None:
+        if self._sitzungsspeicher is not None:
+            # Wie der Bremsen-purge in einen Faden: gemessen 0,18 s bei
+            # 200.000 abgelaufenen Zeilen, und Granian faehrt einen Arbeiter.
+            await asyncio.to_thread(self._sitzungsspeicher.purge_sync)
+
+    # -- Zustand ---------------------------------------------------------
+
+    def status(self, *, now: float | None = None) -> dict[str, Any]:
+        """Der Bericht fuer die Kopfzeile (R9, R26, R33)."""
+        jetzt = time.time() if now is None else now
+        juengstes = (
+            self.services_directory_writer.newest_entry()
+            if self.services_directory_writer is not None
+            else None
+        )
+        return {
+            "broker": _teil(self._gruende["broker"] is None, self._gruende["broker"]),
+            "backend": _teil(self._gruende["backend"] is None, self._gruende["backend"]),
+            "stream": {
+                **_teil(self._gruende["stream"] is None, self._gruende["stream"]),
+                "last_event_at": juengstes,
+                # Noch nie ein Signal gesehen heisst **nicht** "aktuell". Ein
+                # stehender Strom laese sich sonst als ruhiges System lesen.
+                "stale": juengstes is None or (jetzt - juengstes) > self._config.stream_stale_after_s,
+                "stale_after_s": self._config.stream_stale_after_s,
+                # Die angezeigte Grenze ist die wirksame (R9): eine Zahl aus
+                # einer Einstellung, die niemand anwendet, waere schlimmer als
+                # gar keine.
+                "retention_days": self._config.retention_days,
+            },
+            "directory": self._verzeichnis_bericht(),
+            "accounts": _teil(self._gruende["accounts"] is None, self._gruende["accounts"]),
+            # Ein Takt, der still nicht mehr laeuft, waere genau die Art
+            # Ausfall, die dieses Dashboard nicht machen darf.
+            # Nicht geschriebene Audit-Eintraege. Sie entstehen, wenn Valkey
+            # fehlt -- die Aktion laeuft dann trotzdem (KTD8), aber still
+            # bleiben darf das nicht (R27).
+            "audit": {"lost": self.audit.lost},
+            # Der Abgleich der Workflow-Kopie: ohne Backend bleibt sie
+            # stehen, wie sie ist, und das muss dastehen (R5, R33).
+            "workflows": self._abgleich_bericht(),
+            # Alle Takte, nicht nur zwei. Ein Takt, der still nicht mehr
+            # arbeitet, ist genau die Art Ausfall, die dieses Dashboard nicht
+            # machen darf -- und die drei neuen Gruende standen in einem
+            # privaten Woerterbuch und sonst nirgends.
+            "maintenance": {
+                "refresh": self._gruende["takt_refresh"],
+                "purge": self._gruende["takt_purge"],
+                "ingest": self._gruende["takt_ingest"],
+                "workflows": self._gruende["takt_workflows"],
+                "retention": self._gruende["pflege_retention"],
+                "throttle": self._gruende["pflege_throttle"],
+                "sessions": self._gruende["pflege_sessions"],
+            },
+        }
+
+    def _abgleich_bericht(self) -> dict[str, Any]:
+        # Ohne Verzeichnis gibt es keinen Abgleich; das nennt der Bericht
+        # des Verzeichnisses, nicht dieser.
+        grund = self.abgleich.grund if self.abgleich is not None else None
+        return _teil(grund is None, grund)
+
+    def _verzeichnis_bericht(self) -> dict[str, Any]:
+        if self.reader is None:
+            # ``gaps`` und ``behind`` auch hier: die Kopfzeile fragt danach,
+            # und eine fehlende Angabe waere in einer strengen Vorlage ein
+            # Absturz -- ausgerechnet in dem Fall, in dem ohnehin schon etwas
+            # fehlt.
+            return {"ok": False, "reason": self._gruende["directory"],
+                    "rebuilding": True, "behind": False, "gaps": 0,
+                    "dropped": 0, "rejected": 0}
+        bericht = self.reader.status()
+        bericht["ok"] = True
+        bericht["reason"] = None
+        return bericht
+
+
+class _NochNichtVerbunden:
+    """Ein Strom, der nichts liefert, solange keine Verbindung steht.
+
+    Damit laeuft der Leser auch ohne Valkey, statt dass der Dienst ihn gar
+    nicht erst bekommt -- und die Kopfzeile kann sagen, dass der Strom fehlt,
+    statt zu schweigen.
+    """
+
+    async def read_after(self, key: str, last_id: str, count: int) -> list[tuple[str, bytes]]:
+        raise StreamUnavailable("der Ereignisstrom ist nicht verbunden")
+
+    async def min_id(self, key: str) -> str | None:
+        raise StreamUnavailable("der Ereignisstrom ist nicht verbunden")
+
+    async def trim_by_min_id(self, key: str, min_ms: int) -> int:
+        raise StreamUnavailable("der Ereignisstrom ist nicht verbunden")
+
+
+async def _leise_schliessen(teil: object) -> None:
+    schliessen = getattr(teil, "close", None)
+    if schliessen is None:
+        return
+    try:
+        await schliessen()
+    except Exception:
+        # Ein Teil, das sich nicht schliessen laesst, ist bereits fort. Daran
+        # darf kein Herunterfahren haengen.
+        pass

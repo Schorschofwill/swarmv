@@ -274,7 +274,7 @@ async def test_ohne_kontrollkanal_sagt_die_seite_das(tmp_path: Path, monkeypatch
     nicht den Code.
     """
     monkeypatch.setattr(
-        "swarmq_dashboard.web.app.kontrollkanal_grund",
+        "swarmq_dashboard.web.services.kontrollkanal_grund",
         lambda: ("Steuerung nicht verfügbar: die installierte swarmq-Fassung bringt den "
                  "Kontrollkanal nicht mit."),
     )

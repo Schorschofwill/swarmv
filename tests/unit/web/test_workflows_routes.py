@@ -87,6 +87,26 @@ Test-Liste (AGENTS.md):
     zeigt sie und die anderen, das Detail antwortet 200 mit den bekannten
     Schritten und dem Hinweis "Topologie nicht lesbar", die Gliederseite
     nennt ihren Grund -- keine Seite antwortet 500.
+
+=== ZYKLUS 8: Die Dauer-Spalte (Aufraeumen, U1, R6) ===
+Charakterisierung: die Tests halten bestehendes Verhalten fest und waren
+beim ersten Lauf gruen; eine Gegenprobe (Zweig "--" der Vorlage vorueber-
+gehend geaendert) machte sie rot.
+34. Ein Glied, das vor dem Start storniert wurde (``task_cancelled`` ohne
+    ``task_started``), zeigt in der Dauer-Spalte "--".
+35. Ein Glied mit Start und Ende zeigt seine Dauer, eins nur mit Start
+    "läuft seit".
+
+=== ZYKLUS 9: Zwischenspeicher der Ergebnisse (Aufraeumen, U4, R3) ===
+Ueber einen **echten** ``SwarmQErgebnisleser`` auf einer zaehlenden
+App-Attrappe -- ``_Zaehlleser`` ersetzte den ganzen Leser und saehe den
+Speicher nicht. Fertige Kopf-Glieder stehen im Baum gefaltet und werden erst
+auf der Seite der fertigen Glieder gelesen; im Baum selbst stehen die
+stornierten und gescheiterten.
+36. Die Detailseite eines Chords liest beim zweiten Abruf das stornierte
+    Kopf-Glied nicht mehr, das gescheiterte erneut (DLQ-Requeue).
+37. Die Seite der fertigen Glieder liest beim zweiten Abruf nichts mehr aus
+    dem Backend.
 """
 
 from __future__ import annotations
@@ -107,7 +127,7 @@ from swarmq_dashboard.directory.schema import connect
 from swarmq_dashboard.directory.writer import DirectoryWriter
 from swarmq_dashboard.events import Event, Origin
 from swarmq_dashboard.web.app import create_app
-from swarmq_dashboard.web.ergebnis import Ergebnisbild
+from swarmq_dashboard.web.ergebnis import Ergebnisbild, SwarmQErgebnisleser
 from swarmq_dashboard.workflows import Stornobild, Workflowbild
 
 pytestmark = pytest.mark.timeout(5)
@@ -331,8 +351,7 @@ async def test_nie_gesehen_steht_in_der_liste(tmp_path: Path) -> None:
     wf = _wf(1)
     v.schritt(wf, "/0", 1_700_000_000.0, "task_started", "task_completed", name="a")
     v.schritt(wf, "/1", 1_700_000_010.0, "task_started", name="b")
-    assert v.w.vermerke_nie_gesehen(wf)
-    v.w.bestaetige_kandidat(wf)
+    assert v.w.vermerke_fehlend(wf)[2]
     v.close()
     c = await _angemeldet(config)
     try:
@@ -354,7 +373,7 @@ async def test_verfallen_nennt_den_zeitpunkt_der_letzten_lesung(tmp_path: Path) 
     v.schritt(wf, "", 1_700_000_000.0, "task_started")
     v.lesung(wf, _sig_top("download"), gelesen_am=1_700_003_600.0)
     assert v.w.vermerke_anzeige(wf, "laeuft")
-    assert v.w.vermerke_verfallen(wf)
+    assert v.w.vermerke_fehlend(wf)[1]
     v.close()
     c = await _angemeldet(config)
     try:
@@ -501,7 +520,7 @@ async def test_fertig_aus_der_kopie_nach_dem_verfall(tmp_path: Path) -> None:
     v.schritt(wf, "/0", 1_700_000_000.0, "task_started", "task_completed", name="a")
     v.schritt(wf, "/1", 1_700_000_010.0, "task_started", "task_completed", name="b")
     v.lesung(wf, _kette(_sig_top("a"), _sig_top("b")), status="completed")
-    v.w.vermerke_verfallen(wf)      # greift bei einem Endstatus nicht -- gut so
+    v.w.vermerke_fehlend(wf)        # greift bei einem Endstatus nicht -- gut so
     v.close()
     c = await _angemeldet(config)
     try:
@@ -523,7 +542,7 @@ async def test_nie_gesehen_zeigt_die_bekannten_schritte(tmp_path: Path) -> None:
     wf = _wf(1)
     v.schritt(wf, "/0", 1_700_000_000.0, "task_started", "task_completed", name="a")
     v.schritt(wf, "/1", 1_700_000_010.0, "task_started", name="b")
-    assert v.w.vermerke_nie_gesehen(wf)
+    assert v.w.vermerke_fehlend(wf)[2]
     v.close()
     c = await _angemeldet(config)
     try:
@@ -1149,6 +1168,52 @@ async def test_nach_dem_abbruch_aller_wartenden_ist_nichts_mehr_aktiv(tmp_path: 
         await c.__aexit__(None, None, None)
 
 
+def _dauerzelle(html: str, kennung: str) -> str:
+    """Der Text der letzten Zelle (Dauer) der Zeile ``kennung``."""
+    zellen = re.findall(r"<td[^>]*>(.*?)</td>", _zeile(html, kennung), re.S)
+    return _text(zellen[-1])
+
+
+# --- Zyklus 8 -----------------------------------------------------------
+
+
+async def test_ein_vor_dem_start_storniertes_glied_hat_keine_dauer(tmp_path: Path) -> None:
+    """R6. Ein Glied endete, ohne je zu starten: es gibt keine Dauer, und
+    die Spalte behauptet auch keine Wartezeit."""
+    config = _config(tmp_path)
+    wf = _wf(1)
+    v = _Verzeichnis(config)
+    step_tasks = {"/g0": f"{wf}#/g0", "/g1": f"{wf}#/g1"}
+    v.schritt(wf, "/g0", 1_700_000_000.0, "task_cancelled")
+    v.schritt(wf, "/g1", 1_700_000_010.0, "task_started")
+    v.lesung(wf, _DOWNLOADS, step_tasks=step_tasks)
+    v.close()
+    c = await _angemeldet(config)
+    try:
+        html = (await c.get(f"/workflows/{wf}")).text
+        assert _dauerzelle(html, "knoten-g0") == "--"
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+async def test_die_dauer_steht_nach_ende_und_waehrend_des_laufs(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    v = _Verzeichnis(config)
+    wf = _wf(1)
+    v.schritt(wf, "/0", 1_700_000_000.0, "task_started", "task_completed", name="a")
+    v.schritt(wf, "/1", 1_700_000_010.0, "task_started", name="b")
+    v.lesung(wf, _kette(_sig_top("a"), _sig_top("b")),
+             step_tasks={"/0": f"{wf}#/0", "/1": f"{wf}#/1"})
+    v.close()
+    c = await _angemeldet(config)
+    try:
+        html = (await c.get(f"/workflows/{wf}")).text
+        assert _dauerzelle(html, "knoten-0") == "1,0 s"
+        assert _dauerzelle(html, "knoten-1").startswith("läuft seit ")
+    finally:
+        await c.__aexit__(None, None, None)
+
+
 async def test_kaputte_topologie_ist_ein_benannter_zustand(tmp_path: Path) -> None:
     config = _config(tmp_path)
     v = _Verzeichnis(config)
@@ -1173,5 +1238,83 @@ async def test_kaputte_topologie_ist_ein_benannter_zustand(tmp_path: Path) -> No
 
         glieder = await c.get(f"/workflows/{kaputt}/glieder", params={"gruppe": ""})
         assert glieder.status_code == 200
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+# --- Zyklus 9 -----------------------------------------------------------
+
+
+class _ZaehlApp:
+    """Die App der Bibliothek, soweit der Leser sie braucht: ``get_result``,
+    mit einer Antwort je Task-Kennung und jedem Aufruf festgehalten."""
+
+    def __init__(self, antworten: Mapping[str, object]) -> None:
+        self._antworten = dict(antworten)
+        self.rufe: list[str] = []
+
+    async def get_result(self, task_id: str, timeout: float = 10) -> Any:
+        self.rufe.append(task_id)
+        antwort = self._antworten.get(task_id, {"ok": True})
+        if isinstance(antwort, BaseException):
+            raise antwort
+        return antwort
+
+
+async def test_die_detailseite_liest_ein_storniertes_kopfglied_nur_einmal(
+        tmp_path: Path) -> None:
+    """R3, KTD3: jede Live-Meldung rendert den Baum neu. Das stornierte
+    Kopf-Glied aendert sich nicht mehr, das gescheiterte kann ein Requeue
+    aus der Dead-Letter-Queue noch ueberschreiben."""
+    from swarmq.exceptions import TaskCancelledError, TaskError
+
+    config = _config(tmp_path)
+    v = _Verzeichnis(config)
+    wf = _wf(1)
+    top = _chord(_gruppe(*[_sig_top("download")] * 3), _sig_top("verarbeiten"))
+    storniert = v.schritt(wf, "/h/g0", 1_700_000_000.0, "task_cancelled")
+    gescheitert = v.schritt(wf, "/h/g1", 1_700_000_010.0, "task_started", "task_failed",
+                            fehler="kaputt")
+    v.schritt(wf, "/h/g2", 1_700_000_020.0, "task_started")
+    v.lesung(wf, top)
+    v.close()
+    app = _ZaehlApp({storniert: TaskCancelledError(storniert),
+                     gescheitert: TaskError("RuntimeError: kaputt")})
+    leser = SwarmQErgebnisleser(config.broker_url, config.backend_url, app=app)
+    c = await _angemeldet(config, ergebnisleser=leser)
+    try:
+        erste = await c.get(f"/workflows/{wf}")
+        assert erste.status_code == 200
+        assert sorted(app.rufe) == sorted([storniert, gescheitert])
+
+        zweite = await c.get(f"/workflows/{wf}")
+        assert zweite.status_code == 200
+        assert sorted(app.rufe) == sorted([storniert, gescheitert, gescheitert])
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+async def test_die_fertigen_glieder_werden_beim_zweiten_abruf_nicht_gelesen(
+        tmp_path: Path) -> None:
+    """R3: die Seite der fertigen Glieder liest je Glied einmal; ein zweiter
+    Abruf -- oder das Blaettern zurueck -- kostet keine Backend-Lesung."""
+    config = _config(tmp_path)
+    v = _Verzeichnis(config)
+    wf = _wf(1)
+    top = _chord(_gruppe(*[_sig_top("download")] * 4), _sig_top("verarbeiten"))
+    fertige = [v.schritt(wf, f"/h/g{i}", 1_700_000_000.0 + i, "task_started", "task_completed")
+               for i in range(3)]
+    v.schritt(wf, "/h/g3", 1_700_000_010.0, "task_started")
+    v.lesung(wf, top)
+    v.close()
+    app = _ZaehlApp({})
+    leser = SwarmQErgebnisleser(config.broker_url, config.backend_url, app=app)
+    c = await _angemeldet(config, ergebnisleser=leser)
+    try:
+        for _ in range(2):
+            seite = await c.get(f"/workflows/{wf}/glieder", params={"gruppe": "/h"})
+            assert seite.status_code == 200
+            assert len(re.findall(r'<tr id="knoten', seite.text)) == 3
+        assert sorted(app.rufe) == sorted(fertige)
     finally:
         await c.__aexit__(None, None, None)

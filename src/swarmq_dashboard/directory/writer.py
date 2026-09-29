@@ -418,20 +418,15 @@ class DirectoryWriter:
             self._con.commit()
         return True
 
-    def vermerke_verfallen(self, workflow_id: str) -> bool:
+    def _verfallen(self, workflow_id: str) -> bool:
         """Der Zustand ist aus Valkey verschwunden, zuletzt laufend gesehen (R17).
 
         Nur wenn die letzte Lesung "running" war: ein Endstatus der Kopie ist
         die Auskunft fuer die ganze Aufbewahrung, und ohne jede Lesung gilt
         "nie gesehen". Status und Zeitpunkt der letzten Lesung bleiben stehen
         -- die Ansicht nennt beide. ``True``, wenn der Vermerk neu gesetzt wurde.
+        Ohne Abschluss der Transaktion: den traegt ``vermerke_fehlend``.
         """
-        verfallen = self._verfallen(workflow_id)
-        self._con.commit()
-        return verfallen
-
-    def _verfallen(self, workflow_id: str) -> bool:
-        """``vermerke_verfallen`` ohne Abschluss der Transaktion."""
         cur = self._con.execute(
             "update workflow set sichtbarkeit=? where workflow_id=? "
             "and status=? and sichtbarkeit=?",
@@ -439,18 +434,13 @@ class DirectoryWriter:
         )
         return bool(cur.rowcount)
 
-    def vermerke_nie_gesehen(self, workflow_id: str) -> bool:
+    def _nie_gesehen(self, workflow_id: str) -> bool:
         """Der Zustand fehlt, und keine Lesung hat ihn je gefunden (R7).
 
         Die Ansicht zeigt dann nur die Schritte aus dem Verzeichnis und
-        keinen Status. ``True``, wenn der Vermerk gesetzt wurde.
+        keinen Status. ``True``, wenn der Vermerk gesetzt wurde. Ohne
+        Abschluss der Transaktion: den traegt ``vermerke_fehlend``.
         """
-        nie_gesehen = self._nie_gesehen(workflow_id)
-        self._con.commit()
-        return nie_gesehen
-
-    def _nie_gesehen(self, workflow_id: str) -> bool:
-        """``vermerke_nie_gesehen`` ohne Abschluss der Transaktion."""
         cur = self._con.execute(
             "update workflow set sichtbarkeit=? where workflow_id=? and gelesen_am is null",
             (SICHT_NIE_GESEHEN, workflow_id),
@@ -460,8 +450,8 @@ class DirectoryWriter:
     def vermerke_fehlend(self, workflow_id: str) -> tuple[bool, bool, bool]:
         """Eine Lesung fand keinen Zustand: alles in einer Transaktion.
 
-        Nacheinander ``verwerfe_kandidat``, ``vermerke_verfallen`` und
-        ``vermerke_nie_gesehen`` -- ein Kandidat ohne Zustand war nie ein
+        Nacheinander einen Kandidaten verwerfen, "verfallen" und "nie
+        gesehen" vermerken -- ein Kandidat ohne Zustand war nie ein
         Workflow (KTD5), und die beiden Vermerke schliessen sich aus:
         "verfallen" nur nach einer Lesung "running", "nie gesehen" nur ohne
         jede Lesung. Die Ausgaenge sind die der drei, in dieser Reihenfolge.
@@ -495,33 +485,15 @@ class DirectoryWriter:
         self._con.commit()
         return bool(cur.rowcount)
 
-    def bestaetige_kandidat(self, workflow_id: str) -> bool:
-        """Einen Kandidaten aus dem Muster als Workflow bestaetigen (KTD5).
-
-        ``schreibe_lesung`` bestaetigt schon selbst; das hier ist fuer den
-        Abgleich, der den Zustand anders belegt hat. ``False``, wenn der
-        Workflow nicht im Verzeichnis steht.
-        """
-        cur = self._con.execute(
-            "update workflow set bestaetigt=1 where workflow_id=?", (workflow_id,)
-        )
-        self._con.commit()
-        return bool(cur.rowcount)
-
-    def verwerfe_kandidat(self, workflow_id: str) -> bool:
+    def _verwerfen(self, workflow_id: str) -> bool:
         """Einen unbestaetigten Kandidaten loeschen (KTD5).
 
         Ein bestaetigter Workflow bleibt unberuehrt. Die Task-Zeilen bleiben
         ebenso -- sie gehoeren dem Strom, nicht der Kopie. Ein spaeteres
         Ereignis mit derselben Musterkennung legt den Kandidaten neu an.
-        ``True``, wenn etwas geloescht wurde.
+        ``True``, wenn etwas geloescht wurde. Ohne Abschluss der Transaktion:
+        den traegt ``vermerke_fehlend``.
         """
-        verworfen = self._verwerfen(workflow_id)
-        self._con.commit()
-        return verworfen
-
-    def _verwerfen(self, workflow_id: str) -> bool:
-        """``verwerfe_kandidat`` ohne Abschluss der Transaktion."""
         cur = self._con.execute(
             "delete from workflow where workflow_id=? and bestaetigt=0", (workflow_id,)
         )
