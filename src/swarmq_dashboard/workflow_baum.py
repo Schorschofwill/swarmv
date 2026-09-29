@@ -49,7 +49,7 @@ GRUND_VORGAENGER_FERTIG = "Vorgänger fertig, nicht eingereiht"
 
 #: Blattstatus, die fuer "nichts mehr aktiv" als aktiv zaehlen (R16): was
 #: laeuft oder wartet, und was eingereiht, aber noch nicht gemeldet ist.
-_AKTIV = frozenset({"wartend", "laufend", "wiederholung", EINGEREIHT})
+AKTIV = frozenset({"wartend", "laufend", "wiederholung", EINGEREIHT})
 
 #: Ausgaenge, die einen Schritt als gescheitert nennen (R12).
 _GESCHEITERT = frozenset({"gescheitert", "dead_letter"})
@@ -387,7 +387,7 @@ def _anzeige(kopie: Workflowkopie, blaetter: tuple[Knoten, ...]) -> Statusanzeig
             VERFALLEN, zuletzt=kopie.zuletzt_angezeigt, gelesen_at=kopie.gelesen_at
         )
     if kopie.storno_angefordert_at is not None:
-        if any(b.status in _AKTIV for b in blaetter):
+        if any(b.status in AKTIV for b in blaetter):
             return Statusanzeige("angefordert")
         return Statusanzeige("angefordert_nichts_aktiv")
     if kopie.sichtbarkeit == NIE_GESEHEN:

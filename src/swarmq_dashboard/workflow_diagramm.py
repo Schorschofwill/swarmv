@@ -14,7 +14,7 @@ from urllib.parse import quote
 
 from swarmq_dashboard.web.templates import dauer, zahl, zustandsart
 from swarmq_dashboard.workflow_baum import (
-    EINGEREIHT,
+    AKTIV,
     GRUND_GESCHEITERT,
     GRUND_STORNIERT,
     GRUND_STORNO_GLIED,
@@ -75,10 +75,6 @@ _WORT = {
 #: Gruende, mit denen ein Schritt nie starten wird: "nie gestartet ..."
 #: und "... startet nie" (KTD6).
 _STARTET_NIE = frozenset({GRUND_GESCHEITERT, GRUND_STORNIERT, GRUND_STORNO_GLIED})
-
-#: Blattstatus, die als aktiv gelten -- dieselben wie fuer "nichts mehr
-#: aktiv" in ``workflow_baum.py``.
-_AKTIV = frozenset({"wartend", "laufend", "wiederholung", EINGEREIHT})
 
 
 def _zahl(wert: float) -> str:
@@ -217,9 +213,13 @@ class _Umfeld:
     jetzt: float
 
 
-def _kennung(k: Baumknoten) -> str:
+def knoten_kennung(k: Baumknoten) -> str:
     """Stabile Kennung aus dem Topologie-Pfad (KTD4), wie ``knoten-...`` in
-    ``_baum.html``; ein Schritt ohne bekannten Pfad heisst nach seiner Task."""
+    ``_baum.html``; ein Schritt ohne bekannten Pfad heisst nach seiner Task.
+
+    Die einzige Stelle dieser Regel: die Vorlagen bekommen sie als Global
+    (``web/templates``), damit der Sprung aus dem Fehlerkopf und die Kennung
+    im Bild nicht auseinanderlaufen."""
     if k.pfad is None:
         return f"dk-task-{k.task_id}"
     return "dk" + k.pfad.replace("/", "-")
@@ -266,11 +266,11 @@ def _blatt(k: Baumknoten, umfeld: _Umfeld) -> _Block:
     # Warten ist Warten, "nie gestartet" ist neutral.
     klasse = zustandsart(k.grund if status == NICHT_EINGEREIHT else status)
     return _kasten(Knoten(
-        _kennung(k), 0.0, 0.0, KASTEN_B, KASTEN_H, "schritt",
+        knoten_kennung(k), 0.0, 0.0, KASTEN_B, KASTEN_H, "schritt",
         klasse=klasse, zeichen=_ZEICHEN[klasse], wort=_WORT.get(status, status),
         titel=titel, kurzname=_kurz(titel), dauer_text=_dauer_text(k.zeile, umfeld.jetzt),
         link=f"/tasks/{quote(k.task_id, safe='/')}" if k.task_id else None,
-        grund=k.grund, wartet_auf=k.wartet_auf, aktiv=status in _AKTIV,
+        grund=k.grund, wartet_auf=k.wartet_auf, aktiv=status in AKTIV,
     ))
 
 
@@ -281,7 +281,7 @@ def _sammel(gruppe: Baumknoten, umfeld: _Umfeld) -> _Block:
             f"?gruppe={quote(gruppe.pfad or '', safe='/')}")
     titel = f"{zahl(len(gruppe.gefaltete_kinder))} fertig"
     return _kasten(Knoten(
-        _kennung(gruppe) + "-fertig", 0.0, 0.0, KASTEN_B, KASTEN_H, "sammel",
+        knoten_kennung(gruppe) + "-fertig", 0.0, 0.0, KASTEN_B, KASTEN_H, "sammel",
         klasse="is-ok", zeichen=_ZEICHEN["is-ok"], wort=_WORT["fertig"], link=link,
         titel=titel, kurzname=_kurz(titel),
     ))
@@ -368,9 +368,9 @@ def _block(k: Baumknoten, umfeld: _Umfeld) -> _Block:
         # Der Sammelknoten oben, darunter die auffaelligen Glieder einzeln
         # in ihrer Reihenfolge (KTD2).
         oben = [_sammel(k, umfeld)] if k.gefaltete_kinder else []
-        block = _stapel(oben + [_block(kind, umfeld) for kind in k.offene_kinder], _kennung(k))
+        block = _stapel(oben + [_block(kind, umfeld) for kind in k.offene_kinder], knoten_kennung(k))
     else:
-        block = _reihe([_block(kind, umfeld) for kind in k.kinder], _kennung(k))
+        block = _reihe([_block(kind, umfeld) for kind in k.kinder], knoten_kennung(k))
     if k.wartet_auf is not None:
         block = _wartend(block, k.wartet_auf)
     return block
@@ -429,9 +429,14 @@ def _mit_zustand(
         li.kennung: _Linienzustand.zu(nach_kennung[li.nach])
         for li in linien if nach_kennung[li.nach].art != "punkt"
     }
+    # Einmal vorab nach Herkunft gruppiert, in der Reihenfolge der Linien --
+    # sonst scannte jeder Knotenpunkt alle Linien.
+    aus: dict[str, list[Linie]] = {}
+    for li in linien:
+        aus.setdefault(li.von, []).append(li)
     punkt = {
         k.kennung: _Linienzustand.zusammen(
-            [zustand[li.kennung] for li in linien if li.von == k.kennung]
+            [zustand[li.kennung] for li in aus.get(k.kennung, [])]
         )
         for k in knoten if k.art == "punkt"
     }

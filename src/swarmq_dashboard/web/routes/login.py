@@ -26,6 +26,7 @@ from swarmq_dashboard.web.auth import (
     new_csrf_token,
     normalisierter_kontoname,
     rotate_session_id,
+    sichere_cookies,
 )
 from swarmq_dashboard.web.templates import render
 
@@ -85,7 +86,7 @@ def login_form(request: Request[Any, Any, Any]) -> Response[str]:
         content=render("anmeldung.html", csrf_token=merkmal,
                        fehler=request.query_params.get("fehler")),
         media_type="text/html",
-        cookies=[_merkmal_cookie(merkmal, secure=_sicher(request))],
+        cookies=[_merkmal_cookie(merkmal, secure=sichere_cookies(request))],
     )
 
 
@@ -108,14 +109,8 @@ def _anmeldeseite(request: Request[Any, Any, Any], fehler: str, *,
         content=render("anmeldung.html", csrf_token=merkmal, fehler=fehler),
         media_type="text/html",
         status_code=status,
-        cookies=[_merkmal_cookie(merkmal, secure=_sicher(request))],
+        cookies=[_merkmal_cookie(merkmal, secure=sichere_cookies(request))],
     )
-
-
-def _sicher(request: Request[Any, Any, Any]) -> bool:
-    """Ob die Cookies ``Secure`` tragen -- dieselbe Einstellung wie die
-    Sitzung. Vorgabe ist ``True``; nur ``serve --insecure-http`` senkt sie."""
-    return bool(getattr(request.app.state, "secure_cookies", True))
 
 
 def _merkmal_cookie(wert: str, *, secure: bool = True) -> Cookie:
@@ -197,7 +192,7 @@ async def login(
         # dauerhaft und offen.
         await services.audit.record("login", account=konto, target=herkunft)
         antwort = Redirect("/", status_code=303)
-        antwort.set_cookie(_merkmal_cookie(merkmal, secure=_sicher(request)))
+        antwort.set_cookie(_merkmal_cookie(merkmal, secure=sichere_cookies(request)))
         return antwort
 
     # R22: "der Betreiber sieht Fehlanmeldungen im Audit". Festgehalten wird

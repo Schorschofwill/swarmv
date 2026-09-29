@@ -5,13 +5,6 @@
     ``live.js`` gleicht die Seite mit Idiomorph ab, und feste IDs lassen es
     Knoten fuer Knoten tauschen statt das Bild neu aufzubauen (R9). -#}
 
-{#- Die Kennung eines Baumknotens im Diagramm, fuer Spruenge aus dem
-    Fehlerkopf -- dieselbe Regel wie ``_kennung`` in ``workflow_diagramm``. -#}
-{%- macro knoten_id(k) -%}
-  {%- if k.pfad is none %}dk-task-{{ k.task_id }}
-  {%- else %}dk{{ k.pfad|replace('/', '-') }}{% endif -%}
-{%- endmacro %}
-
 {%- macro zusatz(k) -%}
   {%- if k.wartet_auf is not none -%}
     wartet auf {{ k.wartet_auf }} {{ 'Glied' if k.wartet_auf == 1 else 'Glieder' }}

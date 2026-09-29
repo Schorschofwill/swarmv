@@ -449,6 +449,12 @@ def new_csrf_token() -> str:
     return secrets.token_urlsafe(32)
 
 
+def sichere_cookies(connection: ASGIConnection[Any, Any, Any, Any]) -> bool:
+    """Ob die Cookies ``Secure`` tragen -- dieselbe Einstellung wie die
+    Sitzung. Vorgabe ist ``True``; nur ``serve --insecure-http`` senkt sie."""
+    return bool(getattr(connection.app.state, "secure_cookies", True))
+
+
 #: Inhaltsarten, in denen ein Formular sein Merkmal mitschickt.
 _FORMULAR = ("application/x-www-form-urlencoded", "multipart/form-data")
 #: Obergrenze fuer den Koerper, den der Waechter zum Suchen des Merkmals

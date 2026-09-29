@@ -30,9 +30,8 @@ from litestar.params import Body, FromPath
 from litestar.response import Redirect, Template
 
 from swarmq_dashboard.directory.queries import Workflowfilter
-from swarmq_dashboard.web.auth import SESSION_ACCOUNT_KEY
+from swarmq_dashboard.web.auth import SESSION_ACCOUNT_KEY, sichere_cookies
 from swarmq_dashboard.web.ergebnis import Ergebnisbild
-from swarmq_dashboard.web.routes.login import _sicher
 from swarmq_dashboard.web.routes.tasks import BEENDET, ZEITRAEUME, _abfragen, _zahl
 from swarmq_dashboard.workflow_baum import Knoten, knoten_wobei
 from swarmq_dashboard.workflow_diagramm import anordnen
@@ -144,7 +143,7 @@ def _ansicht(request: Request[Any, Any, Any]) -> tuple[str, Cookie | None]:
     if "ansicht" not in request.query_params:
         return gewaehlt, None
     return gewaehlt, Cookie(key=ANSICHT_COOKIE, value=gewaehlt, path="/workflows",
-                            secure=_sicher(request), httponly=True, samesite="strict")
+                            secure=sichere_cookies(request), httponly=True, samesite="strict")
 
 
 def _kontext(request: Request[Any, Any, Any], **kontext: Any) -> dict[str, Any]:
@@ -254,7 +253,9 @@ async def workflow_detail(request: Request[Any, Any, Any],
             # fuer nichts (U4).
             ergebnisse=(await _ergebnisse(request, _sichtbare_kopfglieder(baum.wurzel))
                         if ansicht == "liste" else {}),
-            diagramm=anordnen(baum, workflow_id=workflow_id, jetzt=jetzt),
+            # Umgekehrt braucht die Liste keine Geometrie.
+            diagramm=(anordnen(baum, workflow_id=workflow_id, jetzt=jetzt)
+                      if ansicht == "diagramm" else None),
             jetzt=jetzt,
         ),
         cookies=[cookie] if cookie is not None else [],

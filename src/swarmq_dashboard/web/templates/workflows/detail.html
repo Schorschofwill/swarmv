@@ -88,7 +88,7 @@
     <tbody>
       {%- for f in baum.fehlschlaege %}
       <tr>
-        <td class="mono"><a href="#{{ b.knoten_id(f) if ansicht == 'liste' else dg.knoten_id(f) }}">{{ f.pfad if f.pfad is not none else '?' }}</a></td>
+        <td class="mono"><a href="#{{ b.knoten_id(f) if ansicht == 'liste' else knoten_kennung(f) }}">{{ f.pfad if f.pfad is not none else '?' }}</a></td>
         <td class="mono">
           {%- if f.task_id %}<a href="/tasks/{{ f.task_id|urlencode }}">{{ f.task_name or f.task_id }}</a>
           {%- else %}{{ f.task_name or '--' }}{% endif %}</td>

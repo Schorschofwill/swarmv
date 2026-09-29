@@ -259,6 +259,18 @@ def weiterlink(f: object, cursor: str, seit: str = "") -> str:
     return urlencode({k: v for k, v in teile.items() if v})
 
 
+def knoten_kennung(k: Any) -> str:
+    """Die Kennung eines Baumknotens im Diagramm, fuer Spruenge aus dem
+    Fehlerkopf -- die Regel selbst steht nur in ``workflow_diagramm``.
+
+    Erst beim Aufruf importiert: ``workflow_diagramm`` holt ``dauer``,
+    ``zahl`` und ``zustandsart`` von hier, ein Import oben waere ein Zyklus.
+    """
+    from swarmq_dashboard.workflow_diagramm import knoten_kennung as regel
+
+    return regel(k)
+
+
 def _environment() -> Environment:
     env = Environment(
         loader=FileSystemLoader(TEMPLATE_DIR),
@@ -273,6 +285,7 @@ def _environment() -> Environment:
     env.globals["weiterlink"] = weiterlink
     env.globals["zustandsart"] = zustandsart
     env.globals["artname"] = artname
+    env.globals["knoten_kennung"] = knoten_kennung
     env.globals["bereiche"] = BEREICHE
     return env
 
@@ -314,6 +327,7 @@ def _engine_callback(engine: JinjaTemplateEngine) -> None:
     engine.engine.globals["weiterlink"] = weiterlink
     engine.engine.globals["zustandsart"] = zustandsart
     engine.engine.globals["artname"] = artname
+    engine.engine.globals["knoten_kennung"] = knoten_kennung
     engine.engine.globals["bereiche"] = BEREICHE
 
 
