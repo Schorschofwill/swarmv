@@ -40,6 +40,14 @@ Test-Liste (AGENTS.md):
 === ZYKLUS 5: Workflow stornieren (Workflow-Ansicht, U7, KTD12) ===
 12. ``workflow_cancel`` ist eine Aktionsart und laesst sich festhalten und
     filtern (R15).
+
+=== ZYKLUS 6: Die Obergrenze gilt nach dem Filter, von hinten ===
+13. ``limit`` liefert die neuesten Eintraege, nicht die aeltesten.
+14. Ein Filter findet einen Eintrag auch dann, wenn er nicht unter den
+    ersten ``limit`` Eintraegen des Stroms steht (gefunden beim Test der
+    Workflow-Ansicht: ``audit list --action workflow_cancel --limit 5`` war
+    leer, obwohl der Eintrag da war).
+15. Das gilt auch hinter der ersten Leseseite des Stroms.
 """
 
 from __future__ import annotations
@@ -73,7 +81,9 @@ class FakeStream:
             self.eintraege.append((f"{self._n}-0", roh))
 
     async def read_after(self, key: str, last_id: str, count: int) -> list[tuple[str, bytes]]:
-        return self.eintraege[:count]
+        # Wie XRANGE mit exklusiver Untergrenze: nach ``last_id``, hoechstens ``count``.
+        nach = [e for e in self.eintraege if not last_id or int(e[0].split("-")[0]) > int(last_id.split("-")[0])]
+        return nach[:count]
 
     async def trim_by_min_id(self, key: str, min_ms: int) -> int:
         self.getrimmt.append((key, min_ms))
@@ -230,3 +240,38 @@ async def test_workflow_cancel_ist_eine_aktionsart() -> None:
     (eintrag,) = await a.read(action="workflow_cancel")
     assert eintrag.target == "wf-1"
     assert eintrag.outcome == "lief bereits"
+
+
+# --- Zyklus 6 -----------------------------------------------------------
+
+
+async def test_die_obergrenze_liefert_die_neuesten_eintraege() -> None:
+    a = AuditLog(FakeStream())
+    for i in range(5):
+        await a.record("login", account="ops", now=100.0 + i)
+
+    assert [e.ts for e in await a.read(limit=2)] == [103.0, 104.0]
+
+
+async def test_ein_filter_findet_auch_einen_spaeten_eintrag() -> None:
+    a = AuditLog(FakeStream())
+    for i in range(6):
+        await a.record("login", account="ops", now=100.0 + i)
+    await a.record("workflow_cancel", account="georg", target="wf-1", now=200.0)
+
+    (eintrag,) = await a.read(action="workflow_cancel", limit=5)
+    assert eintrag.target == "wf-1"
+
+
+async def test_auch_hinter_der_ersten_leseseite(monkeypatch: pytest.MonkeyPatch) -> None:
+    import swarmq_dashboard.audit as audit
+
+    monkeypatch.setattr(audit, "_SEITE", 2)
+    a = AuditLog(FakeStream())
+    for i in range(5):
+        await a.record("login", account="ops", now=100.0 + i)
+    await a.record("workflow_cancel", account="georg", target="wf-2", now=200.0)
+
+    (eintrag,) = await a.read(action="workflow_cancel", limit=1)
+    assert eintrag.target == "wf-2"
+    assert [e.ts for e in await a.read(limit=3)] == [103.0, 104.0, 200.0]

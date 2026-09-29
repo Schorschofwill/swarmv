@@ -65,6 +65,9 @@ class AuditEntry(msgspec.Struct, frozen=True, omit_defaults=True):
 _encoder = msgspec.json.Encoder()
 _decoder = msgspec.json.Decoder(AuditEntry)
 
+#: Eintraege je Lesezugriff beim Durchgehen des Stroms.
+_SEITE = 1000
+
 
 class AuditSink(Protocol):
     """Was der Audit vom Strom braucht."""
@@ -141,25 +144,37 @@ class AuditLog:
         action: str | None = None,
         limit: int = 1000,
     ) -> list[AuditEntry]:
-        """Eintraege in Zeitreihenfolge, gefiltert.
+        """Die neuesten ``limit`` Eintraege in Zeitreihenfolge, gefiltert.
 
         Die Reihenfolge ist die des Stroms -- er hat eine Uhr, und die
         Eintraege entstehen alle im selben Dienst.
+
+        **Erst filtern, dann begrenzen, und zwar von hinten.** Umgekehrt
+        lieferte ``limit`` die aeltesten Eintraege, und ein Filter ging leer
+        aus, sobald der gesuchte Eintrag nicht unter ihnen stand. Der Strom
+        wird darum seitenweise ganz gelesen; er ist nach Laenge gedeckelt
+        (``AUDIT_MAXLEN``).
         """
         if self._sink is None:
             return []
-        roh = await self._sink.read_after(self._key, "", limit)
-        eintraege = []
-        for _, wert in roh:
-            try:
-                eintraege.append(_decoder.decode(wert))
-            except Exception:
-                continue  # ein unlesbarer Eintrag haelt die Auskunft nicht an
-        if account is not None:
-            eintraege = [e for e in eintraege if e.account == account]
-        if action is not None:
-            eintraege = [e for e in eintraege if e.action == action]
-        return eintraege
+        eintraege: list[AuditEntry] = []
+        zuletzt = ""
+        while True:
+            seite = await self._sink.read_after(self._key, zuletzt, _SEITE)
+            for _, wert in seite:
+                try:
+                    e = _decoder.decode(wert)
+                except Exception:
+                    continue  # ein unlesbarer Eintrag haelt die Auskunft nicht an
+                if account is not None and e.account != account:
+                    continue
+                if action is not None and e.action != action:
+                    continue
+                eintraege.append(e)
+            if len(seite) < _SEITE:
+                break
+            zuletzt = seite[-1][0]
+        return eintraege[-limit:] if limit > 0 else []
 
     # -- Pflege ----------------------------------------------------------
 
