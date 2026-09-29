@@ -131,16 +131,19 @@ def _ansicht(request: Request[Any, Any, Any]) -> tuple[str, Cookie | None]:
     aus der Adresse festhaelt (KTD5).
 
     Erst die Adresse, dann das Cookie, sonst das Diagramm. Nur eine Wahl
-    aus der Adresse schreibt das Cookie -- sie ist ein Klick auf den
-    Umschalter. ``live.js`` laedt ``location.href``; traegt die Adresse die
-    Wahl, bleibt sie beim Nachladen erhalten, sonst haelt sie das Cookie.
+    aus der Adresse in einer gewoehnlichen Navigation schreibt das Cookie --
+    sie ist ein Klick auf den Umschalter, einen Link ohne htmx. ``live.js``
+    laedt ``location.href`` per htmx nach (``HX-Request``); traegt die
+    Adresse die Wahl, bleibt sie beim Nachladen erhalten, schreibt aber kein
+    Cookie: sonst setzte jedes Ereignis in einem alten Reiter die Wahl aus
+    einem anderen zurueck. Ohne Wahl in der Adresse haelt sie das Cookie.
     Ein unbekannter Wert gilt als Diagramm und merkt nichts -- ein
     verstuemmelter Verweis soll keine gemerkte Wahl ueberschreiben.
     """
     gewaehlt = request.query_params.get("ansicht", request.cookies.get(ANSICHT_COOKIE))
     if gewaehlt not in ANSICHTEN:
         return ANSICHTEN[0], None
-    if "ansicht" not in request.query_params:
+    if "ansicht" not in request.query_params or request.headers.get("hx-request"):
         return gewaehlt, None
     return gewaehlt, Cookie(key=ANSICHT_COOKIE, value=gewaehlt, path="/workflows",
                             secure=sichere_cookies(request), httponly=True, samesite="strict")

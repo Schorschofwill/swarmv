@@ -97,10 +97,17 @@ Test-Liste (AGENTS.md):
     des Kastens, so wie die Vorlage sie setzt (11 px IBM Plex Mono, 12 px
     Einzug links und rechts). Aufgefallen beim Zeichnen von AE2: "nie
     gestartet, Workflow gescheitert" lief ueber den Rand.
+
+=== ZYKLUS 13: Rein ohne Vorlagen (Review #1) ===
+33. ``import swarmq_dashboard.workflow_diagramm`` in einem frischen
+    Interpreter laedt weder ``jinja2`` noch ``litestar`` -- das Geometrie-
+    modul haengt nicht (zyklisch) an den Vorlagen.
 """
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from itertools import pairwise
 from typing import Any
 
@@ -660,3 +667,19 @@ def test_jeder_grund_passt_in_den_kasten() -> None:
                   GRUND_VORGAENGER_FERTIG):
         breite = 2 * einzug + len(grund) * zeichen_b
         assert breite <= KASTEN_B, f"{grund!r} braucht {breite:.0f} px, der Kasten hat {KASTEN_B:g}"
+
+
+# === ZYKLUS 13: Rein ohne Vorlagen (Review #1) ===
+
+
+def test_das_modul_zieht_weder_jinja_noch_litestar_nach() -> None:
+    """Das Geometriemodul ist rein: holte es seine Formatierung aus
+    ``web.templates``, kaemen Jinja und Litestar mit, und ein verschobener
+    Import braeche erst beim Serverstart am Zyklus."""
+    pruefung = (
+        "import sys, swarmq_dashboard.workflow_diagramm; "
+        "print(sorted({m.split('.')[0] for m in sys.modules} & {'jinja2', 'litestar'}))"
+    )
+    lauf = subprocess.run([sys.executable, "-c", pruefung], capture_output=True,
+                          text=True, check=True, timeout=10)
+    assert lauf.stdout.strip() == "[]", lauf.stdout

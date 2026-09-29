@@ -12,7 +12,7 @@ from dataclasses import dataclass, replace
 from itertools import pairwise
 from urllib.parse import quote
 
-from swarmq_dashboard.web.templates import dauer, zahl, zustandsart
+from swarmq_dashboard.anzeige import dauer, zahl, zustandsart
 from swarmq_dashboard.workflow_baum import (
     AKTIV,
     GRUND_GESCHEITERT,

@@ -150,6 +150,22 @@ stornierten und gescheiterten.
     dem Fehlerkopf zeigt auf den Knoten der gezeigten Ansicht.
 50. Covers AE5. Der Umschalter-Link der aktiven Ansicht traegt
     ``aria-current``, beide Links tragen ``ansicht``.
+51. Bugfix (Review #2). Das Live-Nachladen (``live.js``, ``HX-Request:
+    true``) eines Reiters mit ``?ansicht=liste`` zeigt die Liste, setzt aber
+    kein Cookie -- sonst setzte jedes Ereignis die Wahl aus einem anderen
+    Reiter zurueck.
+
+=== ZYKLUS 12: Testluecken des Diagramms (Review) ===
+Charakterisierung: alle drei waren beim ersten Lauf gruen und halten
+bestehendes Verhalten fest; je eine Gegenprobe machte sie rot.
+52. Ein Chord, dessen Kopf genau ein offenes Glied hat: der Body sagt
+    "wartet auf 1 Glied", nicht "1 Glieder" -- im Text und im aria-label.
+    (Gegenprobe: "Glieder" fest in ``zusatz`` bzw. ``vorlesen``.)
+53. Eine unlesbare Topologie in der Vorgabe Diagramm antwortet 200 und
+    benennt den Zustand "Topologie nicht lesbar". (Gegenprobe: Hinweis nur
+    in der Liste; ``anordnen`` wirft beim flachen Baum -> 500.)
+54. Ein Task-Name mit ``<script>`` und ``"`` steht im Diagramm nur maskiert.
+    (Gegenprobe: ``|safe`` am Namen in ``vorlesen``, ``<title>`` bzw. Kasten.)
 """
 
 from __future__ import annotations
@@ -1780,5 +1796,109 @@ async def test_der_umschalter_markiert_die_aktive_ansicht(tmp_path: Path) -> Non
         links = _umschalter((await c.get(f"/workflows/{zweiter}")).text)
         assert 'aria-current="page"' in links["?ansicht=liste"]
         assert "aria-current" not in links["?ansicht=diagramm"]
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+async def test_das_live_nachladen_merkt_keine_ansicht(tmp_path: Path) -> None:
+    """Review #2: ``live.js`` laedt ``location.href`` per htmx nach. Traegt
+    die Adresse ``?ansicht=liste``, zeigt die Antwort die Liste -- aber nur
+    ein Klick auf den Umschalter merkt die Wahl, sonst setzte jedes Ereignis
+    eines alten Reiters die Wahl aus einem anderen zurueck."""
+    config = _config(tmp_path)
+    erster, _ = _zwei_workflows(config)
+    c = await _angemeldet(config)
+    try:
+        antwort = await c.get(f"/workflows/{erster}", params=_LISTE,
+                              headers={"HX-Request": "true"})
+        assert 'id="workflow-baum"' in antwort.text
+        assert _ansicht_cookie(antwort) == ""
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+# --- Zyklus 12: Testluecken des Diagramms (Review) ---------------------------
+
+
+async def test_ein_offenes_glied_ist_einzahl(tmp_path: Path) -> None:
+    """Ein Kopf mit genau einem offenen Glied: "wartet auf 1 Glied", nicht
+    "1 Glieder" -- im Kasten und in dem, was ein Vorleseprogramm sagt."""
+    from dataclasses import replace
+
+    from swarmq_dashboard.web.templates import _env
+    from swarmq_dashboard.workflow_diagramm import Knoten as Diagrammknoten
+
+    config = _config(tmp_path)
+    v = _Verzeichnis(config)
+    wf = _wf(1)
+    v.schritt(wf, "/h/g0", 1_700_000_000.0, "task_started", "task_completed")
+    v.schritt(wf, "/h/g1", 1_700_000_010.0, "task_started")
+    v.lesung(wf, _chord(_gruppe(*[_sig_top("download")] * 2), _sig_top("zusammenfassen")))
+    v.close()
+    c = await _angemeldet(config)
+    try:
+        body = _text(_element(_svg((await c.get(f"/workflows/{wf}")).text), "dk-b"))
+        assert "wartet auf 1 Glied" in body and "Glieder" not in body, body
+    finally:
+        await c.__aexit__(None, None, None)
+
+    # Ein wartender Body ist nie eingereiht und damit kein Link; das
+    # aria-label steht nur an Links -- der Baustein selbst muss es richtig
+    # sagen, falls ein wartender Knoten ein Ziel bekommt.
+    k = Diagrammknoten(kennung="dk-b", x=0, y=0, b=300, h=40, art="schritt",
+                       wort="nicht eingereiht", titel="zusammenfassen",
+                       link="/tasks/x", wartet_auf=1)
+    knoten = _env.from_string(
+        '{% import "workflows/_diagramm.html" as d %}{{ d.knoten(k) }}').render(k=k)
+    label = re.search(r'aria-label="([^"]*)"', knoten)
+    assert label and "wartet auf 1 Glied" in label.group(1), knoten
+    assert "Glieder" not in label.group(1), label.group(1)
+    assert "Glieder" in _env.from_string(
+        '{% import "workflows/_diagramm.html" as d %}{{ d.knoten(k) }}'
+    ).render(k=replace(k, wartet_auf=2))
+
+
+async def test_kaputte_topologie_im_diagramm_ist_ein_benannter_zustand(
+        tmp_path: Path) -> None:
+    """Wie Fall 33, aber in der Vorgabe Diagramm: ein flacher Baum aus den
+    bekannten Schritten, der Hinweis steht oben -- kein 500."""
+    config = _config(tmp_path)
+    v = _Verzeichnis(config)
+    kaputt = _wf(1)
+    v.schritt(kaputt, "/0", 1_700_000_000.0, "task_started", name="a")
+    v.lesung(kaputt, {"kind": "chain"}, step_tasks={"/0": f"{kaputt}#/0"})
+    v.close()
+    c = await _angemeldet(config)
+    try:
+        detail = await c.get(f"/workflows/{kaputt}")
+        assert detail.status_code == 200
+        oben = _text(detail.text[:detail.text.index('id="workflow-diagramm"')])
+        assert "Topologie nicht lesbar" in oben
+        assert "a" in _text(_element(_svg(detail.text), "dk-0"))
+    finally:
+        await c.__aexit__(None, None, None)
+
+
+async def test_ein_boeser_task_name_steht_im_diagramm_nur_maskiert(tmp_path: Path) -> None:
+    """Der Task-Name kommt aus dem Zustand, also von aussen. Im SVG steht er
+    in Text, ``<title>`` und ``aria-label`` -- ueberall nur maskiert: kein
+    Skript und kein Anfuehrungszeichen, das ein Attribut beendet."""
+    config = _config(tmp_path)
+    v = _Verzeichnis(config)
+    wf = _wf(1)
+    name = '<script>x</script>"q'
+    v.schritt(wf, "", 1_700_000_000.0, "task_started", name=name)
+    v.lesung(wf, _sig_top(name))
+    v.close()
+    c = await _angemeldet(config)
+    try:
+        svg = _svg((await c.get(f"/workflows/{wf}")).text)
+        assert "<script" not in svg, svg
+        knoten = _element(svg, "dk")
+        assert knoten.startswith("<a "), knoten
+        label = re.search(r'aria-label="([^"]*)"', knoten)
+        assert label and label.group(1).startswith("&lt;script&gt;x&lt;/script&gt;&#34;q, "), \
+            knoten
+        assert "<title>&lt;script&gt;x&lt;/script&gt;&#34;q</title>" in knoten, knoten
     finally:
         await c.__aexit__(None, None, None)
