@@ -68,6 +68,34 @@ greifen und die Flush-Fixtures von swarmq nichts Fremdes treffen.
 - Testdienste lokal: RabbitMQ `5699`, Valkey `6399` (Container `swarmq-test-*`);
   `localhost:6379` gehört einem anderen Projekt.
 
+## Abgleich mit swarmq 0.8 und 0.9 (2026-10-08)
+
+Spanne seitdem `swarmq>=0.7,<0.10`. Geprüft gegen den Changelog (Abschnitte
+0.8.0 und 0.9.0), den Quelltext-Diff `v0.7.0..v0.9.0` und die Testreihe gegen
+0.7.0, 0.8.0 und 0.9.0 (Einheiten und Integration) plus einen Worker über
+`swarmq worker --configure swarmq_dashboard.hooks.worker:setup` gegen 0.9.0.
+
+- Unverändert: `Signal` (Mitglieder und Nutzlasten), `Middleware`
+  (`pre_execute`, `post_enqueue`), `MessageContext`, `app.config`
+  (`worker_identity`, `worker_slot`, `queues`, `concurrency`, `pool`), die
+  Backend-Schlüssel, `ValkeySetpointStore`/`Setpoint`, die Fehlerklassen, die
+  das Dashboard fängt, und `valid_workflow_id` (nachgebildet in
+  `directory/writer.py`).
+- Logging (0.8): `SwarmQ()` konfiguriert kein Logging mehr. Im Worker
+  richtet `swarmq worker` das Logging ein; die Zeilen der Hooks
+  (`swarmq_dashboard.*`) erscheinen dort mit `logger`-Feld, auch mit
+  `--log-format json`. Der Dienst `swarmq-dashboard serve` richtet selbst
+  kein Logging ein: unter 0.7 installierte das erste `SwarmQ()` (Probe,
+  Storno, Ergebnis, Workflows) nebenbei einen Root-Handler auf INFO, seit 0.8
+  erscheinen ohne eigene Konfiguration nur WARNING und höher (`lastResort`).
+- 0.9: neue Header `x-swarmq-backend-defer-count` und
+  `x-swarmq-schedfire-claim`, `BackendResponseError` (Unterklasse von
+  `BackendConnectionError`), neue Schlüsselwörter in `ScheduleStore`,
+  Listener-Thread `swarmq-log-lsnr`, neue Log-Ereignisse — nichts davon liest
+  oder ersetzt das Dashboard. Zurückgestellte Nachrichten
+  (`task_deferred_backend_unavailable`) feuern kein Signal; das Dashboard sieht
+  sie wie bisher erst beim nächsten Aufgreifen.
+
 ## Vorbilder
 
 - `swarmq-loadsuite` (eigenes Repo neben der Bibliothek, `worker/relay.py`
