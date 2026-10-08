@@ -14,7 +14,7 @@ requires-python = ">=3.14"
 # trotzdem benutzbar, wenn sie fehlen -- geprueft wird zur Laufzeit (KTD14,
 # R33).
 dependencies = [
-    "swarmq>=0.7,<0.8",
+    "swarmq>=0.7,<0.10",
     # Beide kommen heute ueber swarmq mit. Sie stehen trotzdem hier: das Paket
     # importiert sie selbst (events.py, stream.py), und ein Bibliotheks-Release
     # innerhalb der Spanne oben, das eines davon tauscht, wuerde den Dienst

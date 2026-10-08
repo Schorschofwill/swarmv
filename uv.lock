@@ -1079,7 +1079,7 @@ wheels = [
 
 [[package]]
 name = "swarmq"
-version = "0.7.0"
+version = "0.9.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aio-pika" },
@@ -1089,9 +1089,9 @@ dependencies = [
     { name = "structlog" },
     { name = "valkey" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ea/56/540dc3a5afc321702cd9d27a9795468acef9889565d270d098942c7f11b1/swarmq-0.7.0.tar.gz", hash = "sha256:4e2fe65160b1c95643f9e4bc5c21dc5e800338c786af83da9aec2c9c0837e307", size = 280233, upload-time = "2026-09-22T12:19:23.783Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/8c/45/580e73f90b056201ebf73719128c3c592591879151349616ecb5470cf682/swarmq-0.9.0.tar.gz", hash = "sha256:b90fc338a0578bb178308eb14e7210841f94e200f0e29c5ff57f6fc813cc1a1c", size = 343461, upload-time = "2026-10-08T05:44:45.563Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/90/ad/504ac4c660ba197c1fd9771b25f7eda2a3bcaa369fa1d6042b7eb031831c/swarmq-0.7.0-py3-none-any.whl", hash = "sha256:88e5be39a7f9d0a416f5dd9dabb2f4501922aa564f13c5cdfcbf0cb3daf268ee", size = 345405, upload-time = "2026-09-22T12:19:25.335Z" },
+    { url = "https://files.pythonhosted.org/packages/1e/7d/0bed0851d6c293b341733418cbea5dcbc6a4de0606742c91507330c638ec/swarmq-0.9.0-py3-none-any.whl", hash = "sha256:44df8c6f29a25cbe29ba84f55a42683be22825bf54925206cbbce26ca9283b20", size = 418907, upload-time = "2026-10-08T05:44:43.572Z" },
 ]
 
 [[package]]
@@ -1129,7 +1129,7 @@ requires-dist = [
     { name = "litestar", specifier = ">=2.24,<3" },
     { name = "markupsafe", specifier = ">=2.1" },
     { name = "msgspec", specifier = ">=0.18" },
-    { name = "swarmq", specifier = ">=0.7,<0.8" },
+    { name = "swarmq", specifier = ">=0.7,<0.10" },
     { name = "valkey", specifier = ">=6" },
 ]
 

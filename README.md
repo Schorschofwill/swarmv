@@ -65,10 +65,13 @@ Prozesszahl; Abhängigkeit von `swarmq` als Versionsspanne.
 pip install swarmq-dashboard        # oder: uv add swarmq-dashboard
 ```
 
-Python 3.14 oder neuer. Die Bibliothek kommt als `swarmq>=0.7,<0.8` mit: Die
+Python 3.14 oder neuer. Die Bibliothek kommt als `swarmq>=0.7,<0.10` mit: Die
 Untergrenze ist der Kontrollkanal, ohne den es keine Sollwert-Steuerung gibt;
 die Obergrenze hält eine Änderung der Signal-Nutzlasten auf, bevor sie den
-Ereignisspiegel still beschädigt.
+Ereignisspiegel still beschädigt. Geprüft gegen 0.7.0, 0.8.0 und 0.9.0
+(2026-10-08): Signale, Nutzlasten, Middleware-Haken, Backend-Schlüssel und
+Kontrollkanal sind in 0.8 und 0.9 unverändert; was sich dort geändert hat,
+betrifft das Logging und die Zustellung im Worker (`docs/reference/swarmq-ankerpunkte.md`).
 
 ### Die zwei Hooks
 
