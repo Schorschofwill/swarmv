@@ -62,6 +62,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -198,7 +199,9 @@ async def test_der_dienst_liest_den_strom_von_sich_aus(tmp_path: Path) -> None:
     """
     config = _config(tmp_path)
     strom = FakeStream()
-    strom.add(_ev("a41f", JETZT))
+    # Frisch aus demselben Grund wie in der Stornierung: Eine Zeile von 2023
+    # koennte die Pflege zwischen zwei Abfragen schon wieder loeschen.
+    strom.add(_ev("a41f", time.time()))
     app = _dienst(config, stream=strom)
     async with AsyncTestClient(app=app, base_url=BASIS):
         w = app.state.services.services_directory_writer
@@ -295,7 +298,10 @@ async def test_die_stornierung_erreicht_das_backend(tmp_path: Path) -> None:
     """
     config = _config(tmp_path)
     strom = FakeStream()
-    strom.add(_ev("a41f", JETZT))
+    # Ein frisches Ereignis, nicht JETZT: Die Pflege laeuft hier alle 0,05 s
+    # mit sieben Tagen Frist und loeschte eine Zeile von 2023 zwischen
+    # Detailseite und Stornierung (CI-Pipeline 3000372698, 404 statt 303).
+    strom.add(_ev("a41f", time.time()))
     storno = FakeCanceller()
     app = _dienst(config, stream=strom, canceller=storno)
     c = await _angemeldet(app)

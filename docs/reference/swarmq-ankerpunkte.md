@@ -1,6 +1,6 @@
 # Ankerpunkte in swarmq für das Dashboard (Stand 0.6.2 + MR !60, 2026-09-17)
 
-Repo: `/home/georg/Dokumente/Development-Privat/swarmq` (GitLab `schorsch-dev/swarmq`).
+Repo: `/home/georg/Dokumente/Development-Privat/swarmq` (GitHub `Schorschofwill/swarmq`).
 Das Dashboard nutzt **nur öffentliche Schnittstellen** (Dashboard-Plan R1a);
 fehlt etwas, wird es mit Georg abgestimmt und als eigener MR am Kern geplant.
 

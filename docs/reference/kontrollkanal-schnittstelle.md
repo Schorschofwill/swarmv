@@ -2,7 +2,7 @@
 
 Der Kontrollkanal ist die einzige abgestimmte Kernänderung für das Dashboard
 (Dashboard-Plan KD3, R15–R17). Er liegt in swarmq auf dem Branch
-`feat/kontrollkanal`, MR https://gitlab.com/schorsch-dev/swarmq/-/merge_requests/60,
+`feat/kontrollkanal`, MR !60 (der Merge-Commit in swarmq trägt `!60` in der Nachricht),
 und erscheint mit dem nächsten Release nach 0.6.2. Quelle der Wahrheit ist der
 Plan `docs/plans/2026-09-16-1753-feat-kontrollkanal-plan.md` und die
 CLI-Referenz `website/reference/cli.md`, Abschnitt „Control channel“.
