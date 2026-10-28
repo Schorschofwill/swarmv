@@ -1,6 +1,6 @@
 # swarmv — Dashboard für swarmq
 
-Flower-artiges Web-Dashboard für [swarmq](https://gitlab.com/schorsch-dev/swarmq):
+Flower-artiges Web-Dashboard für [swarmq](https://github.com/Schorschofwill/swarmq):
 Worker-Übersicht, Task-Verzeichnis, Workflow-Ansicht, Dead-Letter-Bedienung
 und Steuerung der Worker-Gruppen über den Kontrollkanal. Eigenes Paket, eigener Prozess, eigene
 Veröffentlichung; die Bibliothek bekommt dadurch keine neue Pflichtabhängigkeit.

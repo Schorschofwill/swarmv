@@ -1,0 +1,179 @@
+# CI des Dashboards, Job für Job aus .gitlab-ci.yml übernommen (swarmq-Plan
+# 2026-10-28-1308, U8). Bis zur Umstellung laufen beide CIs nebeneinander.
+#
+# Die Tore sind die aus AGENTS.md und dem Verification Contract der Pläne:
+# ruff, mypy --strict, Unit-Suite, Integrationssuite, Abbild. Sie blockieren
+# alle -- ein rotes Tor ist ein Regress, kein Hinweis.
+#
+# Zwei Dinge, die hier bewusst anders sind als in einer Standard-Pipeline:
+#
+#   * **node gehört in den Unit-Job.** tests/unit/web/test_live_js.py führt
+#     live.js in einer Node-Umgebung aus, statt Zeichenketten darin zu suchen.
+#     Ohne node überspringt sich die Datei **stillschweigend**.
+#   * **Auch der Unit-Job bekommt Valkey.** Zwei Unit-Tests brauchen eine echte
+#     Verbindung und überspringen sich sonst.
+#
+# Alle Jobs laufen auf den eigenen Runnern auf celsius (Label celsius-swarmv)
+# und immer in einem `container:`, sonst liefen die Schritte auf dem Host.
+# Das schlanke uv-Abbild bringt weder Übersetzer noch git mit; beides kommt per
+# apt vor dem Checkout, damit actions/checkout ein echtes .git anlegt wie
+# auf GitLab. `build-essential` ist Pflicht, solange `valkey` für cp314 kein
+# fertiges Rad mitbringt.
+#
+# Genau ein Lauf je Commit: Pushes auf Branches und Tags, dazu Pull Requests
+# aus Forks. Fork-PRs starten erst nach Freigabe (Repo-Einstellung).
+
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  UV_CACHE_DIR: /uv-cache
+  UV_LINK_MODE: copy
+  UV_FROZEN: "1"
+
+jobs:
+  # Stil und Typen. ruff und mypy fassen die C-Erweiterung nicht an.
+  lint-und-typen:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: [self-hosted, celsius-swarmv]
+    container:
+      image: ghcr.io/astral-sh/uv:python3.14-bookworm-slim
+      volumes: ["swarmv-uv-cache:/uv-cache"]
+    steps:
+      - run: apt-get update && apt-get install -y --no-install-recommends git
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: uv run ruff check src/ tests/
+      - run: uv run mypy --strict src/
+
+  # Hält uv.lock gegen pyproject.toml. Unter UV_FROZEN=1 prüft
+  # `uv lock --check` nur die Gültigkeit der Sperrdatei, nicht ihre
+  # Aktualität -- darum hier ausdrücklich auf 0.
+  sperrdatei:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: [self-hosted, celsius-swarmv]
+    container:
+      image: ghcr.io/astral-sh/uv:python3.14-bookworm-slim
+      volumes: ["swarmv-uv-cache:/uv-cache"]
+    env:
+      UV_FROZEN: "0"
+    steps:
+      - run: apt-get update && apt-get install -y --no-install-recommends git
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: uv lock --check
+
+  # Das schnelle Tor. Keine Zeitschwelle: die gehört an die Werkbank, nicht in
+  # die CI. `-rs` meldet jeden übersprungenen Test; Übersprungenes ist hier ein
+  # Befund (ein Dienst oder node fehlte).
+  unit-tests:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: [self-hosted, celsius-swarmv]
+    container:
+      image: ghcr.io/astral-sh/uv:python3.14-bookworm-slim
+      volumes: ["swarmv-uv-cache:/uv-cache"]
+    services:
+      rabbitmq:
+        image: rabbitmq:4-management
+      valkey:
+        image: valkey/valkey:8
+    env:
+      SQD_TEST_RABBITMQ_HOST: rabbitmq
+      SQD_TEST_RABBITMQ_PORT: "5672"
+      SQD_TEST_VALKEY_HOST: valkey
+      SQD_TEST_VALKEY_PORT: "6379"
+    steps:
+      - run: apt-get update && apt-get install -y --no-install-recommends build-essential git nodejs
+      - run: node --version
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Auf Valkey warten
+        run: |
+          uv run python - <<'PY'
+          import socket, sys, time
+          frist = time.time() + 120
+          while True:
+              try:
+                  with socket.create_connection(("valkey", 6379), timeout=2):
+                      break
+              except OSError:
+                  if time.time() > frist:
+                      sys.exit("valkey:6379 war nicht rechtzeitig bereit")
+                  time.sleep(1)
+          print("valkey bereit")
+          PY
+      - run: uv run pytest tests/unit -q -rs
+
+  # Gegen echte Verbindungen zu RabbitMQ und Valkey. Der Valkey-Index des
+  # Dashboards ist bewusst nicht 0 (KTD9): Die Integrationsvorrichtung von
+  # swarmq führt dort ein FLUSHDB aus.
+  integration-tests:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: [self-hosted, celsius-swarmv]
+    container:
+      image: ghcr.io/astral-sh/uv:python3.14-bookworm-slim
+      volumes: ["swarmv-uv-cache:/uv-cache"]
+    services:
+      rabbitmq:
+        image: rabbitmq:4-management
+      valkey:
+        image: valkey/valkey:8
+    env:
+      SQD_TEST_RABBITMQ_HOST: rabbitmq
+      SQD_TEST_RABBITMQ_PORT: "5672"
+      SQD_TEST_VALKEY_HOST: valkey
+      SQD_TEST_VALKEY_PORT: "6379"
+    steps:
+      - run: apt-get update && apt-get install -y --no-install-recommends build-essential git
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Bereitschaftstor: Beide Testebenen überspringen sich, wenn ein Dienst
+      # fehlt -- ohne dieses Tor ließe ein langsam startender Broker die ganze
+      # Suite mit null gelaufenen Tests grün werden.
+      - name: Auf die Dienste warten
+        run: |
+          uv run python - <<'PY'
+          import socket, sys, time
+          ziele = [("rabbitmq", 5672), ("valkey", 6379)]
+          frist = time.time() + 120
+          for wirt, port in ziele:
+              while True:
+                  try:
+                      with socket.create_connection((wirt, port), timeout=2):
+                          break
+                  except OSError:
+                      if time.time() > frist:
+                          sys.exit(f"Dienst {wirt}:{port} war nicht rechtzeitig bereit")
+                      time.sleep(1)
+          print("alle Dienste bereit")
+          PY
+      - run: uv run pytest tests/integration -q -rs
+
+  # Das Abbild muss sich bauen lassen -- es ist der Weg, auf dem der Dienst
+  # ausgeliefert wird. Gebaut wird mit **kaniko**, nicht mit `docker build`:
+  # Das braucht keinen privilegierten Modus. Nur bauen, nicht veröffentlichen.
+  #
+  # Das kaniko-Debug-Abbild ist busybox ohne node, darum läuft dort kein
+  # actions/checkout. kaniko holt den Kontext selbst als Git-Quelle, mit Ref
+  # und Commit dieses Laufs (bei Fork-PRs die Merge-Ref des PRs).
+  abbild:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: [self-hosted, celsius-swarmv]
+    container:
+      image: gcr.io/kaniko-project/executor:debug
+    steps:
+      - run: >-
+          /kaniko/executor
+          --context "git://github.com/${{ github.repository }}.git#${{ github.ref }}#${{ github.sha }}"
+          --dockerfile Dockerfile
+          --no-push
