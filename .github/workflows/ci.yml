@@ -1,5 +1,6 @@
-# CI des Dashboards, Job für Job aus .gitlab-ci.yml übernommen (swarmq-Plan
-# 2026-10-28-1308, U8). Bis zur Umstellung laufen beide CIs nebeneinander.
+# CI des Dashboards (swarmq-Plan 2026-10-28-1308, U8). Die Jobs sind beim Umzug
+# von GitLab Job für Job übernommen; der Vergleichslauf (U14) zeigte je Job
+# dieselben Testzahlen.
 #
 # Die Tore sind die aus AGENTS.md und dem Verification Contract der Pläne:
 # ruff, mypy --strict, Unit-Suite, Integrationssuite, Abbild. Sie blockieren
@@ -16,8 +17,8 @@
 # Alle Jobs laufen auf den eigenen Runnern auf celsius (Label celsius-swarmv)
 # und immer in einem `container:`, sonst liefen die Schritte auf dem Host.
 # Das schlanke uv-Abbild bringt weder Übersetzer noch git mit; beides kommt per
-# apt vor dem Checkout, damit actions/checkout ein echtes .git anlegt wie
-# auf GitLab. `build-essential` ist Pflicht, solange `valkey` für cp314 kein
+# apt vor dem Checkout, damit actions/checkout ein echtes .git anlegt.
+# `build-essential` ist Pflicht, solange `valkey` für cp314 kein
 # fertiges Rad mitbringt.
 #
 # Der uv-Cache ist ein Volume im Docker der CI, getrennt nach Vertrauensstufe:
