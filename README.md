@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo/swarmv-horizontal-dark.svg">
+    <img src="docs/assets/logo/swarmv-horizontal-light.svg" alt="SwarmV" width="420">
+  </picture>
+</p>
+
 # swarmv — Dashboard für swarmq
 
 Flower-artiges Web-Dashboard für [swarmq](https://github.com/Schorschofwill/swarmq):
